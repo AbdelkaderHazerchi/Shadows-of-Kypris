@@ -1,0 +1,1351 @@
+     1→"use client";
+     2→
+     3→// ─────────────────────────────────────────────────────────────
+     4→// مكتبة النماذج الإجرائية — ظلال كيبريس
+     5→// سيارات مفصلة، أثاث حقيقي، دعائم شارع، نماذج التقاط ثلاثية الأبعاد
+     6→//
+     7→// فلسفة التصميم: كل نموذج مبني من قطع متعددة بتفاصيل حقيقية
+     8→// (مقابض، مفصلات، أضواء، تكسّر) بدلاً من المكعبات البدائية.
+     9→// الدعائم الساكنة تُدمج في "دلاء" (buckets) لكل مادة → أداء AAA.
+    10→// النماذج الحيّة (الالتقاطات/الأبواب/الناجون) تُعاد كمجموعات Groups.
+    11→// ─────────────────────────────────────────────────────────────
+    12→import * as THREE from "three";
+    13→import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
+    14→
+    15→// ═══════════════ أنواع مشتركة ═══════════════
+    16→
+    17→/** سياق البناء: يدفع الهندسة إلى دلاء المواد (تُدمج لاحقاً) + المصادمات */
+    18→export interface PropCtx {
+    19→  /** يدفع geometry إلى دلو مادة — ستُنسخ وتُطبّق المصفوفة */
+    20→  push(bucket: string, geo: THREE.BufferGeometry, m: THREE.Matrix4): void;
+    21→  collider(minX: number, maxX: number, minZ: number, maxZ: number): void;
+    22→}
+    23→
+    24→export interface Mat4Opts {
+    25→  rx?: number;
+    26→  ry?: number;
+    27→  rz?: number;
+    28→  sx?: number;
+    29→  sy?: number;
+    30→  sz?: number;
+    31→}
+    32→
+    33→const _m4 = new THREE.Matrix4();
+    34→const _q = new THREE.Quaternion();
+    35→const _e = new THREE.Euler();
+    36→const _v = new THREE.Vector3();
+    37→const _s = new THREE.Vector3();
+    38→
+    39→/** مصفوفة سريعة: موضع + دوران + مقياس */
+    40→export function mat4(x: number, y: number, z: number, o: Mat4Opts = {}): THREE.Matrix4 {
+    41→  _e.set(o.rx ?? 0, o.ry ?? 0, o.rz ?? 0);
+    42→  _q.setFromEuler(_e);
+    43→  _v.set(x, y, z);
+    44→  _s.set(o.sx ?? 1, o.sy ?? 1, o.sz ?? 1);
+    45→  return _m4.compose(_v, _q, _s);
+    46→}
+    47→
+    48→/** مولّد أرقام شبه عشوائي ثابت البذرة — للمدينة نفسها كل مرة */
+    49→export function seededRandom(seed: number) {
+    50→  let s = seed >>> 0;
+    51→  return () => {
+    52→    s = (s * 1664525 + 1013904223) >>> 0;
+    53→    return s / 4294967296;
+    54→  };
+    55→}
+    56→
+    57→const BOX = new THREE.BoxGeometry(1, 1, 1);
+    58→const UNIT_SPHERE = new THREE.SphereGeometry(1, 10, 8);
+    59→
+    60→// ═══════════════ خامات الدعائم (دلاء المواد) ═══════════════
+    61→
+    62→function noiseCanvasTex(
+    63→  size: number,
+    64→  base: string,
+    65→  amt: number,
+    66→  draw?: (ctx: CanvasRenderingContext2D, s: number) => void,
+    67→  repeat = 2,
+    68→): THREE.Texture {
+    69→  const c = document.createElement("canvas");
+    70→  c.width = c.height = size;
+    71→  const ctx = c.getContext("2d")!;
+    72→  ctx.fillStyle = base;
+    73→  ctx.fillRect(0, 0, size, size);
+    74→  const img = ctx.getImageData(0, 0, size, size);
+    75→  const d = img.data;
+    76→  for (let i = 0; i < d.length; i += 4) {
+    77→    const n = (Math.random() - 0.5) * amt;
+    78→    d[i] = Math.max(0, Math.min(255, d[i] + n));
+    79→    d[i + 1] = Math.max(0, Math.min(255, d[i + 1] + n));
+    80→    d[i + 2] = Math.max(0, Math.min(255, d[i + 2] + n));
+    81→  }
+    82→  ctx.putImageData(img, 0, 0);
+    83→  draw?.(ctx, size);
+    84→  const tex = new THREE.CanvasTexture(c);
+    85→  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    86→  tex.repeat.set(repeat, repeat);
+    87→  tex.anisotropy = 4;
+    88→  return tex;
+    89→}
+    90→
+    91→export function makePropTextures() {
+    92→  const rust = noiseCanvasTex(128, "#3a2c22", 40, (ctx, s) => {
+    93→    for (let i = 0; i < 26; i++) {
+    94→      const x = Math.random() * s;
+    95→      const y = Math.random() * s;
+    96→      const r = 4 + Math.random() * 18;
+    97→      const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+    98→      g.addColorStop(0, "rgba(96,54,22,0.5)");
+    99→      g.addColorStop(1, "rgba(0,0,0,0)");
+   100→      ctx.fillStyle = g;
+   101→      ctx.fillRect(x - r, y - r, r * 2, r * 2);
+   102→    }
+   103→  }, 1);
+   104→
+   105→  const sidewalk = noiseCanvasTex(256, "#2c2c2b", 24, (ctx, s) => {
+   106→    ctx.strokeStyle = "rgba(0,0,0,0.45)";
+   107→    ctx.lineWidth = 3;
+   108→    for (let i = 0; i <= s; i += 64) {
+   109→      ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i, s); ctx.stroke();
+   110→      ctx.beginPath(); ctx.moveTo(0, i); ctx.lineTo(s, i); ctx.stroke();
+   111→    }
+   112→    for (let i = 0; i < 10; i++) {
+   113→      const x = Math.random() * s, y = Math.random() * s, r = 8 + Math.random() * 24;
+   114→      const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+   115→      g.addColorStop(0, "rgba(0,0,0,0.4)");
+   116→      g.addColorStop(1, "rgba(0,0,0,0)");
+   117→      ctx.fillStyle = g;
+   118→      ctx.fillRect(x - r, y - r, r * 2, r * 2);
+   119→    }
+   120→  }, 3);
+   121→
+   122→  const tile = noiseCanvasTex(256, "#494b47", 14, (ctx, s) => {
+   123→    ctx.strokeStyle = "rgba(20,20,20,0.7)";
+   124→    ctx.lineWidth = 2;
+   125→    for (let i = 0; i <= s; i += 32) {
+   126→      ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i, s); ctx.stroke();
+   127→      ctx.beginPath(); ctx.moveTo(0, i); ctx.lineTo(s, i); ctx.stroke();
+   128→    }
+   129→    // بقع دم قديمة
+   130→    for (let i = 0; i < 5; i++) {
+   131→      const x = Math.random() * s, y = Math.random() * s, r = 10 + Math.random() * 30;
+   132→      const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+   133→      g.addColorStop(0, "rgba(60,8,8,0.55)");
+   134→      g.addColorStop(1, "rgba(0,0,0,0)");
+   135→      ctx.fillStyle = g;
+   136→      ctx.fillRect(x - r, y - r, r * 2, r * 2);
+   137→    }
+   138→  }, 4);
+   139→
+   140→  const woodFloor = noiseCanvasTex(256, "#3d2f21", 22, (ctx, s) => {
+   141→    ctx.strokeStyle = "rgba(18,12,6,0.75)";
+   142→    ctx.lineWidth = 2;
+   143→    for (let y = 0; y <= s; y += 32) {
+   144→      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(s, y); ctx.stroke();
+   145→    }
+   146→    for (let i = 0; i < 40; i++) {
+   147→      ctx.strokeStyle = `rgba(${30 + Math.random() * 30},${22 + Math.random() * 18},${12 + Math.random() * 10},0.25)`;
+   148→      const y = Math.random() * s;
+   149→      ctx.beginPath(); ctx.moveTo(0, y); ctx.bezierCurveTo(s / 3, y + 4, (2 * s) / 3, y - 4, s, y); ctx.stroke();
+   150→    }
+   151→  }, 3);
+   152→
+   153→  const wallpaper = noiseCanvasTex(256, "#4a4238", 16, (ctx, s) => {
+   154→    // شريط جدران باهت
+   155→    ctx.fillStyle = "rgba(90,70,50,0.14)";
+   156→    for (let x = 0; x < s; x += 42) ctx.fillRect(x, 0, 16, s);
+   157→    for (let i = 0; i < 6; i++) {
+   158→      const x = Math.random() * s, y = Math.random() * s, r = 12 + Math.random() * 40;
+   159→      const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+   160→      g.addColorStop(0, "rgba(28,20,12,0.5)");
+   161→      g.addColorStop(1, "rgba(0,0,0,0)");
+   162→      ctx.fillStyle = g;
+   163→      ctx.fillRect(x - r, y - r, r * 2, r * 2);
+   164→    }
+   165→  }, 2);
+   166→
+   167→  const hazard = noiseCanvasTex(128, "#8a7a22", 12, (ctx, s) => {
+   168→    ctx.fillStyle = "#15130a";
+   169→    for (let i = -s; i < s * 2; i += 32) {
+   170→      ctx.save();
+   171→      ctx.translate(i, 0);
+   172→      ctx.rotate(-0.6);
+   173→      ctx.fillRect(0, -s, 14, s * 3);
+   174→      ctx.restore();
+   175→    }
+   176→  }, 2);
+   177→
+   178→  const clothDark = noiseCanvasTex(128, "#2d2b26", 26, undefined, 2);
+   179→
+   180→  const glowSoft = (() => {
+   181→    const c = document.createElement("canvas");
+   182→    c.width = c.height = 64;
+   183→    const ctx = c.getContext("2d")!;
+   184→    const g = ctx.createRadialGradient(32, 32, 2, 32, 32, 30);
+   185→    g.addColorStop(0, "rgba(255,200,120,0.55)");
+   186→    g.addColorStop(0.5, "rgba(255,170,80,0.18)");
+   187→    g.addColorStop(1, "rgba(255,150,60,0)");
+   188→    ctx.fillStyle = g;
+   189→    ctx.fillRect(0, 0, 64, 64);
+   190→    return new THREE.CanvasTexture(c);
+   191→  })();
+   192→
+   193→  return { rust, sidewalk, tile, woodFloor, wallpaper, hazard, clothDark, glowSoft };
+   194→}
+   195→
+   196→export type PropTextures = ReturnType<typeof makePropTextures>;
+   197→
+   198→/** دلاء مواد الدعائم — تُدمج مع دلاء world.ts وقت الدمج */
+   199→export function makePropMaterials(t: PropTextures): Record<string, THREE.Material> {
+   200→  const std = (o: THREE.MeshStandardMaterialParameters) => new THREE.MeshStandardMaterial(o);
+   201→  return {
+   202→    // شوارع
+   203→    sidewalk: std({ map: t.sidewalk, roughness: 0.94 }),
+   204→    paint: std({ color: 0xb8b4a6, roughness: 0.85, polygonOffset: true, polygonOffsetFactor: -1 }),
+   205→    lampGlow: std({ color: 0x201406, emissive: 0xe8a850, emissiveIntensity: 3 }),
+   206→    // سيارات
+   207→    carA: std({ color: 0x5a2c24, roughness: 0.42, metalness: 0.55 }),
+   208→    carB: std({ color: 0x454b40, roughness: 0.45, metalness: 0.5 }),
+   209→    carC: std({ color: 0x6a5b3a, roughness: 0.5, metalness: 0.4 }),
+   210→    carBurned: std({ map: t.rust, color: 0x151312, roughness: 0.95, metalness: 0.2 }),
+   211→    carPolice: std({ color: 0x1d2124, roughness: 0.4, metalness: 0.65 }),
+   212→    carTaxi: std({ color: 0x8a6a1e, roughness: 0.5, metalness: 0.45 }),
+   213→    ambulance: std({ color: 0x9a968c, roughness: 0.45, metalness: 0.5 }),
+   214→    glassDark: std({ color: 0x0c0f12, roughness: 0.12, metalness: 0.9 }),
+   215→    rubber: std({ color: 0x0d0d0d, roughness: 0.96 }),
+   216→    chrome: std({ color: 0x5c6266, roughness: 0.28, metalness: 0.95 }),
+   217→    // أثاث وداخلي
+   218→    woodFloor: std({ map: t.woodFloor, roughness: 0.8 }),
+   219→    tile: std({ map: t.tile, roughness: 0.35, metalness: 0.08 }),
+   220→    wallpaper: std({ map: t.wallpaper, roughness: 0.95 }),
+   221→    wood2: std({ color: 0x54402a, roughness: 0.78 }),
+   222→    fabric: std({ map: t.clothDark, roughness: 0.98 }),
+   223→    fabric2: std({ color: 0x4a3830, roughness: 0.98 }),
+   224→    white: std({ color: 0xb8b4aa, roughness: 0.6 }),
+   225→    plastic: std({ color: 0x2a2c2a, roughness: 0.55 }),
+   226→    screenGlow: std({ color: 0x0a1408, emissive: 0x3fae5a, emissiveIntensity: 1.6 }),
+   227→    screenGlowAmber: std({ color: 0x140c04, emissive: 0xd08a30, emissiveIntensity: 1.5 }),
+   228→    redEmissive: std({ color: 0x1a0606, emissive: 0xc22a1e, emissiveIntensity: 2 }),
+   229→    hazard: std({ map: t.hazard, roughness: 0.7 }),
+   230→    sheet: std({ color: 0xa8a294, roughness: 0.95 }),
+   231→    water: std({ color: 0x0e1a18, roughness: 0.08, metalness: 0.8, transparent: true, opacity: 0.86 }),
+   232→    brass: std({ color: 0x7a6134, roughness: 0.35, metalness: 0.85 }),
+   233→    goldKey: std({ color: 0xa8843c, roughness: 0.3, metalness: 0.9 }),
+   234→    medWhite: std({ color: 0xc9c4b8, roughness: 0.5 }),
+   235→    medRed: std({ color: 0x7a1a14, roughness: 0.55, emissive: 0x400806, emissiveIntensity: 0.5 }),
+   236→    greenMetal: std({ color: 0x39422f, roughness: 0.6, metalness: 0.4 }),
+   237→    jerrycan: std({ color: 0x6a1a14, roughness: 0.6, metalness: 0.35 }),
+   238→    trunk: std({ color: 0x241d15, roughness: 0.98 }),
+   239→    deadLeaf: std({ color: 0x2a2318, roughness: 1 }),
+   240→  };
+   241→}
+   242→
+   243→// ═══════════════ مساعد بناء داخلي ═══════════════
+   244→
+   245→class PB {
+   246→  constructor(private ctx: PropCtx, private ox = 0, private oy = 0, private oz = 0) {}
+   247→  /** إحداثيات محلية → عالمية */
+   248→  private toWorld(x: number, y: number, z: number, o: Mat4Opts = {}) {
+   249→    // دوران المجموعة حول Y فقط (كل الدعائم محاذاة أو مُدارة من العالم)
+   250→    const c = Math.cos(this.grpRy), s = Math.sin(this.grpRy);
+   251→    return {
+   252→      x: this.ox + x * c + z * s,
+   253→      y: this.oy + y,
+   254→      z: this.oz - x * s + z * c,
+   255→      ry: (o.ry ?? 0) + this.grpRy,
+   256→      rx: o.rx ?? 0,
+   257→      rz: o.rz ?? 0,
+   258→      sx: o.sx ?? 1, sy: o.sy ?? 1, sz: o.sz ?? 1,
+   259→    };
+   260→  }
+   261→  private grpRy = 0;
+   262→  group(x: number, y: number, z: number, ry = 0) { this.ox = x; this.oy = y; this.oz = z; this.grpRy = ry; return this; }
+   263→  box(bucket: string, x: number, y: number, z: number, w: number, h: number, d: number, o: Mat4Opts = {}) {
+   264→    const p = this.toWorld(x, y, z, o);
+   265→    this.ctx.push(bucket, BOX, mat4(p.x, p.y, p.z, { ...o, ry: p.ry, rx: p.rx, rz: p.rz, sx: w * p.sx, sy: h * p.sy, sz: d * p.sz }));
+   266→    return this;
+   267→  }
+   268→  /** صندوق بمركز القاع (y = قاعدة) */
+   269→  boxB(bucket: string, x: number, y: number, z: number, w: number, h: number, d: number, o: Mat4Opts = {}) {
+   270→    return this.box(bucket, x, y + h / 2, z, w, h, d, o);
+   271→  }
+   272→  cyl(bucket: string, x: number, y: number, z: number, rTop: number, rBot: number, h: number, o: Mat4Opts & { seg?: number } = {}) {
+   273→    const p = this.toWorld(x, y, z, o);
+   274→    const g = new THREE.CylinderGeometry(rTop, rBot, h, o.seg ?? 10, 1);
+   275→    if (o.rx || o.ry || o.rz) g.rotateX(o.rx ?? 0), g.rotateY(o.ry ?? 0), g.rotateZ(o.rz ?? 0);
+   276→    g.translate(p.x, p.y, p.z);
+   277→    this.ctx.push(bucket, g, mat4(0, 0, 0));
+   278→    return this;
+   279→  }
+   280→  sph(bucket: string, x: number, y: number, z: number, r: number, o: Mat4Opts = {}) {
+   281→    const p = this.toWorld(x, y, z, o);
+   282→    this.ctx.push(bucket, UNIT_SPHERE, mat4(p.x, p.y, p.z, { ...o, ry: p.ry, sx: r * p.sx, sy: r * p.sy, sz: r * p.sz }));
+   283→    return this;
+   284→  }
+   285→  /** استنساخ هندسة جاهزة بمصفوفة (للأنابيب المعقدة) */
+   286→  geo(bucket: string, geo: THREE.BufferGeometry, x: number, y: number, z: number, o: Mat4Opts = {}) {
+   287→    const p = this.toWorld(x, y, z, o);
+   288→    const g = geo.clone();
+   289→    if (o.rx || o.ry || o.rz) g.rotateX(o.rx ?? 0), g.rotateY(o.ry ?? 0), g.rotateZ(o.rz ?? 0);
+   290→    g.translate(p.x, p.y, p.z);
+   291→    this.ctx.push(bucket, g, mat4(0, 0, 0));
+   292→    return this;
+   293→  }
+   294→  /** مصادم AABB بمقاسات محلية (غير مُدار) */
+   295→  hit(x: number, z: number, w: number, d: number) {
+   296→    const c = Math.cos(this.grpRy), s = Math.sin(this.grpRy);
+   297→    const wx = this.ox + x * c + z * s;
+   298→    const wz = this.oz - x * s + z * c;
+   299→    const ew = Math.abs(c) * w / 2 + Math.abs(s) * d / 2;
+   300→    const ed = Math.abs(s) * w / 2 + Math.abs(c) * d / 2;
+   301→    this.ctx.collider(wx - ew, wx + ew, wz - ed, wz + ed);
+   302→  }
+   303→}
+   304→
+   305→// ═══════════════ السيارات ═══════════════
+   306→
+   307→export type CarVariant = "sedan" | "wreck" | "taxi" | "police" | "ambulance" | "van" | "truck";
+   308→
+   309→/**
+   310→ * سيارة مفصلة: هيكل + كابينة زجاج + عجلات + مصدّات + مصابيح.
+   311→ * الطول على محور Z المحلي (المقدمة نحو +Z بعد الدوران ry).
+   312→ */
+   313→export function car(w: PropCtx, x: number, z: number, ry = 0, variant: CarVariant = "sedan", seed = Math.random()) {
+   314→  const p = new PB(w).group(x, 0, z, ry);
+   315→  const rnd = seededRandom(Math.floor(seed * 1e9));
+   316→  const bodyBucket =
+   317→    variant === "police" ? "carPolice" :
+   318→    variant === "taxi" ? "carTaxi" :
+   319→    variant === "ambulance" ? "ambulance" :
+   320→    variant === "wreck" ? "carBurned" :
+   321→    variant === "truck" ? "carB" :
+   322→    ["carA", "carB", "carC"][Math.floor(rnd() * 3)];
+   323→  const burned = variant === "wreck";
+   324→
+   325→  if (variant === "truck") {
+   326→    // شاحنة عسكرية (الميناء)
+   327→    p.boxB(bodyBucket, 0, 0.55, -1.2, 2.3, 1.5, 4.6);           // كابينة+حمصة
+   328→    p.boxB(bodyBucket, 0, 0.75, 2.2, 2.4, 1.9, 3.6);            // صندوق حمولة
+   329→    p.boxB("canvasTop", 0, 2.65, 2.2, 2.3, 0.1, 3.4);           // غطاء قماشي
+   330→    p.boxB("chrome", 0, 0.3, 3.9, 2.2, 0.35, 0.2);              // مصدّ أمامي
+   331→    for (const [wx, wz] of [[-1.15, 2.9], [1.15, 2.9], [-1.15, -1.5], [1.15, -1.5], [-1.15, -2.6], [1.15, -2.6]] as const) {
+   332→      p.cyl("rubber", wx, 0.52, wz, 0.52, 0.52, 0.34, { rx: Math.PI / 2 });
+   333→    }
+   334→    p.hit(0, 0, 3.2, 8.4);
+   335→    return;
+   336→  }
+   337→
+   338→  const L = variant === "van" || variant === "ambulance" ? 5.2 : 4.5;
+   339→  const W = variant === "van" || variant === "ambulance" ? 2.1 : 1.86;
+   340→  const wheelR = 0.34;
+   341→
+   342→  // هيكل سفلي + غطاء محرك وصندوق
+   343→  p.boxB(bodyBucket, 0, wheelR * 0.55, 0, W, 0.55, L);
+   344→  if (variant === "van" || variant === "ambulance") {
+   345→    p.boxB(bodyBucket, 0, wheelR * 0.55 + 0.55, -0.15, W, 1.05, L - 0.5);
+   346→    p.boxB("glassDark", 0, wheelR * 0.55 + 1.15, 1.6, W - 0.3, 0.5, 0.1);
+   347→  } else {
+   348→    p.boxB(bodyBucket, 0, wheelR * 0.55 + 0.55, 0.6, W - 0.15, 0.32, L * 0.32); // غطاء محرك منخفض
+   349→    // كابينة
+   350→    p.boxB(bodyBucket, 0, wheelR * 0.55 + 0.55, -0.45, W - 0.14, 0.62, L * 0.42);
+   351→    // زجاج أمامي/خلفي وجوانب
+   352→    p.boxB("glassDark", 0, wheelR * 0.55 + 0.95, -0.45 + L * 0.21, W - 0.2, 0.44, 0.06, { rx: -0.28 });
+   353→    p.boxB("glassDark", 0, wheelR * 0.55 + 0.95, -0.45 - L * 0.21, W - 0.2, 0.4, 0.06, { rx: 0.32 });
+   354→    p.boxB("glassDark", -(W - 0.12) / 2, wheelR * 0.55 + 0.92, -0.45, 0.05, 0.4, L * 0.36);
+   355→    p.boxB("glassDark", (W - 0.12) / 2, wheelR * 0.55 + 0.92, -0.45, 0.05, 0.4, L * 0.36);
+   356→    // سقف
+   357→    p.boxB(bodyBucket, 0, wheelR * 0.55 + 1.18, -0.45, W - 0.12, 0.07, L * 0.4);
+   358→  }
+   359→  // شرطة: شريط أبيض + منارة؛ إسعاف: شريط أحمر
+   360→  if (variant === "police") {
+   361→    p.boxB("white", 0, wheelR * 0.55 + 0.62, 0, W + 0.02, 0.22, L * 0.55);
+   362→    p.boxB("redEmissive", -0.32, wheelR * 0.55 + 1.28, -0.45, 0.4, 0.12, 0.3);
+   363→    p.boxB("screenGlowAmber", 0.32, wheelR * 0.55 + 1.28, -0.45, 0.4, 0.12, 0.3);
+   364→  }
+   365→  if (variant === "ambulance") {
+   366→    p.boxB("medRed", 0, wheelR * 0.55 + 0.62, 0, W + 0.02, 0.3, L * 0.7);
+   367→    p.boxB("white", 0, wheelR * 0.55 + 1.28, -0.15, 0.8, 0.12, 0.5);
+   368→  }
+   369→  if (variant === "taxi") p.boxB("white", 0, wheelR * 0.55 + 1.24, -0.45, 0.9, 0.14, 0.4);
+   370→
+   371→  // مصدّات + مصابيح
+   372→  p.boxB(burned ? "carBurned" : "chrome", 0, 0.34, L / 2 - 0.05, W - 0.1, 0.22, 0.14);
+   373→  p.boxB(burned ? "carBurned" : "chrome", 0, 0.34, -L / 2 + 0.05, W - 0.1, 0.22, 0.14);
+   374→  if (!burned) {
+   375→    p.boxB("lampGlow", -(W / 2 - 0.3), 0.78, L / 2 - 0.02, 0.24, 0.12, 0.06);
+   376→    p.boxB("lampGlow", W / 2 - 0.3, 0.78, L / 2 - 0.02, 0.24, 0.12, 0.06);
+   377→    p.boxB("medRed", -(W / 2 - 0.28), 0.8, -L / 2 + 0.02, 0.2, 0.1, 0.05);
+   378→    p.boxB("medRed", W / 2 - 0.28, 0.8, -L / 2 + 0.02, 0.2, 0.1, 0.05);
+   379→  }
+   380→  // عجلات (المركبات المحترقة قد تفقد عجلة)
+   381→  for (const [wx, wz] of [[-W / 2 + 0.1, L * 0.31], [W / 2 - 0.1, L * 0.31], [-W / 2 + 0.1, -L * 0.31], [W / 2 - 0.1, -L * 0.31]] as const) {
+   382→    if (burned && rnd() < 0.2) continue;
+   383→    p.cyl("rubber", wx, wheelR, wz, wheelR, wheelR, 0.24, { rx: Math.PI / 2, seg: 10 });
+   384→    p.cyl("chrome", wx + (wx > 0 ? 0.13 : -0.13), wheelR, wz, 0.12, 0.12, 0.03, { rx: Math.PI / 2, seg: 8 });
+   385→  }
+   386→  // محترقة: غطاء محرك مفتوح + انهيار سقف
+   387→  if (burned) {
+   388→    p.boxB("carBurned", 0.6, wheelR * 0.55 + 1.0, 0.95, W - 0.5, 0.05, L * 0.3, { rz: 0.9, rx: -0.3 });
+   389→    if (rnd() < 0.5) p.boxB("rubble", 0, wheelR * 0.55 + 1.24, -0.45, W - 0.2, 0.1, L * 0.35, { ry: 0.1 });
+   390→  }
+   391→  p.hit(0, 0, W + 0.7, L + 0.6);
+   392→}
+   393→
+   394→/** حافلة محترقة تسد الشارع */
+   395→export function busWreck(w: PropCtx, x: number, z: number, ry = 0) {
+   396→  const p = new PB(w).group(x, 0, z, ry);
+   397→  p.boxB("carBurned", 0, 0.75, 0, 2.5, 1.7, 9.5);
+   398→  p.boxB("glassDark", 0, 2.25, 0, 2.4, 0.9, 8.6);
+   399→  p.boxB("carBurned", 0, 2.62, 0, 2.5, 0.12, 9.3);
+   400→  for (const [wx, wz] of [[-1.2, 3.1], [1.2, 3.1], [-1.2, -3.1], [1.2, -3.1]] as const) {
+   401→    p.cyl("rubber", wx, 0.52, wz, 0.52, 0.52, 0.3, { rx: Math.PI / 2 });
+   402→  }
+   403→  p.boxB("rubble", 0, 0.1, 4.9, 2.6, 0.5, 1.4);
+   404→  p.hit(0, 0, 3.2, 10.4);
+   405→}
+   406→
+   407→// ═══════════════ دعائم الشارع ═══════════════
+   408→
+   409→/** عمود إنارة — قد يعمل (مع ضوء) أو ميت */
+   410→export function lampPost(w: PropCtx, x: number, z: number, ry = 0, lit = true) {
+   411→  const p = new PB(w).group(x, 0, z, ry);
+   412→  p.cyl("metal", 0, 2.6, 0, 0.07, 0.11, 5.2);
+   413→  p.cyl("metal", 0, 0.05, 0, 0.22, 0.26, 0.14, { seg: 8 });
+   414→  p.cyl("metal", 0, 5.15, 0.85, 0.05, 0.05, 1.9, { rx: Math.PI / 2 });
+   415→  p.boxB(lit ? "lampGlow" : "metal", 0, 5.02, 1.75, 0.34, 0.1, 0.62);
+   416→  p.cyl(lit ? "lampGlow" : "metal", 0, 5.02, 1.75, 0.16, 0.2, 0.12, { seg: 8 });
+   417→  p.hit(0, 0, 0.5, 0.5);
+   418→}
+   419→
+   420→export function trafficLight(w: PropCtx, x: number, z: number, ry = 0, state: "red" | "green" | "dead" = "dead") {
+   421→  const p = new PB(w).group(x, 0, z, ry);
+   422→  p.cyl("metal", 0, 2.2, 0, 0.07, 0.1, 4.4);
+   423→  p.cyl("metal", 0, 4.3, 0.7, 0.05, 0.05, 1.5, { rx: Math.PI / 2 });
+   424→  p.boxB("plastic", 0, 4.05, 1.42, 0.3, 0.85, 0.22);
+   425→  const glowBucket = state === "red" ? "redEmissive" : state === "green" ? "screenGlow" : "plastic";
+   426→  p.boxB(glowBucket, 0, 4.55, 1.54, 0.16, 0.16, 0.03);
+   427→  p.boxB(state === "green" ? "screenGlow" : "plastic", 0, 4.25, 1.54, 0.16, 0.16, 0.03);
+   428→  p.hit(0, 0, 0.4, 0.4);
+   429→}
+   430→
+   431→export function hydrant(w: PropCtx, x: number, z: number) {
+   432→  const p = new PB(w).group(x, 0, z, 0);
+   433→  p.cyl("medRed", 0, 0.32, 0, 0.13, 0.16, 0.64, { seg: 8 });
+   434→  p.sph("medRed", 0, 0.68, 0, 0.12, { sy: 0.9 });
+   435→  p.cyl("medRed", 0, 0.45, 0.15, 0.05, 0.05, 0.12, { rx: Math.PI / 2 });
+   436→  p.cyl("medRed", 0, 0.45, -0.15, 0.05, 0.05, 0.12, { rx: Math.PI / 2 });
+   437→  p.cyl("chrome", 0, 0.74, 0, 0.035, 0.035, 0.1);
+   438→}
+   439→
+   440→export function bench(w: PropCtx, x: number, z: number, ry = 0) {
+   441→  const p = new PB(w).group(x, 0, z, ry);
+   442→  p.boxB("wood2", 0, 0.42, 0, 1.9, 0.07, 0.55);
+   443→  p.boxB("wood2", 0, 0.56, -0.24, 1.9, 0.5, 0.06, { rx: -0.15 });
+   444→  p.boxB("metal", -0.8, 0.2, 0, 0.08, 0.4, 0.5);
+   445→  p.boxB("metal", 0.8, 0.2, 0, 0.08, 0.4, 0.5);
+   446→  p.hit(0, 0, 2, 0.7);
+   447→}
+   448→
+   449→export function trashBin(w: PropCtx, x: number, z: number) {
+   450→  const p = new PB(w).group(x, 0, z, 0);
+   451→  p.cyl("metal", 0, 0.35, 0, 0.3, 0.26, 0.72, { seg: 10 });
+   452→  p.cyl("plastic", 0, 0.74, 0, 0.32, 0.3, 0.06, { seg: 10 });
+   453→  p.hit(0, 0, 0.7, 0.7);
+   454→}
+   455→
+   456→export function trashBags(w: PropCtx, x: number, z: number, seed = Math.random()) {
+   457→  const p = new PB(w).group(x, 0, z, 0);
+   458→  const rnd = seededRandom(Math.floor(seed * 1e9));
+   459→  for (let i = 0; i < 3 + Math.floor(rnd() * 3); i++) {
+   460→    p.sph("plastic", (rnd() - 0.5) * 1.4, 0.14 + rnd() * 0.1, (rnd() - 0.5) * 1.1, 0.22 + rnd() * 0.12, { sy: 0.75 });
+   461→  }
+   462→}
+   463→
+   464→export function deadTree(w: PropCtx, x: number, z: number, seed = Math.random()) {
+   465→  const p = new PB(w).group(x, 0, z, 0);
+   466→  const rnd = seededRandom(Math.floor(seed * 1e9));
+   467→  p.cyl("trunk", 0, 1.4, 0, 0.09, 0.16, 2.8, { seg: 7 });
+   468→  for (let i = 0; i < 5; i++) {
+   469→    const a = rnd() * Math.PI * 2;
+   470→    const hgt = 1.6 + rnd() * 1.2;
+   471→    const len = 0.7 + rnd() * 0.9;
+   472→    p.cyl("trunk", Math.cos(a) * len * 0.5, hgt, Math.sin(a) * len * 0.5, 0.02, 0.05, len, { rz: Math.cos(a) * 1.1, rx: -Math.sin(a) * 1.1, seg: 5 });
+   473→  }
+   474→  p.hit(0, 0, 0.6, 0.6);
+   475→}
+   476→
+   477→/** حاجز مروري مخطط (أصفر/أسود) */
+   478→export function barrier(w: PropCtx, x: number, z: number, ry = 0) {
+   479→  const p = new PB(w).group(x, 0, z, ry);
+   480→  p.boxB("hazard", 0, 0.55, 0, 1.9, 0.24, 0.07);
+   481→  p.boxB("hazard", 0, 0.95, 0, 1.9, 0.24, 0.07);
+   482→  p.boxB("metal", -0.85, 0, 0, 0.07, 1.1, 0.4);
+   483→  p.boxB("metal", 0.85, 0, 0, 0.07, 1.1, 0.4);
+   484→  p.hit(0, 0, 2, 0.5);
+   485→}
+   486→
+   487→/** جدول رمل — حاجز عسكري */
+   488→export function sandbagWall(w: PropCtx, x: number, z: number, ry = 0, len = 3.4) {
+   489→  const p = new PB(w).group(x, 0, z, ry);
+   490→  const n = Math.round(len / 0.55);
+   491→  for (let row = 0; row < 3; row++) {
+   492→    for (let i = 0; i < n - row; i++) {
+   493→      const bx = (i - (n - row - 1) / 2) * 0.56 + (row % 2) * 0.14;
+   494→      p.sph("fabric", bx, 0.16 + row * 0.3, (i % 2) * 0.04, 0.3, { sy: 0.55, ry: (i * 7 + row * 3) * 0.35 });
+   495→    }
+   496→  }
+   497→  p.hit(0, 0, len, 0.9);
+   498→}
+   499→
+   500→/** لافتة متجر عربية — لوحة مضيئة باسم محل */
+   501→export function shopSign(x: number, y: number, z: number, ry: number, text: string, bg = "#1c1410", fg = "#d8a850"): THREE.Mesh {
+   502→  const c = document.createElement("canvas");
+   503→  c.width = 256; c.height = 64;
+   504→  const ctx = c.getContext("2d")!;
+   505→  ctx.fillStyle = bg;
+   506→  ctx.fillRect(0, 0, 256, 64);
+   507→  ctx.strokeStyle = fg;
+   508→  ctx.lineWidth = 3;
+   509→  ctx.strokeRect(4, 4, 248, 56);
+   510→  ctx.fillStyle = fg;
+   511→  ctx.font = "bold 30px Cairo, Arial";
+   512→  ctx.textAlign = "center";
+   513→  ctx.textBaseline = "middle";
+   514→  ctx.fillText(text, 128, 34);
+   515→  // وميض التكسر
+   516→  if (Math.random() < 0.4) {
+   517→    ctx.fillStyle = "rgba(0,0,0,0.85)";
+   518→    ctx.fillRect(Math.random() * 200, 0, 30 + Math.random() * 40, 64);
+   519→  }
+   520→  const tex = new THREE.CanvasTexture(c);
+   521→  const m = new THREE.Mesh(
+   522→    new THREE.PlaneGeometry(2.4, 0.6),
+   523→    new THREE.MeshStandardMaterial({ map: tex, emissive: 0xffffff, emissiveMap: tex, emissiveIntensity: 0.55, roughness: 0.8 }),
+   524→  );
+   525→  m.position.set(x, y, z);
+   526→  m.rotation.y = ry;
+   527→  return m;
+   528→}
+   529→
+   530→/** برج الساعة — معلم المدينة (يعود بعرّافتين تتحركان) */
+   531→export function clockTower(w: PropCtx, x: number, z: number): { hands: THREE.Object3D[] } {
+   532→  const p = new PB(w).group(x, 0, z, 0);
+   533→  const H = 21;
+   534→  p.boxB("brick", 0, 0, 0, 6.4, H, 6.4);
+   535→  p.boxB("concrete", 0, H, 0, 7.2, 0.6, 7.2);
+   536→  p.boxB("brick", 0, H + 0.6, 0, 4.6, 3.2, 4.6);
+   537→  p.boxB("concrete", 0, H + 3.8, 0, 5.4, 0.35, 5.4);
+   538→  // هرم القمة
+   539→  const cone = new THREE.ConeGeometry(3.4, 3.2, 4);
+   540→  cone.rotateY(Math.PI / 4);
+   541→  cone.translate(x, H + 5.55, z);
+   542→  w.push("roof", cone, mat4(0, 0, 0));
+   543→  // أعمدة زخرفية في القاعدة
+   544→  for (const [ox, oz] of [[-2.9, -2.9], [2.9, -2.9], [-2.9, 2.9], [2.9, 2.9]] as const) {
+   545→    p.boxB("concrete", ox, 0, oz, 0.7, 4.4, 0.7);
+   546→  }
+   547→  p.hit(0, 0, 6.8, 6.8);
+   548→
+   549→  // أوجه الساعة الأربعة (شرائح منفصلة قابلة للدوران)
+   550→  const hands: THREE.Object3D[] = [];
+   551→  const faceMat = new THREE.MeshStandardMaterial({ color: 0x1a1712, roughness: 0.85 });
+   552→  const handMat = new THREE.MeshStandardMaterial({ color: 0xb8a86a, emissive: 0x6a5a20, emissiveIntensity: 0.7, roughness: 0.4 });
+   553→  for (let i = 0; i < 4; i++) {
+   554→    const faceG = new THREE.Group();
+   555→    const ry = (i * Math.PI) / 2;
+   556→    faceG.rotation.y = ry;
+   557→    faceG.position.set(x + Math.sin(ry) * 3.25, H + 1.9, z + Math.cos(ry) * 3.25);
+   558→    const face = new THREE.Mesh(new THREE.CircleGeometry(1.05, 24), faceMat);
+   559→    faceG.add(face);
+   560→    const hourH = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.52, 0.03), handMat);
+   561→    hourH.position.y = 0.2;
+   562→    const hourPivot = new THREE.Group();
+   563→    hourPivot.add(hourH);
+   564→    const minH = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.82, 0.03), handMat);
+   565→    minH.position.y = 0.34;
+   566→    const minPivot = new THREE.Group();
+   567→    minPivot.add(minH);
+   568→    faceG.add(hourPivot, minPivot);
+   569→    faceG.userData.isProp = true;
+   570→    hands.push(hourPivot, minPivot);
+   571→    faceG.traverse((o) => { if (o instanceof THREE.Mesh) o.userData.noHit = true; });
+   572→  }
+   573→  return { hands };
+   574→}
+   575→
+   576→/** نافورة ساحة */
+   577→export function fountain(w: PropCtx, x: number, z: number) {
+   578→  const p = new PB(w).group(x, 0, z, 0);
+   579→  p.cyl("concrete", 0, 0.42, 0, 2.3, 2.5, 0.84, { seg: 18 });
+   580→  p.cyl("water", 0, 0.78, 0, 2.05, 2.05, 0.06, { seg: 18 });
+   581→  p.cyl("concrete", 0, 0.84, 0, 0.32, 0.42, 1.3, { seg: 10 });
+   582→  p.cyl("concrete", 0, 2.14, 0, 0.7, 0.5, 0.16, { seg: 12 });
+   583→  p.hit(0, 0, 5.2, 5.2);
+   584→}
+   585→
+   586→// ═══════════════ أثاث داخلي ═══════════════
+   587→
+   588→/** مكتب مع مونيتور وأوراق وأدراج */
+   589→export function desk(w: PropCtx, x: number, z: number, ry = 0, withMonitor = true) {
+   590→  const p = new PB(w).group(x, 0, z, ry);
+   591→  p.boxB("wood2", 0, 0.66, 0, 1.8, 0.07, 0.85);
+   592→  p.boxB("wood2", 0, 0.3, -0.3, 1.7, 0.5, 0.5);                     // درج
+   593→  p.boxB("metal", -0.8, 0, -0.25, 0.07, 0.66, 0.75);
+   594→  p.boxB("metal", 0.8, 0, -0.25, 0.07, 0.66, 0.75);
+   595→  if (withMonitor) {
+   596→    p.boxB("plastic", 0, 0.7, -0.2, 0.55, 0.06, 0.2);               // قاعدة شاشة
+   597→    p.boxB("plastic", 0, 0.95, -0.28, 0.6, 0.4, 0.05, { rx: 0.08 });
+   598→    p.boxB("screenGlow", 0, 0.95, -0.25, 0.52, 0.32, 0.02, { rx: 0.08 });
+   599→  }
+   600→  // أوراق مبعثرة
+   601→  p.boxB("paper", 0.45, 0.7, 0.15, 0.24, 0.005, 0.32, { ry: 0.3 });
+   602→  p.boxB("paper", -0.4, 0.7, 0.2, 0.24, 0.005, 0.32, { ry: -0.5 });
+   603→  p.hit(0, 0, 1.9, 1);
+   604→}
+   605→
+   606→export function officeChair(w: PropCtx, x: number, z: number, ry = 0) {
+   607→  const p = new PB(w).group(x, 0, z, ry);
+   608→  p.cyl("metal", 0, 0.25, 0, 0.26, 0.26, 0.04, { seg: 8 });
+   609→  p.cyl("metal", 0, 0.27, 0, 0.04, 0.04, 0.35);
+   610→  p.boxB("fabric", 0, 0.45, 0, 0.46, 0.09, 0.46);
+   611→  p.boxB("fabric", 0, 0.62, -0.2, 0.44, 0.5, 0.08, { rx: -0.12 });
+   612→  p.hit(0, 0, 0.6, 0.6);
+   613→}
+   614→
+   615→/** رف مخزن بكرات وبضائع */
+   616→export function shelfStocked(w: PropCtx, x: number, z: number, ry = 0, len = 3, stocked = true, seed = Math.random()) {
+   617→  const p = new PB(w).group(x, 0, z, ry);
+   618→  const rnd = seededRandom(Math.floor(seed * 1e9));
+   619→  const buckets = ["wood2", "carA", "carB", "greenMetal", "medWhite"];
+   620→  p.boxB("metal", 0, 1.0, 0, len, 2, 0.55);
+   621→  p.boxB("metal", -len / 2, 0, 0, 0.07, 2, 0.55);
+   622→  p.boxB("metal", len / 2, 0, 0, 0.07, 2, 0.55);
+   623→  for (const lvl of [0.28, 0.95, 1.62]) {
+   624→    p.boxB("metal", 0, lvl, 0, len, 0.05, 0.55);
+   625→    if (stocked) {
+   626→      let cx = -len / 2 + 0.3;
+   627→      while (cx < len / 2 - 0.3) {
+   628→        const bw = 0.3 + rnd() * 0.45;
+   629→        const bh = 0.22 + rnd() * 0.3;
+   630→        if (rnd() < 0.72) {
+   631→          p.boxB(buckets[Math.floor(rnd() * buckets.length)], cx + bw / 2, lvl + 0.03, 0, bw, bh, 0.4, { ry: (rnd() - 0.5) * 0.2 });
+   632→        }
+   633→        cx += bw + 0.12 + rnd() * 0.2;
+   634→      }
+   635→    }
+   636→  }
+   637→  p.hit(0, 0, len + 0.7, 0.7);
+   638→}
+   639→
+   640→export function cabinet(w: PropCtx, x: number, z: number, ry = 0, bucket = "wood2") {
+   641→  const p = new PB(w).group(x, 0, z, ry);
+   642→  p.boxB(bucket, 0, 0.5, 0, 1.1, 2, 0.5);
+   643→  p.boxB("metal", 0, 0.5, 0.26, 0.9, 1.7, 0.03);
+   644→  p.boxB("chrome", 0, 1.3, 0.29, 0.5, 0.04, 0.04);
+   645→  p.hit(0, 0, 1.2, 0.6);
+   646→}
+   647→
+   648→/** صف خزائن أمنية (شرطة) — إحداها خزانة الأسلحة */
+   649→export function lockerRow(w: PropCtx, x: number, z: number, ry = 0, count = 4) {
+   650→  const p = new PB(w).group(x, 0, z, ry);
+   651→  for (let i = 0; i < count; i++) {
+   652→    const bx = (i - (count - 1) / 2) * 0.62;
+   653→    p.boxB("greenMetal", bx, 0, 0, 0.58, 2.1, 0.5);
+   654→    p.boxB("metal", bx, 1.05, 0.26, 0.5, 1.9, 0.02);
+   655→    p.boxB("plastic", bx + 0.18, 1.0, 0.28, 0.05, 0.18, 0.03);
+   656→    p.sph("plastic", bx - 0.15, 1.5, 0.27, 0.03);
+   657→  }
+   658→  p.hit(0, 0, count * 0.62 + 0.2, 0.7);
+   659→}
+   660→
+   661→export function bed(w: PropCtx, x: number, z: number, ry = 0, messy = true) {
+   662→  const p = new PB(w).group(x, 0, z, ry);
+   663→  p.boxB("metal", 0, 0.28, 0, 1.0, 0.22, 2.05);
+   664→  p.boxB("fabric2", 0, 0.44, 0, 0.95, 0.16, 2.0);
+   665→  p.boxB("sheet", 0, 0.6, 0.55, 0.9, 0.1, 0.85, messy ? { ry: 0.06 } : {});
+   666→  p.boxB("fabric2", 0, 0.58, -0.35, 0.95, 0.14, 1.25, messy ? { rz: 0.03, ry: -0.05 } : {});
+   667→  p.boxB("metal", 0, 0.3, 1.02, 0.96, 0.5, 0.05);
+   668→  p.boxB("metal", 0, 0.3, -1.02, 0.96, 0.62, 0.05);
+   669→  p.hit(0, 0, 1.1, 2.2);
+   670→}
+   671→
+   672→/** سرير مستشفى بعجلات وملاءة ملطخة */
+   673→export function gurney(w: PropCtx, x: number, z: number, ry = 0, bloody = true) {
+   674→  const p = new PB(w).group(x, 0, z, ry);
+   675→  p.boxB("metal", 0, 0.72, 0, 0.85, 0.07, 2.0);
+   676→  p.boxB("white", 0, 0.78, 0, 0.8, 0.1, 1.95);
+   677→  if (bloody) p.boxB("medRed", 0.05, 0.89, 0.1, 0.45, 0.015, 0.7, { ry: 0.4 });
+   678→  p.boxB("white", 0, 0.8, -1.02, 0.8, 0.42, 0.07, { rx: 0.25 });
+   679→  for (const [wx, wz] of [[-0.34, 0.7], [0.34, 0.7], [-0.34, -0.7], [0.34, -0.7]] as const) {
+   680→    p.cyl("metal", wx, 0.36, wz, 0.025, 0.025, 0.7);
+   681→    p.cyl("rubber", wx, 0.09, wz, 0.09, 0.09, 0.05, { rx: Math.PI / 2, seg: 8 });
+   682→  }
+   683→  p.hit(0, 0, 1, 2.2);
+   684→}
+   685→
+   686→export function ivStand(w: PropCtx, x: number, z: number) {
+   687→  const p = new PB(w).group(x, 0, z, 0);
+   688→  p.cyl("chrome", 0, 0.9, 0, 0.018, 0.018, 1.8);
+   689→  p.cyl("chrome", 0, 0.04, 0, 0.28, 0.28, 0.03, { seg: 8 });
+   690→  p.boxB("sheet", 0, 1.62, 0, 0.16, 0.24, 0.08);
+   691→  p.boxB("screenGlow", 0.12, 1.55, 0, 0.1, 0.05, 0.03);
+   692→}
+   693→
+   694→export function sofa(w: PropCtx, x: number, z: number, ry = 0, len = 2.1) {
+   695→  const p = new PB(w).group(x, 0, z, ry);
+   696→  p.boxB("fabric", 0, 0.24, 0, len, 0.34, 0.9);
+   697→  p.boxB("fabric", 0, 0.6, -0.38, len, 0.7, 0.22, { rx: -0.1 });
+   698→  p.boxB("fabric", -len / 2 + 0.12, 0.48, 0, 0.24, 0.34, 0.85);
+   699→  p.boxB("fabric", len / 2 - 0.12, 0.48, 0, 0.24, 0.34, 0.85);
+   700→  p.boxB("fabric2", -len / 4, 0.46, -0.05, 0.4, 0.14, 0.35, { rx: -0.5 });
+   701→  p.hit(0, 0, len + 0.2, 1.1);
+   702→}
+   703→
+   704→export function tvSet(w: PropCtx, x: number, z: number, ry = 0) {
+   705→  const p = new PB(w).group(x, 0, z, ry);
+   706→  p.boxB("plastic", 0, 0.25, 0, 1.2, 0.5, 0.4);
+   707→  p.boxB("plastic", 0, 0.78, 0, 1.05, 0.62, 0.09);
+   708→  p.boxB("plastic", 0, 0.4, 0, 0.1, 0.3, 0.35);
+   709→  // شاشة متشققة مظلمة
+   710→  p.boxB("glassDark", 0, 0.78, 0.05, 0.92, 0.5, 0.02);
+   711→  p.hit(0, 0, 1.3, 0.6);
+   712→}
+   713→
+   714→export function coffeeTable(w: PropCtx, x: number, z: number, ry = 0) {
+   715→  const p = new PB(w).group(x, 0, z, ry);
+   716→  p.boxB("wood2", 0, 0.4, 0, 1.1, 0.05, 0.6);
+   717→  p.boxB("wood2", 0, 0.18, 0, 1.0, 0.04, 0.5);
+   718→  p.boxB("metal", -0.48, 0, 0, 0.05, 0.4, 0.5);
+   719→  p.boxB("metal", 0.48, 0, 0, 0.05, 0.4, 0.5);
+   720→  p.hit(0, 0, 1.2, 0.7);
+   721→}
+   722→
+   723→/** كاونتر مطبخ مع حوض وخزائن علوية */
+   724→export function kitchenCounter(w: PropCtx, x: number, z: number, ry = 0, len = 2.4) {
+   725→  const p = new PB(w).group(x, 0, z, ry);
+   726→  p.boxB("wood2", 0, 0.44, 0, len, 0.88, 0.62);
+   727→  p.boxB("white", 0, 0.92, 0, len + 0.06, 0.05, 0.66);
+   728→  p.boxB("chrome", -0.4, 0.94, 0, 0.5, 0.03, 0.4);                 // حوض
+   729→  p.boxB("wood2", 0, 1.9, -0.1, len, 0.7, 0.38);                   // خزائن علوية
+   730→  p.hit(0, 0, len + 0.2, 0.8);
+   731→}
+   732→
+   733→export function fridge(w: PropCtx, x: number, z: number, ry = 0, open = false) {
+   734→  const p = new PB(w).group(x, 0, z, ry);
+   735→  p.boxB("white", 0, 0.9, 0, 0.75, 1.8, 0.72);
+   736→  p.boxB("chrome", 0.35, 1.0, 0.38, 0.04, 0.5, 0.04);
+   737→  if (open) {
+   738→    p.boxB("white", -0.72, 0.9, 0.3, 0.06, 1.74, 0.7, { ry: 1.1 });
+   739→  }
+   740→  p.hit(0, 0, 0.9, 0.85);
+   741→}
+   742→
+   743→export function cratesStack(w: PropCtx, x: number, z: number, ry = 0, seed = Math.random()) {
+   744→  const p = new PB(w).group(x, 0, z, ry);
+   745→  const rnd = seededRandom(Math.floor(seed * 1e9));
+   746→  const n = 3 + Math.floor(rnd() * 3);
+   747→  for (let i = 0; i < n; i++) {
+   748→    const s = 0.55 + rnd() * 0.35;
+   749→    p.boxB(rnd() < 0.7 ? "wood2" : "greenMetal", (rnd() - 0.5) * 0.5, s / 2 + Math.floor(i / 2) * 0.6, (rnd() - 0.5) * 0.5, s, s, s, { ry: rnd() * 0.6 });
+   750→  }
+   751→  p.hit(0, 0, 1.4, 1.4);
+   752→}
+   753→
+   754→export function barrel(w: PropCtx, x: number, z: number, bucket = "greenMetal", tipped = false) {
+   755→  const p = new PB(w).group(x, 0, z, 0);
+   756→  if (tipped) {
+   757→    p.cyl(bucket, 0, 0.45, 0, 0.36, 0.36, 0.95, { rz: Math.PI / 2, seg: 12 });
+   758→    p.hit(0, 0, 1.1, 1.1);
+   759→  } else {
+   760→    p.cyl(bucket, 0, 0.47, 0, 0.36, 0.36, 0.94, { seg: 12 });
+   761→    p.cyl(bucket, 0, 0.24, 0, 0.38, 0.38, 0.05, { seg: 12 });
+   762→    p.cyl(bucket, 0, 0.7, 0, 0.38, 0.38, 0.05, { seg: 12 });
+   763→    p.hit(0, 0, 0.85, 0.85);
+   764→  }
+   765→}
+   766→
+   767→/** خادم شبكة بمؤشرات مضيئة */
+   768→export function serverRack(w: PropCtx, x: number, z: number, ry = 0) {
+   769→  const p = new PB(w).group(x, 0, z, ry);
+   770→  p.boxB("labMetal", 0, 1.1, 0, 0.85, 2.2, 1.1);
+   771→  for (let i = 0; i < 6; i++) {
+   772→    p.boxB("plastic", 0, 0.25 + i * 0.33, 0.56, 0.75, 0.22, 0.02);
+   773→    p.boxB(i % 3 === 0 ? "screenGlow" : i % 3 === 1 ? "screenGlowAmber" : "plastic", -0.22, 0.3 + i * 0.33, 0.58, 0.07, 0.04, 0.01);
+   774→    p.boxB(i % 2 === 0 ? "screenGlow" : "plastic", 0.02, 0.3 + i * 0.33, 0.58, 0.07, 0.04, 0.01);
+   775→  }
+   776→  p.hit(0, 0, 1.0, 1.3);
+   777→}
+   778→
+   779→/** آلة تصنيع ضخمة (مكبس) */
+   780→export function pressMachine(w: PropCtx, x: number, z: number, ry = 0) {
+   781→  const p = new PB(w).group(x, 0, z, ry);
+   782→  p.boxB("labMetal", 0, 1.5, 0, 2.6, 3, 1.8);
+   783→  p.boxB("labMetal", 0, 3.15, 0, 3.0, 0.5, 2.0);
+   784→  p.cyl("metal", 0, 2.3, 0, 0.3, 0.3, 1.5);
+   785→  p.boxB("metal", 0, 1.45, 0, 1.2, 0.4, 1.0);
+   786→  p.boxB("hazard", 0, 0.06, 0.95, 2.4, 0.12, 0.5);
+   787→  p.boxB("redEmissive", 0.9, 3.45, 0, 0.12, 0.12, 0.12);
+   788→  p.hit(0, 0, 3.2, 2.2);
+   789→}
+   790→
+   791→export function conveyor(w: PropCtx, x: number, z: number, ry = 0, len = 5) {
+   792→  const p = new PB(w).group(x, 0, z, ry);
+   793→  p.boxB("labMetal", 0, 0.72, 0, 0.9, 0.1, len);
+   794→  p.boxB("metal", -0.35, 0.36, 0, 0.08, 0.72, len);
+   795→  p.boxB("metal", 0.35, 0.36, 0, 0.08, 0.72, len);
+   796→  for (let i = 0; i < Math.floor(len / 0.8); i++) {
+   797→    p.cyl("rubber", 0, 0.74, -len / 2 + 0.4 + i * 0.8, 0.3, 0.3, 0.04, { rx: Math.PI / 2, seg: 8 });
+   798→  }
+   799→  p.hit(0, 0, 1.1, len);
+   800→}
+   801→
+   802→export function controlPanel(w: PropCtx, x: number, z: number, ry = 0) {
+   803→  const p = new PB(w).group(x, 0, z, ry);
+   804→  p.boxB("labMetal", 0, 0.55, 0, 1.3, 1.1, 0.6);
+   805→  p.boxB("labMetal", 0, 1.35, -0.12, 1.3, 0.7, 0.35, { rx: -0.35 });
+   806→  p.boxB("screenGlow", 0, 1.4, 0.02, 0.8, 0.4, 0.02, { rx: -0.35 });
+   807→  p.sph("redEmissive", 0.45, 0.85, 0.31, 0.035);
+   808→  p.sph("screenGlowAmber", 0.32, 0.85, 0.31, 0.035);
+   809→  p.hit(0, 0, 1.4, 0.8);
+   810→}
+   811→
+   812→export function forklift(w: PropCtx, x: number, z: number, ry = 0) {
+   813→  const p = new PB(w).group(x, 0, z, ry);
+   814→  p.boxB("carC", 0, 0.5, 0.3, 1.15, 0.7, 1.7);
+   815→  p.boxB("carC", 0, 1.2, -0.5, 1.05, 1.15, 0.9);
+   816→  p.boxB("glassDark", 0, 1.45, -0.45, 0.95, 0.6, 0.06);
+   817→  p.boxB("metal", 0, 0.55, 1.15, 0.9, 1.2, 0.09);                  // سارية
+   818→  p.boxB("metal", -0.4, 0.28, 1.55, 0.12, 0.08, 0.9);              // شوكة
+   819→  p.boxB("metal", 0.4, 0.28, 1.55, 0.12, 0.08, 0.9);
+   820→  for (const [wx, wz] of [[-0.55, -0.75], [0.55, -0.75], [-0.55, 0.6], [0.55, 0.6]] as const) {
+   821→    p.cyl("rubber", wx, 0.26, wz, 0.26, 0.26, 0.2, { rx: Math.PI / 2, seg: 8 });
+   822→  }
+   823→  p.hit(0, 0, 1.4, 2.6);
+   824→}
+   825→
+   826→export function vending(w: PropCtx, x: number, z: number, ry = 0) {
+   827→  const p = new PB(w).group(x, 0, z, ry);
+   828→  p.boxB("carA", 0, 1.0, 0, 1.0, 2.0, 0.75);
+   829→  p.boxB("glassDark", 0, 1.35, 0.39, 0.7, 1.0, 0.03);
+   830→  p.boxB("plastic", 0.4, 0.85, 0.39, 0.16, 0.5, 0.06);
+   831→  p.hit(0, 0, 1.1, 0.9);
+   832→}
+   833→
+   834→/** رف منتجات ملونة (بقالة) */
+   835→export function shopShelf(w: PropCtx, x: number, z: number, ry = 0, len = 3.4, seed = Math.random()) {
+   836→  const p = new PB(w).group(x, 0, z, ry);
+   837→  const rnd = seededRandom(Math.floor(seed * 1e9));
+   838→  const buckets = ["medWhite", "carA", "greenMetal", "carTaxi", "medRed"];
+   839→  p.boxB("metal", 0, 0.95, 0, len, 1.9, 0.5);
+   840→  for (const lvl of [0.3, 0.85, 1.4]) {
+   841→    p.boxB("metal", 0, lvl, 0, len, 0.04, 0.5);
+   842→    let cx = -len / 2 + 0.25;
+   843→    while (cx < len / 2 - 0.25) {
+   844→      if (rnd() < 0.8) {
+   845→        const s = 0.14 + rnd() * 0.12;
+   846→        p.boxB(buckets[Math.floor(rnd() * buckets.length)], cx, lvl + 0.02 + s / 2, 0, s, s * 1.4, s, { ry: 0 });
+   847→      }
+   848→      cx += 0.2 + rnd() * 0.1;
+   849→    }
+   850→  }
+   851→  p.hit(0, 0, len + 0.6, 0.6);
+   852→}
+   853→
+   854→export function counter(w: PropCtx, x: number, z: number, ry = 0, len = 2.6) {
+   855→  const p = new PB(w).group(x, 0, z, ry);
+   856→  p.boxB("wood2", 0, 0.55, 0, len, 1.1, 0.7);
+   857→  p.boxB("wood2", 0, 1.13, 0, len + 0.1, 0.06, 0.8);
+   858→  p.boxB("plastic", len / 2 - 0.4, 1.2, 0, 0.3, 0.12, 0.25);       // سجل نقدية
+   859→  p.hit(0, 0, len + 0.2, 0.9);
+   860→}
+   861→
+   862→/** حامل أسلحة على الجدار (متجر) */
+   863→export function gunRack(w: PropCtx, x: number, z: number, ry = 0) {
+   864→  const p = new PB(w).group(x, 0, z, ry);
+   865→  p.boxB("wood2", 0, 1.5, 0, 2.2, 1.1, 0.08);
+   866→  for (let i = 0; i < 3; i++) {
+   867→    p.boxB("plastic", -0.6 + i * 0.6, 1.55, 0.05, 0.06, 0.85, 0.04);
+   868→    p.boxB("wood2", -0.6 + i * 0.6, 1.2, 0.07, 0.07, 0.3, 0.06);
+   869→  }
+   870→  p.boxB("metal", 0, 1.98, 0.05, 2.2, 0.05, 0.1);
+   871→}
+   872→
+   873→export function turnstile(w: PropCtx, x: number, z: number, ry = 0) {
+   874→  const p = new PB(w).group(x, 0, z, ry);
+   875→  p.boxB("metal", 0, 0.5, 0, 0.12, 1.0, 1.3);
+   876→  p.boxB("metal", 0, 0.55, 0, 0.5, 0.25, 0.3);
+   877→  p.cyl("chrome", 0, 0.85, 0, 0.02, 0.02, 0.7, { rz: Math.PI / 2 });
+   878→  for (let i = 0; i < 3; i++) {
+   879→    p.boxB("chrome", 0, 0.88, 0, 0.05, 0.02, 0.34, { ry: (i * Math.PI * 2) / 3 });
+   880→  }
+   881→}
+   882→
+   883→/** نباتات ميتة في أصص */
+   884→export function deadPlant(w: PropCtx, x: number, z: number) {
+   885→  const p = new PB(w).group(x, 0, z, 0);
+   886→  p.cyl("carB", 0, 0.14, 0, 0.14, 0.11, 0.28, { seg: 8 });
+   887→  for (let i = 0; i < 5; i++) {
+   888→    p.cyl("deadLeaf", (Math.random() - 0.5) * 0.08, 0.4, (Math.random() - 0.5) * 0.08, 0.008, 0.02, 0.3 + Math.random() * 0.2, { rz: (Math.random() - 0.5) * 0.9, seg: 4 });
+   889→  }
+   890→}
+   891→
+   892→/** أنابيب على جدار مع صمام */
+   893→export function wallPipes(w: PropCtx, x: number, y: number, z: number, ry = 0, len = 6) {
+   894→  const p = new PB(w).group(x, y, z, ry);
+   895→  p.cyl("metal", 0, 0, 0.3, 0.07, 0.07, len, { rx: Math.PI / 2 });
+   896→  p.cyl("metal", 0.22, -0.1, 0.3, 0.05, 0.05, len, { rx: Math.PI / 2 });
+   897→  for (let i = 0; i < Math.floor(len / 1.6); i++) {
+   898→    p.boxB("metal", 0, 0, 0.3, 0.1, 0.24, 0.1);
+   899→  }
+   900→  p.cyl("medRed", 0, -0.35, 0.3, 0.14, 0.14, 0.1, { rx: Math.PI / 2 });
+   901→  p.cyl("metal", 0, -0.35, 0.3, 0.03, 0.03, 0.3);
+   902→}
+   903→
+   904→/** جثة مغطاة بملاءة — أشمل من الجثث العارية */
+   905→export function coveredBody(w: PropCtx, x: number, z: number, ry = 0) {
+   906→  const p = new PB(w).group(x, 0, z, ry);
+   907→  p.sph("sheet", 0, 0.17, 0, 0.34, { sx: 1.7, sy: 1, sz: 1 });
+   908→  p.sph("sheet", 0.55, 0.15, 0.05, 0.24, { sy: 0.85 });
+   909→  p.boxB("sheet", -0.6, 0.06, 0.12, 0.5, 0.1, 0.2, { ry: 0.3 });
+   910→  p.boxB("sheet", -0.35, 0.05, -0.2, 0.45, 0.1, 0.2, { ry: -0.4 });
+   911→}
+   912→
+   913→/** كيس جثث */
+   914→export function bodyBag(w: PropCtx, x: number, z: number, ry = 0) {
+   915→  const p = new PB(w).group(x, 0, z, ry);
+   916→  p.sph("plastic", 0, 0.16, 0, 0.32, { sx: 1.8, sy: 0.95, sz: 1 });
+   917→  p.boxB("chrome", 0, 0.1, 0.3, 0.3, 0.02, 0.06);
+   918→}
+   919→
+   920→// ═══════════════ الناجون (نماذج بشرية حيّة) ═══════════════
+   921→
+   922→export interface SurvivorPose {
+   923→  stance: "sit" | "stand" | "lean" | "crouch";
+   924→  shirt: number;
+   925→  pants: number;
+   926→  skin: number;
+   927→  hair: number;
+   928→}
+   929→
+   930→const SURVIVOR_POSES: Record<string, SurvivorPose> = {
+   931→  sara: { stance: "sit", shirt: 0x6a7a72, pants: 0x3a3f3a, skin: 0xb08a6a, hair: 0x201610 },
+   932→  adel: { stance: "stand", shirt: 0x4a4436, pants: 0x2c2c30, skin: 0xa87e5e, hair: 0x3a3028 },
+   933→  soldier: { stance: "crouch", shirt: 0x3c4034, pants: 0x35392e, skin: 0xa8805e, hair: 0x181410 },
+   934→};
+   935→
+   936→/** نموذج ناجٍ — جسم مفصلي بوضعية تعبّ عن حالته */
+   937→export function survivorModel(id: string): THREE.Group {
+   938→  const pose = SURVIVOR_POSES[id] ?? SURVIVOR_POSES.adel;
+   939→  const g = new THREE.Group();
+   940→  const skin = new THREE.MeshStandardMaterial({ color: pose.skin, roughness: 0.9 });
+   941→  const shirt = new THREE.MeshStandardMaterial({ color: pose.shirt, roughness: 0.95 });
+   942→  const pants = new THREE.MeshStandardMaterial({ color: pose.pants, roughness: 0.95 });
+   943→  const hair = new THREE.MeshStandardMaterial({ color: pose.hair, roughness: 1 });
+   944→
+   945→  const mkMesh = (geo: THREE.BufferGeometry, mat: THREE.Material, x: number, y: number, z: number) => {
+   946→    const m = new THREE.Mesh(geo, mat);
+   947→    m.position.set(x, y, z);
+   948→    m.castShadow = true;
+   949→    return m;
+   950→  };
+   951→
+   952→  // جذع
+   953→  const torso = new THREE.Group();
+   954→  torso.add(mkMesh(new THREE.BoxGeometry(0.4, 0.55, 0.24), shirt, 0, 0, 0));
+   955→  torso.add(mkMesh(new THREE.BoxGeometry(0.42, 0.18, 0.26), shirt, 0, -0.3, 0));
+   956→  // رأس
+   957→  const headG = new THREE.Group();
+   958→  headG.position.y = 0.42;
+   959→  headG.add(mkMesh(new THREE.BoxGeometry(0.22, 0.26, 0.24), skin, 0, 0, 0));
+   960→  headG.add(mkMesh(new THREE.BoxGeometry(0.24, 0.1, 0.26), hair, 0, 0.12, -0.01));
+   961→  torso.add(headG);
+   962→  // ذراعان
+   963→  const mkArm = (side: number) => {
+   964→    const a = new THREE.Group();
+   965→    a.position.set(side * 0.26, 0.18, 0);
+   966→    a.add(mkMesh(new THREE.BoxGeometry(0.1, 0.3, 0.11), shirt, 0, -0.15, 0));
+   967→    const fore = new THREE.Group();
+   968→    fore.position.y = -0.3;
+   969→    fore.add(mkMesh(new THREE.BoxGeometry(0.09, 0.3, 0.1), skin, 0, -0.15, 0));
+   970→    a.add(fore);
+   971→    a.userData.fore = fore;
+   972→    return a;
+   973→  };
+   974→  const armL = mkArm(-1);
+   975→  const armR = mkArm(1);
+   976→  torso.add(armL, armR);
+   977→  // ساقان
+   978→  const mkLeg = (side: number) => {
+   979→    const l = new THREE.Group();
+   980→    l.add(mkMesh(new THREE.BoxGeometry(0.14, 0.42, 0.15), pants, 0, -0.21, 0));
+   981→    const shin = new THREE.Group();
+   982→    shin.position.y = -0.42;
+   983→    shin.add(mkMesh(new THREE.BoxGeometry(0.13, 0.42, 0.14), pants, 0, -0.21, 0));
+   984→    l.add(shin);
+   985→    l.userData.shin = shin;
+   986→    return l;
+   987→  };
+   988→  const legL = mkLeg(-1);
+   989→  const legR = mkLeg(1);
+   990→
+   991→  if (pose.stance === "sit") {
+   992→    torso.position.y = 0.78;
+   993→    g.add(torso);
+   994→    legL.position.set(-0.11, 0.5, 0);
+   995→    legL.rotation.x = -1.4;
+   996→    (legL.userData.shin as THREE.Group).rotation.x = 1.5;
+   997→    legR.position.set(0.11, 0.5, 0);
+   998→    legR.rotation.x = -1.4;
+   999→    (legR.userData.shin as THREE.Group).rotation.x = 1.5;
+  1000→    g.add(legL, legR);
+  1001→    armL.rotation.x = -1.9;
+  1002→    (armL.userData.fore as THREE.Group).rotation.x = -1.2;
+  1003→    armR.rotation.x = -1.9;
+  1004→    (armR.userData.fore as THREE.Group).rotation.x = -1.2;
+  1005→    headG.rotation.x = 0.3; // رأس منحنٍ — تعب
+  1006→  } else if (pose.stance === "crouch") {
+  1007→    torso.position.y = 0.62;
+  1008→    torso.rotation.x = 0.35;
+  1009→    g.add(torso);
+  1010→    legL.position.set(-0.11, 0.42, 0.05);
+  1011→    legL.rotation.x = -2.0;
+  1012→    (legL.userData.shin as THREE.Group).rotation.x = 2.1;
+  1013→    legR.position.set(0.13, 0.42, -0.1);
+  1014→    legR.rotation.x = -1.1;
+  1015→    (legR.userData.shin as THREE.Group).rotation.x = 1.9;
+  1016→    g.add(legL, legR);
+  1017→    armL.rotation.x = -0.7;
+  1018→    armR.rotation.x = -0.4;
+  1019→    // إصابة: يد على ساقه
+  1020→    headG.rotation.x = 0.15;
+  1021→  } else {
+  1022→    // stand / lean
+  1023→    torso.position.y = 1.06;
+  1024→    torso.rotation.x = pose.stance === "lean" ? 0.12 : 0.05;
+  1025→    g.add(torso);
+  1026→    legL.position.set(-0.11, 0.94, 0);
+  1027→    legR.position.set(0.11, 0.94, 0);
+  1028→    g.add(legL, legR);
+  1029→    armL.rotation.x = 0.15;
+  1030→    armR.rotation.x = 0.1;
+  1031→  }
+  1032→  g.traverse((o) => {
+  1033→    if (o instanceof THREE.Mesh) o.userData.noHit = true;
+  1034→  });
+  1035→  return g;
+  1036→}
+  1037→
+  1038→// ═══════════════ نماذج الالتقاط ═══════════════
+  1039→
+  1040→let glowRingMat: THREE.MeshBasicMaterial | null = null;
+  1041→function getGlowRing(): THREE.Mesh {
+  1042→  if (!glowRingMat) {
+  1043→    const c = document.createElement("canvas");
+  1044→    c.width = c.height = 64;
+  1045→    const ctx = c.getContext("2d")!;
+  1046→    const g = ctx.createRadialGradient(32, 32, 4, 32, 32, 30);
+  1047→    g.addColorStop(0, "rgba(232,168,80,0.5)");
+  1048→    g.addColorStop(1, "rgba(232,168,80,0)");
+  1049→    ctx.fillStyle = g;
+  1050→    ctx.fillRect(0, 0, 64, 64);
+  1051→    glowRingMat = new THREE.MeshBasicMaterial({
+  1052→      map: new THREE.CanvasTexture(c),
+  1053→      transparent: true,
+  1054→      depthWrite: false,
+  1055→      blending: THREE.AdditiveBlending,
+  1056→    });
+  1057→  }
+  1058→  const m = new THREE.Mesh(new THREE.PlaneGeometry(0.85, 0.85), glowRingMat);
+  1059→  m.rotation.x = -Math.PI / 2;
+  1060→  m.position.y = 0.02;
+  1061→  m.userData.noHit = true;
+  1062→  return m;
+  1063→}
+  1064→
+  1065→const stdMat = (o: THREE.MeshStandardMaterialParameters) => new THREE.MeshStandardMaterial(o);
+  1066→
+  1067→/**
+  1068→ * نموذج ثلاثي الأبعاد حقيقي لكل عنصر التقاط — بديل المكعبات.
+  1069→ * يُرجع Group بحجم واقعي يوضع عند نقطة الالتقاط.
+  1070→ */
+  1071→export function pickupModel(data: Record<string, unknown> | undefined): THREE.Group {
+  1072→  const g = new THREE.Group();
+  1073→  const add = (mesh: THREE.Mesh) => {
+  1074→    mesh.castShadow = false;
+  1075→    g.add(mesh);
+  1076→    return mesh;
+  1077→  };
+  1078→  const item = data?.item as string | undefined;
+  1079→  const weapon = data?.weapon as string | undefined;
+  1080→  const docId = data?.docId as string | undefined;
+  1081→  const qty = (data?.qty as number) ?? 1;
+  1082→
+  1083→  if (weapon === "pistol") {
+  1084→    const dark = stdMat({ color: 0x2a2d31, roughness: 0.42, metalness: 0.75 });
+  1085→    const grip = stdMat({ color: 0x191410, roughness: 0.85 });
+  1086→    const slide = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.055, 0.24), dark);
+  1087→    slide.position.set(0, 0.045, -0.02);
+  1088→    const barrelTip = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.014, 0.05, 8), dark);
+  1089→    barrelTip.rotation.x = Math.PI / 2;
+  1090→    barrelTip.position.set(0, 0.045, -0.16);
+  1091→    const frame = new THREE.Mesh(new THREE.BoxGeometry(0.045, 0.04, 0.2), dark);
+  1092→    frame.position.set(0, 0.005, 0);
+  1093→    const handleM = new THREE.Mesh(new THREE.BoxGeometry(0.042, 0.14, 0.055), grip);
+  1094→    handleM.position.set(0, -0.075, 0.07);
+  1095→    handleM.rotation.x = 0.28;
+  1096→    const guard = new THREE.Mesh(new THREE.TorusGeometry(0.028, 0.007, 6, 10), dark);
+  1097→    guard.rotation.x = Math.PI / 2;
+  1098→    guard.position.set(0, -0.015, 0.02);
+  1099→    const sight = new THREE.Mesh(new THREE.BoxGeometry(0.012, 0.012, 0.012), dark);
+  1100→    sight.position.set(0, 0.08, -0.12);
+  1101→    add(slide); add(barrelTip); add(frame); add(handleM); add(guard); add(sight);
+  1102→    g.rotation.z = Math.PI / 2;   // مستلقٍ على جانبه
+  1103→    g.position.y = 0.06;
+  1104→  } else if (weapon === "shotgun") {
+  1105→    const dark = stdMat({ color: 0x27221c, roughness: 0.5, metalness: 0.6 });
+  1106→    const wood = stdMat({ color: 0x4c3420, roughness: 0.75 });
+  1107→    const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.024, 0.024, 0.78, 10), dark);
+  1108→    barrel.rotation.x = Math.PI / 2;
+  1109→    barrel.position.set(0, 0.05, -0.2);
+  1110→    const tube = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, 0.6, 8), dark);
+  1111→    tube.rotation.x = Math.PI / 2;
+  1112→    tube.position.set(0, 0.015, -0.14);
+  1113→    const pump = new THREE.Mesh(new THREE.CylinderGeometry(0.036, 0.036, 0.2, 10), wood);
+  1114→    pump.rotation.x = Math.PI / 2;
+  1115→    pump.position.set(0, 0.015, -0.16);
+  1116→    const receiver = new THREE.Mesh(new THREE.BoxGeometry(0.055, 0.08, 0.2), dark);
+  1117→    receiver.position.set(0, 0.03, 0.14);
+  1118→    const stock = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.1, 0.3), wood);
+  1119→    stock.position.set(0, 0.0, 0.38);
+  1120→    stock.rotation.x = -0.08;
+  1121→    add(barrel); add(tube); add(pump); add(receiver); add(stock);
+  1122→    g.rotation.z = Math.PI / 2;
+  1123→    g.rotation.y = 0.4;
+  1124→    g.position.y = 0.07;
+  1125→  } else if (item === "medkit") {
+  1126→    const box = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.2, 0.3), stdMat({ color: 0xcfc9bb, roughness: 0.5 }));
+  1127→    box.position.y = 0.1;
+  1128→    add(box);
+  1129→    const crossV = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.005, 0.16), stdMat({ color: 0x8a1a12, roughness: 0.5, emissive: 0x2a0402, emissiveIntensity: 0.4 }));
+  1130→    crossV.position.set(0, 0.203, 0);
+  1131→    const crossH = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.005, 0.06), crossV.material);
+  1132→    crossH.position.set(0, 0.203, 0);
+  1133→    add(crossV); add(crossH);
+  1134→    const handle = new THREE.Mesh(new THREE.TorusGeometry(0.06, 0.014, 6, 12, Math.PI), stdMat({ color: 0x1c1a16, roughness: 0.7 }));
+  1135→    handle.position.set(0, 0.2, 0);
+  1136→    handle.rotation.y = Math.PI / 2;
+  1137→    add(handle);
+  1138→    for (const sx of [-0.14, 0.14]) {
+  1139→      const latch = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.03, 0.02), stdMat({ color: 0x5a5e62, metalness: 0.8, roughness: 0.35 }));
+  1140→      latch.position.set(sx, 0.18, 0.155);
+  1141→      add(latch);
+  1142→    }
+  1143→    g.position.y = 0;
+  1144→  } else if (item === "bandage") {
+  1145→    for (let i = 0; i < Math.min(qty, 3); i++) {
+  1146→      const roll = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.09, 12), stdMat({ color: 0xd8d2c4, roughness: 0.9 }));
+  1147→      roll.position.set((i - 1) * 0.14, 0.06, (i % 2) * 0.05);
+  1148→      roll.rotation.z = Math.PI / 2;
+  1149→      add(roll);
+  1150→      const inner = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.095, 8), stdMat({ color: 0x8a8578, roughness: 0.9 }));
+  1151→      inner.position.copy(roll.position);
+  1152→      inner.rotation.z = Math.PI / 2;
+  1153→      add(inner);
+  1154→    }
+  1155→    g.position.y = 0;
+  1156→  } else if (item === "food") {
+  1157→    for (let i = 0; i < Math.min(qty, 3); i++) {
+  1158→      const can = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.055, 0.1, 12), stdMat({ color: 0x6a6a5e, metalness: 0.8, roughness: 0.4 }));
+  1159→      can.position.set((i - 1) * 0.13, 0.05, (i % 2) * 0.04);
+  1160→      add(can);
+  1161→      const label = new THREE.Mesh(new THREE.CylinderGeometry(0.057, 0.057, 0.055, 12), stdMat({ color: i % 2 ? 0x7a5a28 : 0x5a6a4a, roughness: 0.7 }));
+  1162→      label.position.copy(can.position);
+  1163→      add(label);
+  1164→    }
+  1165→    g.position.y = 0;
+  1166→  } else if (item === "battery") {
+  1167→    for (let i = 0; i < Math.min(qty, 2); i++) {
+  1168→      const body = new THREE.Mesh(new THREE.CylinderGeometry(0.042, 0.042, 0.13, 10), stdMat({ color: 0x24261e, roughness: 0.5, metalness: 0.3 }));
+  1169→      body.position.set((i - 0.5) * 0.12, 0.065, 0);
+  1170→      add(body);
+  1171→      const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.02, 8), stdMat({ color: 0xb8a850, metalness: 0.9, roughness: 0.3 }));
+  1172→      cap.position.set((i - 0.5) * 0.12, 0.135, 0);
+  1173→      add(cap);
+  1174→      const stripe = new THREE.Mesh(new THREE.CylinderGeometry(0.044, 0.044, 0.03, 10), stdMat({ color: 0x8a7a2a, roughness: 0.6 }));
+  1175→      stripe.position.set((i - 0.5) * 0.12, 0.06, 0);
+  1176→      add(stripe);
+  1177→    }
+  1178→    g.position.y = 0;
+  1179→  } else if (item === "pistol_ammo" || item === "shotgun_ammo") {
+  1180→    const shotgun = item === "shotgun_ammo";
+  1181→    const box = new THREE.Mesh(
+  1182→      new THREE.BoxGeometry(0.3, 0.14, 0.2),
+  1183→      stdMat({ color: shotgun ? 0x5a2018 : 0x39422f, roughness: 0.55, metalness: 0.3 }),
+  1184→    );
+  1185→    box.position.y = 0.07;
+  1186→    add(box);
+  1187→    // شريط لاصق بلون
+  1188→    const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.31, 0.04, 0.02), stdMat({ color: shotgun ? 0xb8a850 : 0xb8b4a6, roughness: 0.6 }));
+  1189→    stripe.position.set(0, 0.07, 0.105);
+  1190→    add(stripe);
+  1191→    // رصاص مفتوح من الأعلى
+  1192→    const nR = Math.min(qty, 4);
+  1193→    for (let i = 0; i < nR; i++) {
+  1194→      const round = shotgun
+  1195→        ? new THREE.Mesh(new THREE.CylinderGeometry(0.017, 0.017, 0.07, 8), stdMat({ color: 0x8a2a1a, roughness: 0.5, metalness: 0.4 }))
+  1196→        : new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.008, 0.045, 6), stdMat({ color: 0xa8843c, metalness: 0.9, roughness: 0.3 }));
+  1197→      round.position.set(-0.09 + (i % 4) * 0.06, 0.16, (i < 2 ? -0.03 : 0.03));
+  1198→      add(round);
+  1199→    }
+  1200→    g.position.y = 0;
+  1201→  } else if (item === "fuel") {
+  1202→    const can = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.38, 0.2), stdMat({ color: 0x6a1a14, roughness: 0.55, metalness: 0.35 }));
+  1203→    can.position.y = 0.19;
+  1204→    add(can);
+  1205→    const handle = new THREE.Mesh(new THREE.TorusGeometry(0.07, 0.016, 6, 12, Math.PI), stdMat({ color: 0x241512, roughness: 0.6 }));
+  1206→    handle.position.set(0, 0.38, 0);
+  1207→    handle.rotation.y = Math.PI / 2;
+  1208→    add(handle);
+  1209→    const spout = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.04, 0.1, 8), stdMat({ color: 0x241512, roughness: 0.6 }));
+  1210→    spout.position.set(0.1, 0.42, 0);
+  1211→    spout.rotation.z = -0.5;
+  1212→    add(spout);
+  1213→    const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 0.03, 8), stdMat({ color: 0xb8a850, metalness: 0.7, roughness: 0.4 }));
+  1214→    cap.position.set(-0.08, 0.395, 0);
+  1215→    add(cap);
+  1216→    g.position.y = 0;
+  1217→  } else if (item === "key_tower" || item === "key_locker") {
+  1218→    const brass = stdMat({ color: item === "key_locker" ? 0x9aa0a6 : 0xa8843c, metalness: 0.9, roughness: 0.3 });
+  1219→    const bow = new THREE.Mesh(new THREE.TorusGeometry(0.05, 0.014, 8, 14), brass);
+  1220→    bow.position.y = 0.1;
+  1221→    add(bow);
+  1222→    const blade = new THREE.Mesh(new THREE.BoxGeometry(0.016, 0.12, 0.008), brass);
+  1223→    blade.position.y = 0.02;
+  1224→    add(blade);
+  1225→    for (let i = 0; i < 2; i++) {
+  1226→      const tooth = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.014, 0.008), brass);
+  1227→      tooth.position.set(0.02, 0.045 - i * 0.03, 0);
+  1228→      add(tooth);
+  1229→    }
+  1230→    g.rotation.z = 0.7;
+  1231→    g.position.y = 0.02;
+  1232→  } else if (item === "keycard_blue" || item === "keycard_red") {
+  1233→    const blue = item === "keycard_blue";
+  1234→    const card = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.008, 0.115), stdMat({ color: 0xd0ccc0, roughness: 0.4 }));
+  1235→    card.position.y = 0.01;
+  1236→    add(card);
+  1237→    const band = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.01, 0.038), stdMat({
+  1238→      color: blue ? 0x22607a : 0x8a2418, roughness: 0.4,
+  1239→      emissive: blue ? 0x1a4a60 : 0x6a1a10, emissiveIntensity: 0.9,
+  1240→    }));
+  1241→    band.position.set(0, 0.011, -0.03);
+  1242→    add(band);
+  1243→    const chip = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.012, 0.03), stdMat({ color: 0xb8a850, metalness: 0.9, roughness: 0.3 }));
+  1244→    chip.position.set(-0.05, 0.012, 0.02);
+  1245→    add(chip);
+  1246→    g.rotation.y = 0.5;
+  1247→    g.position.y = 0;
+  1248→  } else {
+  1249→    // وثيقة — رزم أوراق مروحة مع كليم
+  1250→    const paperMat = stdMat({ color: 0xd8cba8, roughness: 0.9 });
+  1251→    for (let i = 0; i < 3; i++) {
+  1252→      const sheet = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.004, 0.36), paperMat);
+  1253→      sheet.position.set(0, 0.01 + i * 0.006, 0);
+  1254→      sheet.rotation.y = (i - 1) * 0.18;
+  1255→      add(sheet);
+  1256→    }
+  1257→    const clip = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.02, 0.03), stdMat({ color: 0x3a3d40, metalness: 0.8, roughness: 0.4 }));
+  1258→    clip.position.set(0.06, 0.035, -0.1);
+  1259→    add(clip);
+  1260→    g.position.y = 0.02;
+  1261→  }
+  1262→
+  1263→  // هالة ضوء أرضية خفيفة لإبراز الالتقاط في العتمة
+  1264→  g.add(getGlowRing());
+  1265→  return g;
+  1266→}
+  1267→
+  1268→// ═══════════════ أبواب ═══════════════
+  1269→
+  1270→export interface DoorDef {
+  1271→  group: THREE.Group;
+  1272→  width: number;
+  1273→  open: boolean;
+  1274→  locked: boolean;
+  1275→  kind: "wood" | "metal" | "double";
+  1276→}
+  1277→
+  1278→/**
+  1279→ * باب حقيقي بمفصلة تُفتح بالتفاعل — يدور حول حافته.
+  1280→ * الأصل pivot عند الحافة اليسرى (نظرة من الخارج).
+  1281→ */
+  1282→export function makeDoor(width = 1.5, style: "wood" | "metal" | "double" = "wood"): DoorDef {
+  1283→  const group = new THREE.Group();
+  1284→  const h = 2.35;
+  1285→  const leafW = style === "double" ? width / 2 : width;
+  1286→  const mat =
+  1287→    style === "metal"
+  1288→      ? stdMat({ color: 0x3a4045, roughness: 0.45, metalness: 0.75 })
+  1289→      : stdMat({ color: 0x4c3826, roughness: 0.7 });
+  1290→
+  1291→  const mkLeaf = (w: number) => {
+  1292→    const leaf = new THREE.Group();
+  1293→    const panel = new THREE.Mesh(new THREE.BoxGeometry(w, h, 0.07), mat);
+  1294→    panel.position.set(w / 2, h / 2, 0);
+  1295→    panel.castShadow = true;
+  1296→    leaf.add(panel);
+  1297→    // تكسير داخلي
+  1298→    for (let i = 0; i < 2; i++) {
+  1299→      const inset = new THREE.Mesh(new THREE.BoxGeometry(w - 0.24, h * 0.36, 0.02), style === "metal" ? mat : stdMat({ color: 0x3e2c1c, roughness: 0.75 }));
+  1300→      inset.position.set(w / 2, h * (0.28 + i * 0.42), 0.045);
+  1301→      leaf.add(inset);
+  1302→    }
+  1303→    // مقبض
+  1304→    const knob = new THREE.Mesh(new THREE.SphereGeometry(0.035, 8, 8), stdMat({ color: 0x8a8f94, metalness: 0.9, roughness: 0.3 }));
+  1305→    knob.position.set(w - 0.14, 1.05, 0.06);
+  1306→    leaf.add(knob);
+  1307→    // لوحة (للأبواب المزدوجة: شعار)
+  1308→    leaf.traverse((o) => {
+  1309→      if (o instanceof THREE.Mesh) o.userData.noHit = false;
+  1310→    });
+  1311→    return leaf;
+  1312→  };
+  1313→
+  1314→  if (style === "double") {
+  1315→    const l = mkLeaf(leafW);
+  1316→    const r = mkLeaf(leafW);
+  1317→    r.scale.x = -1;
+  1318→    r.position.x = width;
+  1319→    group.add(l, r);
+  1320→  } else {
+  1321→    group.add(mkLeaf(leafW));
+  1322→  }
+  1323→  return { group, width, open: false, locked: false, kind: style };
+  1324→}
+  1325→
+  1326→// ═══════════════ دمج دلاء الدعائم ═══════════════
+  1327→
+  1328→/**
+  1329→ * يدمج كل دلاء PropCtx التي لم تُدمج بعد — تُستدعى مرة واحدة من world.ts
+  1330→ * مع موادّها، وتضيف mesh لكل دلو إلى المشهد.
+  1331→ */
+  1332→export function mergePropBuckets(
+  1333→  scene: THREE.Scene,
+  1334→  buckets: Map<string, THREE.BufferGeometry[]>,
+  1335→  mats: Record<string, THREE.Material>,
+  1336→  noShadowBuckets = new Set(["glassDark", "paint", "water", "lampGlow"]),
+  1337→) {
+  1338→  for (const [bucket, geos] of buckets) {
+  1339→    if (geos.length === 0) continue;
+  1340→    const mat = mats[bucket];
+  1341→    if (!mat) continue;
+  1342→    const merged = mergeGeometries(geos, false);
+  1343→    if (!merged) continue;
+  1344→    const mesh = new THREE.Mesh(merged, mat);
+  1345→    mesh.castShadow = !noShadowBuckets.has(bucket);
+  1346→    mesh.receiveShadow = true;
+  1347→    scene.add(mesh);
+  1348→    geos.forEach((g) => g.dispose());
+  1349→  }
+  1350→}
+  1351→

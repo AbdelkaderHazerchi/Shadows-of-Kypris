@@ -1,0 +1,894 @@
+     1→// ─────────────────────────────────────────────────────────────
+     2→// محرك صوت إجرائي كامل (Web Audio API) — بلا ملفات خارجية
+     3→// أجواء: menu / city / indoor / lab / harbor + طبقة توتر + نبض قلب
+     4→// ─────────────────────────────────────────────────────────────
+     5→import type { AmbientProfile } from "./types";
+     6→
+     7→export type SfxName =
+     8→  | "footstep"
+     9→  | "footstep_run"
+    10→  | "shot_pistol"
+    11→  | "shot_shotgun"
+    12→  | "dryfire"
+    13→  | "reload_start"
+    14→  | "reload_end"
+    15→  | "swing"
+    16→  | "hit_flesh"
+    17→  | "hit_head"
+    18→  | "pickup"
+    19→  | "paper"
+    20→  | "heal"
+    21→  | "door_open"
+    22→  | "door_locked"
+    23→  | "ui_click"
+    24→  | "ui_hover"
+    25→  | "stinger_discover"
+    26→  | "stinger_danger"
+    27→  | "growl"
+    28→  | "growl_far"
+    29→  | "roar"
+    30→  | "thunder"
+    31→  | "radio_static"
+    32→  | "radio_beep"
+    33→  | "generator"
+    34→  | "explosion"
+    35→  | "metal_creak"
+    36→  | "alarm";
+    37→
+    38→interface SfxOpts {
+    39→  volume?: number;
+    40→  pan?: number;
+    41→  rate?: number;
+    42→}
+    43→
+    44→class AudioEngine {
+    45→  ctx: AudioContext | null = null;
+    46→  private master!: GainNode;
+    47→  private musicBus!: GainNode;
+    48→  private sfxBus!: GainNode;
+    49→  private ambBus!: GainNode;
+    50→  private noiseBuf: AudioBuffer | null = null;
+    51→  private ambNodes: { stop: () => void }[] = [];
+    52→  private ambTimer: ReturnType<typeof setTimeout> | null = null;
+    53→  private currentAmbient: AmbientProfile | null = null;
+    54→  private threatGains: GainNode[] = [];
+    55→  private hbTimer: ReturnType<typeof setInterval> | null = null;
+    56→  private volumes = { master: 0.8, music: 0.7, sfx: 0.9 };
+    57→  private started = false;
+    58→
+    59→  init() {
+    60→    if (this.started) {
+    61→      this.ctx?.resume();
+    62→      return;
+    63→    }
+    64→    const AC = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+    65→    if (!AC) return;
+    66→    this.ctx = new AC();
+    67→    const ctx = this.ctx;
+    68→    this.master = ctx.createGain();
+    69→    this.master.gain.value = this.volumes.master;
+    70→    this.master.connect(ctx.destination);
+    71→    this.musicBus = ctx.createGain();
+    72→    this.musicBus.gain.value = this.volumes.music * 0.9;
+    73→    this.musicBus.connect(this.master);
+    74→    this.sfxBus = ctx.createGain();
+    75→    this.sfxBus.gain.value = this.volumes.sfx;
+    76→    this.sfxBus.connect(this.master);
+    77→    this.ambBus = ctx.createGain();
+    78→    this.ambBus.gain.value = this.volumes.music;
+    79→    this.ambBus.connect(this.master);
+    80→
+    81→    // noise buffer 2s
+    82→    const len = ctx.sampleRate * 2;
+    83→    const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+    84→    const data = buf.getChannelData(0);
+    85→    let last = 0;
+    86→    for (let i = 0; i < len; i++) {
+    87→      const white = Math.random() * 2 - 1;
+    88→      last = (last + 0.02 * white) / 1.02; // brownish
+    89→      data[i] = white * 0.4 + last * 3.2;
+    90→    }
+    91→    this.noiseBuf = buf;
+    92→    this.started = true;
+    93→  }
+    94→
+    95→  setVolumes(v: { master?: number; music?: number; sfx?: number }) {
+    96→    Object.assign(this.volumes, v);
+    97→    if (!this.ctx) return;
+    98→    const t = this.ctx.currentTime;
+    99→    this.master.gain.setTargetAtTime(this.volumes.master, t, 0.05);
+   100→    this.musicBus.gain.setTargetAtTime(this.volumes.music * 0.9, t, 0.05);
+   101→    this.ambBus.gain.setTargetAtTime(this.volumes.music, t, 0.05);
+   102→    this.sfxBus.gain.setTargetAtTime(this.volumes.sfx, t, 0.05);
+   103→  }
+   104→
+   105→  private out(bus?: GainNode) {
+   106→    return bus ?? this.sfxBus;
+   107→  }
+   108→
+   109→  private noiseSource(dur: number, rate = 1): AudioBufferSourceNode | null {
+   110→    if (!this.ctx || !this.noiseBuf) return null;
+   111→    const src = this.ctx.createBufferSource();
+   112→    src.buffer = this.noiseBuf;
+   113→    src.loop = true;
+   114→    src.playbackRate.value = rate;
+   115→    return src;
+   116→  }
+   117→
+   118→  private env(g: GainNode, t0: number, a: number, peak: number, d: number) {
+   119→    g.gain.setValueAtTime(0.0001, t0);
+   120→    g.gain.exponentialRampToValueAtTime(Math.max(peak, 0.0001), t0 + a);
+   121→    g.gain.exponentialRampToValueAtTime(0.0001, t0 + a + d);
+   122→  }
+   123→
+   124→  private panner(pan: number): StereoPannerNode | null {
+   125→    if (!this.ctx) return null;
+   126→    const p = this.ctx.createStereoPanner();
+   127→    p.pan.value = Math.max(-1, Math.min(1, pan));
+   128→    return p;
+   129→  }
+   130→
+   131→  // ── public sfx ──
+   132→  play(name: SfxName, opts: SfxOpts = {}) {
+   133→    if (!this.ctx || !this.started) return;
+   134→    const ctx = this.ctx;
+   135→    const t0 = ctx.currentTime + 0.01;
+   136→    const vol = opts.volume ?? 1;
+   137→    const rate = opts.rate ?? 1;
+   138→    let dest: AudioNode = this.out();
+   139→    if (opts.pan) {
+   140→      const p = this.panner(opts.pan);
+   141→      if (p) {
+   142→        p.connect(this.out());
+   143→        dest = p;
+   144→      }
+   145→    }
+   146→    const S = (
+   147→      build: (d: GainNode) => { nodes: AudioNode[]; dur: number } | null,
+   148→    ) => {
+   149→      const g = ctx.createGain();
+   150→      g.connect(dest);
+   151→      const r = build(g);
+   152→      if (!r) return;
+   153→      setTimeout(() => {
+   154→        try {
+   155→          r.nodes.forEach((n) => (n as OscillatorNode & AudioBufferSourceNode).stop?.());
+   156→        } catch {
+   157→          /* noop */
+   158→        }
+   159→      }, (r.dur + 0.5) * 1000);
+   160→    };
+   161→
+   162→    switch (name) {
+   163→      case "footstep":
+   164→      case "footstep_run": {
+   165→        const run = name === "footstep_run";
+   166→        S((g) => {
+   167→          const src = this.noiseSource(0.2, 0.8 + Math.random() * 0.4);
+   168→          if (!src) return null;
+   169→          const f = ctx.createBiquadFilter();
+   170→          f.type = "bandpass";
+   171→          f.frequency.value = 240 + Math.random() * 160;
+   172→          f.Q.value = 0.9;
+   173→          src.connect(f);
+   174→          f.connect(g);
+   175→          this.env(g, t0, 0.005, (run ? 0.5 : 0.26) * vol, run ? 0.13 : 0.1);
+   176→          src.start(t0);
+   177→          src.stop(t0 + 0.25);
+   178→          return { nodes: [src], dur: 0.25 };
+   179→        });
+   180→        break;
+   181→      }
+   182→      case "shot_pistol":
+   183→        S((g) => {
+   184→          const src = this.noiseSource(0.4, 1.4);
+   185→          if (!src) return null;
+   186→          const f = ctx.createBiquadFilter();
+   187→          f.type = "lowpass";
+   188→          f.frequency.setValueAtTime(5200, t0);
+   189→          f.frequency.exponentialRampToValueAtTime(300, t0 + 0.22);
+   190→          src.connect(f);
+   191→          f.connect(g);
+   192→          this.env(g, t0, 0.003, 0.85 * vol, 0.2);
+   193→          src.start(t0);
+   194→          src.stop(t0 + 0.4);
+   195→          const o = ctx.createOscillator();
+   196→          o.type = "sine";
+   197→          o.frequency.setValueAtTime(150, t0);
+   198→          o.frequency.exponentialRampToValueAtTime(55, t0 + 0.15);
+   199→          const og = ctx.createGain();
+   200→          this.env(og, t0, 0.003, 0.7 * vol, 0.16);
+   201→          o.connect(og);
+   202→          og.connect(dest);
+   203→          o.start(t0);
+   204→          o.stop(t0 + 0.25);
+   205→          return { nodes: [src, o], dur: 0.45 };
+   206→        });
+   207→        break;
+   208→      case "shot_shotgun":
+   209→        S((g) => {
+   210→          const src = this.noiseSource(0.6, 0.9);
+   211→          if (!src) return null;
+   212→          const f = ctx.createBiquadFilter();
+   213→          f.type = "lowpass";
+   214→          f.frequency.setValueAtTime(3600, t0);
+   215→          f.frequency.exponentialRampToValueAtTime(160, t0 + 0.34);
+   216→          src.connect(f);
+   217→          f.connect(g);
+   218→          this.env(g, t0, 0.004, 1.0 * vol, 0.32);
+   219→          src.start(t0);
+   220→          src.stop(t0 + 0.6);
+   221→          const o = ctx.createOscillator();
+   222→          o.type = "sine";
+   223→          o.frequency.setValueAtTime(95, t0);
+   224→          o.frequency.exponentialRampToValueAtTime(38, t0 + 0.25);
+   225→          const og = ctx.createGain();
+   226→          this.env(og, t0, 0.004, 0.9 * vol, 0.28);
+   227→          o.connect(og);
+   228→          og.connect(dest);
+   229→          o.start(t0);
+   230→          o.stop(t0 + 0.4);
+   231→          return { nodes: [src, o], dur: 0.65 };
+   232→        });
+   233→        break;
+   234→      case "dryfire":
+   235→        S((g) => {
+   236→          const o = ctx.createOscillator();
+   237→          o.type = "square";
+   238→          o.frequency.value = 1800 + Math.random() * 400;
+   239→          const og = ctx.createGain();
+   240→          this.env(og, t0, 0.001, 0.12 * vol, 0.04);
+   241→          o.connect(og);
+   242→          og.connect(dest);
+   243→          o.start(t0);
+   244→          o.stop(t0 + 0.08);
+   245→          return { nodes: [o], dur: 0.1 };
+   246→        });
+   247→        break;
+   248→      case "reload_start":
+   249→      case "reload_end":
+   250→        S((g) => {
+   251→          for (let i = 0; i < 3; i++) {
+   252→            const o = ctx.createOscillator();
+   253→            o.type = "square";
+   254→            o.frequency.value = 700 + Math.random() * 900;
+   255→            const og = ctx.createGain();
+   256→            const tt = t0 + i * 0.07;
+   257→            this.env(og, tt, 0.001, 0.14 * vol, 0.05);
+   258→            o.connect(og);
+   259→            og.connect(dest);
+   260→            o.start(tt);
+   261→            o.stop(tt + 0.09);
+   262→          }
+   263→          return { nodes: [], dur: 0.3 };
+   264→        });
+   265→        break;
+   266→      case "swing":
+   267→        S((g) => {
+   268→          const src = this.noiseSource(0.3, 1.2);
+   269→          if (!src) return null;
+   270→          const f = ctx.createBiquadFilter();
+   271→          f.type = "bandpass";
+   272→          f.frequency.setValueAtTime(900, t0);
+   273→          f.frequency.exponentialRampToValueAtTime(2400, t0 + 0.18);
+   274→          f.Q.value = 1.4;
+   275→          src.connect(f);
+   276→          f.connect(g);
+   277→          this.env(g, t0, 0.02, 0.3 * vol, 0.16);
+   278→          src.start(t0);
+   279→          src.stop(t0 + 0.3);
+   280→          return { nodes: [src], dur: 0.3 };
+   281→        });
+   282→        break;
+   283→      case "hit_flesh":
+   284→      case "hit_head": {
+   285→        const head = name === "hit_head";
+   286→        S((g) => {
+   287→          const src = this.noiseSource(0.25, 0.5);
+   288→          if (!src) return null;
+   289→          const f = ctx.createBiquadFilter();
+   290→          f.type = "lowpass";
+   291→          f.frequency.value = head ? 900 : 380;
+   292→          src.connect(f);
+   293→          f.connect(g);
+   294→          this.env(g, t0, 0.004, (head ? 0.8 : 0.55) * vol, 0.14);
+   295→          src.start(t0);
+   296→          src.stop(t0 + 0.3);
+   297→          const o = ctx.createOscillator();
+   298→          o.type = "sine";
+   299→          o.frequency.setValueAtTime(head ? 220 : 130, t0);
+   300→          o.frequency.exponentialRampToValueAtTime(45, t0 + 0.12);
+   301→          const og = ctx.createGain();
+   302→          this.env(og, t0, 0.004, 0.6 * vol, 0.13);
+   303→          o.connect(og);
+   304→          og.connect(dest);
+   305→          o.start(t0);
+   306→          o.stop(t0 + 0.2);
+   307→          return { nodes: [src, o], dur: 0.3 };
+   308→        });
+   309→        break;
+   310→      }
+   311→      case "pickup":
+   312→        S((g) => {
+   313→          const o = ctx.createOscillator();
+   314→          o.type = "sine";
+   315→          o.frequency.setValueAtTime(520, t0);
+   316→          o.frequency.setValueAtTime(780, t0 + 0.07);
+   317→          const og = ctx.createGain();
+   318→          this.env(og, t0, 0.01, 0.22 * vol, 0.16);
+   319→          o.connect(og);
+   320→          og.connect(dest);
+   321→          o.start(t0);
+   322→          o.stop(t0 + 0.25);
+   323→          return { nodes: [o], dur: 0.25 };
+   324→        });
+   325→        break;
+   326→      case "paper":
+   327→        S((g) => {
+   328→          const src = this.noiseSource(0.4, 2.2);
+   329→          if (!src) return null;
+   330→          const f = ctx.createBiquadFilter();
+   331→          f.type = "highpass";
+   332→          f.frequency.value = 1800;
+   333→          src.connect(f);
+   334→          f.connect(g);
+   335→          this.env(g, t0, 0.03, 0.2 * vol, 0.3);
+   336→          src.start(t0);
+   337→          src.stop(t0 + 0.4);
+   338→          return { nodes: [src], dur: 0.4 };
+   339→        });
+   340→        break;
+   341→      case "heal":
+   342→        S((g) => {
+   343→          const o = ctx.createOscillator();
+   344→          o.type = "sine";
+   345→          o.frequency.setValueAtTime(300, t0);
+   346→          o.frequency.exponentialRampToValueAtTime(640, t0 + 0.5);
+   347→          const og = ctx.createGain();
+   348→          this.env(og, t0, 0.1, 0.18 * vol, 0.5);
+   349→          o.connect(og);
+   350→          og.connect(dest);
+   351→          o.start(t0);
+   352→          o.stop(t0 + 0.7);
+   353→          return { nodes: [o], dur: 0.7 };
+   354→        });
+   355→        break;
+   356→      case "door_open":
+   357→        S((g) => {
+   358→          const o = ctx.createOscillator();
+   359→          o.type = "sawtooth";
+   360→          o.frequency.setValueAtTime(70 + Math.random() * 30, t0);
+   361→          o.frequency.linearRampToValueAtTime(120 + Math.random() * 40, t0 + 0.5);
+   362→          const f = ctx.createBiquadFilter();
+   363→          f.type = "bandpass";
+   364→          f.frequency.value = 500;
+   365→          f.Q.value = 6;
+   366→          const lfo = ctx.createOscillator();
+   367→          lfo.frequency.value = 9;
+   368→          const lg = ctx.createGain();
+   369→          lg.gain.value = 40;
+   370→          lfo.connect(lg);
+   371→          lg.connect(o.frequency);
+   372→          o.connect(f);
+   373→          f.connect(g);
+   374→          this.env(g, t0, 0.08, 0.28 * vol, 0.55);
+   375→          o.start(t0);
+   376→          lfo.start(t0);
+   377→          o.stop(t0 + 0.75);
+   378→          lfo.stop(t0 + 0.75);
+   379→          return { nodes: [o, lfo], dur: 0.8 };
+   380→        });
+   381→        break;
+   382→      case "door_locked":
+   383→        S((g) => {
+   384→          for (let i = 0; i < 4; i++) {
+   385→            const o = ctx.createOscillator();
+   386→            o.type = "square";
+   387→            o.frequency.value = 420 + Math.random() * 260;
+   388→            const og = ctx.createGain();
+   389→            const tt = t0 + i * 0.055;
+   390→            this.env(og, tt, 0.001, 0.16 * vol, 0.04);
+   391→            o.connect(og);
+   392→            og.connect(dest);
+   393→            o.start(tt);
+   394→            o.stop(tt + 0.08);
+   395→          }
+   396→          return { nodes: [], dur: 0.35 };
+   397→        });
+   398→        break;
+   399→      case "ui_click":
+   400→        S((g) => {
+   401→          const o = ctx.createOscillator();
+   402→          o.type = "triangle";
+   403→          o.frequency.value = 640;
+   404→          const og = ctx.createGain();
+   405→          this.env(og, t0, 0.002, 0.16 * vol, 0.06);
+   406→          o.connect(og);
+   407→          og.connect(dest);
+   408→          o.start(t0);
+   409→          o.stop(t0 + 0.1);
+   410→          return { nodes: [o], dur: 0.12 };
+   411→        });
+   412→        break;
+   413→      case "stinger_discover":
+   414→        S((g) => {
+   415→          [196, 207.65, 233.08, 466].forEach((fr, i) => {
+   416→            const o = ctx.createOscillator();
+   417→            o.type = i === 3 ? "triangle" : "sawtooth";
+   418→            o.frequency.value = fr;
+   419→            const og = ctx.createGain();
+   420→            this.env(og, t0 + i * 0.01, 0.02, 0.12 * vol, 1.6);
+   421→            const f = ctx.createBiquadFilter();
+   422→            f.type = "lowpass";
+   423→            f.frequency.value = 1400;
+   424→            o.connect(f);
+   425→            f.connect(og);
+   426→            og.connect(dest);
+   427→            o.start(t0);
+   428→            o.stop(t0 + 2);
+   429→          });
+   430→          return { nodes: [], dur: 2 };
+   431→        });
+   432→        break;
+   433→      case "stinger_danger":
+   434→        S((g) => {
+   435→          const o = ctx.createOscillator();
+   436→          o.type = "sawtooth";
+   437→          o.frequency.setValueAtTime(55, t0);
+   438→          o.frequency.exponentialRampToValueAtTime(110, t0 + 0.8);
+   439→          const f = ctx.createBiquadFilter();
+   440→          f.type = "lowpass";
+   441→          f.frequency.value = 500;
+   442→          const og = ctx.createGain();
+   443→          this.env(og, t0, 0.05, 0.5 * vol, 1.1);
+   444→          o.connect(f);
+   445→          f.connect(og);
+   446→          og.connect(dest);
+   447→          o.start(t0);
+   448→          o.stop(t0 + 1.4);
+   449→          return { nodes: [o], dur: 1.5 };
+   450→        });
+   451→        break;
+   452→      case "growl":
+   453→      case "growl_far": {
+   454→        const far = name === "growl_far";
+   455→        S((g) => {
+   456→          const o = ctx.createOscillator();
+   457→          o.type = "sawtooth";
+   458→          const base = 60 + Math.random() * 55;
+   459→          o.frequency.setValueAtTime(base, t0);
+   460→          o.frequency.linearRampToValueAtTime(base * (0.7 + Math.random() * 0.4), t0 + 1.1);
+   461→          const v = ctx.createOscillator();
+   462→          v.frequency.value = 5 + Math.random() * 6;
+   463→          const vg = ctx.createGain();
+   464→          vg.gain.value = 14;
+   465→          v.connect(vg);
+   466→          vg.connect(o.frequency);
+   467→          const f = ctx.createBiquadFilter();
+   468→          f.type = "lowpass";
+   469→          f.frequency.value = far ? 300 : 750;
+   470→          const og = ctx.createGain();
+   471→          this.env(og, t0, 0.15, (far ? 0.1 : 0.3) * vol, 1.2);
+   472→          o.connect(f);
+   473→          f.connect(og);
+   474→          og.connect(dest);
+   475→          o.start(t0);
+   476→          v.start(t0);
+   477→          o.stop(t0 + 1.6);
+   478→          v.stop(t0 + 1.6);
+   479→          return { nodes: [o, v], dur: 1.6 };
+   480→        });
+   481→        break;
+   482→      }
+   483→      case "roar":
+   484→        S((g) => {
+   485→          const o = ctx.createOscillator();
+   486→          o.type = "sawtooth";
+   487→          o.frequency.setValueAtTime(140, t0);
+   488→          o.frequency.exponentialRampToValueAtTime(38, t0 + 1.2);
+   489→          const f = ctx.createBiquadFilter();
+   490→          f.type = "lowpass";
+   491→          f.frequency.value = 900;
+   492→          const og = ctx.createGain();
+   493→          this.env(og, t0, 0.04, 0.75 * vol, 1.3);
+   494→          o.connect(f);
+   495→          f.connect(og);
+   496→          og.connect(dest);
+   497→          const src = this.noiseSource(1.4, 0.6);
+   498→          if (src) {
+   499→            const nf = ctx.createBiquadFilter();
+   500→            nf.type = "bandpass";
+   501→            nf.frequency.value = 420;
+   502→            const ng = ctx.createGain();
+   503→            this.env(ng, t0, 0.05, 0.4 * vol, 1.2);
+   504→            src.connect(nf);
+   505→            nf.connect(ng);
+   506→            ng.connect(dest);
+   507→            src.start(t0);
+   508→            src.stop(t0 + 1.5);
+   509→          }
+   510→          o.start(t0);
+   511→          o.stop(t0 + 1.5);
+   512→          return { nodes: [o], dur: 1.6 };
+   513→        });
+   514→        break;
+   515→      case "thunder":
+   516→        S((g) => {
+   517→          const src = this.noiseSource(3, 0.4);
+   518→          if (!src) return null;
+   519→          const f = ctx.createBiquadFilter();
+   520→          f.type = "lowpass";
+   521→          f.frequency.setValueAtTime(120, t0);
+   522→          f.frequency.exponentialRampToValueAtTime(600, t0 + 0.4);
+   523→          f.frequency.exponentialRampToValueAtTime(60, t0 + 2.4);
+   524→          src.connect(f);
+   525→          f.connect(g);
+   526→          g.gain.setValueAtTime(0.0001, t0);
+   527→          g.gain.exponentialRampToValueAtTime(0.55 * vol, t0 + 0.25);
+   528→          g.gain.exponentialRampToValueAtTime(0.0001, t0 + 2.6);
+   529→          src.start(t0);
+   530→          src.stop(t0 + 2.8);
+   531→          return { nodes: [src], dur: 2.8 };
+   532→        });
+   533→        break;
+   534→      case "radio_static":
+   535→        S((g) => {
+   536→          const src = this.noiseSource(1.2, 1.8);
+   537→          if (!src) return null;
+   538→          const f = ctx.createBiquadFilter();
+   539→          f.type = "bandpass";
+   540→          f.frequency.value = 1700;
+   541→          f.Q.value = 0.6;
+   542→          src.connect(f);
+   543→          f.connect(g);
+   544→          g.gain.setValueAtTime(0.0001, t0);
+   545→          g.gain.linearRampToValueAtTime(0.22 * vol, t0 + 0.1);
+   546→          g.gain.setValueAtTime(0.22 * vol, t0 + 0.9);
+   547→          g.gain.linearRampToValueAtTime(0.0001, t0 + 1.15);
+   548→          src.start(t0);
+   549→          src.stop(t0 + 1.2);
+   550→          return { nodes: [src], dur: 1.2 };
+   551→        });
+   552→        break;
+   553→      case "radio_beep":
+   554→        S((g) => {
+   555→          const o = ctx.createOscillator();
+   556→          o.type = "sine";
+   557→          o.frequency.value = 1180;
+   558→          const og = ctx.createGain();
+   559→          this.env(og, t0, 0.005, 0.14 * vol, 0.16);
+   560→          o.connect(og);
+   561→          og.connect(dest);
+   562→          o.start(t0);
+   563→          o.stop(t0 + 0.25);
+   564→          return { nodes: [o], dur: 0.3 };
+   565→        });
+   566→        break;
+   567→      case "generator":
+   568→        S((g) => {
+   569→          const o = ctx.createOscillator();
+   570→          o.type = "square";
+   571→          o.frequency.setValueAtTime(30, t0);
+   572→          o.frequency.linearRampToValueAtTime(55, t0 + 1.2);
+   573→          const f = ctx.createBiquadFilter();
+   574→          f.type = "lowpass";
+   575→          f.frequency.value = 220;
+   576→          const og = ctx.createGain();
+   577→          this.env(og, t0, 0.3, 0.4 * vol, 1.6);
+   578→          o.connect(f);
+   579→          f.connect(og);
+   580→          og.connect(dest);
+   581→          o.start(t0);
+   582→          o.stop(t0 + 2);
+   583→          return { nodes: [o], dur: 2 };
+   584→        });
+   585→        break;
+   586→      case "explosion":
+   587→        S((g) => {
+   588→          const src = this.noiseSource(2.5, 0.35);
+   589→          if (!src) return null;
+   590→          const f = ctx.createBiquadFilter();
+   591→          f.type = "lowpass";
+   592→          f.frequency.setValueAtTime(900, t0);
+   593→          f.frequency.exponentialRampToValueAtTime(45, t0 + 2);
+   594→          src.connect(f);
+   595→          f.connect(g);
+   596→          g.gain.setValueAtTime(0.0001, t0);
+   597→          g.gain.exponentialRampToValueAtTime(0.9 * vol, t0 + 0.06);
+   598→          g.gain.exponentialRampToValueAtTime(0.0001, t0 + 2.3);
+   599→          src.start(t0);
+   600→          src.stop(t0 + 2.4);
+   601→          const o = ctx.createOscillator();
+   602→          o.type = "sine";
+   603→          o.frequency.setValueAtTime(70, t0);
+   604→          o.frequency.exponentialRampToValueAtTime(24, t0 + 1.4);
+   605→          const og = ctx.createGain();
+   606→          this.env(og, t0, 0.02, 0.9 * vol, 1.5);
+   607→          o.connect(og);
+   608→          og.connect(dest);
+   609→          o.start(t0);
+   610→          o.stop(t0 + 1.7);
+   611→          return { nodes: [src, o], dur: 2.4 };
+   612→        });
+   613→        break;
+   614→      case "metal_creak":
+   615→        S((g) => {
+   616→          const o = ctx.createOscillator();
+   617→          o.type = "sawtooth";
+   618→          o.frequency.setValueAtTime(180 + Math.random() * 120, t0);
+   619→          o.frequency.linearRampToValueAtTime(90 + Math.random() * 60, t0 + 1.3);
+   620→          const f = ctx.createBiquadFilter();
+   621→          f.type = "bandpass";
+   622→          f.frequency.value = 800;
+   623→          f.Q.value = 14;
+   624→          const og = ctx.createGain();
+   625→          this.env(og, t0, 0.5, 0.12 * vol, 0.9);
+   626→          o.connect(f);
+   627→          f.connect(og);
+   628→          og.connect(dest);
+   629→          o.start(t0);
+   630→          o.stop(t0 + 1.5);
+   631→          return { nodes: [o], dur: 1.5 };
+   632→        });
+   633→        break;
+   634→      case "alarm":
+   635→        S((g) => {
+   636→          for (let i = 0; i < 4; i++) {
+   637→            const o = ctx.createOscillator();
+   638→            o.type = "square";
+   639→            o.frequency.setValueAtTime(660, t0 + i * 0.5);
+   640→            o.frequency.setValueAtTime(520, t0 + i * 0.5 + 0.25);
+   641→            const og = ctx.createGain();
+   642→            this.env(og, t0 + i * 0.5, 0.02, 0.1 * vol, 0.4);
+   643→            o.connect(og);
+   644→            og.connect(dest);
+   645→            o.start(t0 + i * 0.5);
+   646→            o.stop(t0 + i * 0.5 + 0.5);
+   647→          }
+   648→          return { nodes: [], dur: 2.2 };
+   649→        });
+   650→        break;
+   651→    }
+   652→  }
+   653→
+   654→  // ── heartbeat ──
+   655→  startHeartbeat() {
+   656→    if (this.hbTimer || !this.ctx) return;
+   657→    const beat = () => {
+   658→      if (!this.ctx) return;
+   659→      const ctx = this.ctx;
+   660→      const t0 = ctx.currentTime + 0.01;
+   661→      [0, 0.18].forEach((off, i) => {
+   662→        const o = ctx.createOscillator();
+   663→        o.type = "sine";
+   664→        o.frequency.setValueAtTime(58, t0 + off);
+   665→        o.frequency.exponentialRampToValueAtTime(38, t0 + off + 0.1);
+   666→        const g = ctx.createGain();
+   667→        this.env(g, t0 + off, 0.005, i === 0 ? 0.5 : 0.32, 0.12);
+   668→        o.connect(g);
+   669→        g.connect(this.master);
+   670→        o.start(t0 + off);
+   671→        o.stop(t0 + off + 0.2);
+   672→      });
+   673→    };
+   674→    beat();
+   675→    this.hbTimer = setInterval(beat, 950);
+   676→  }
+   677→
+   678→  stopHeartbeat() {
+   679→    if (this.hbTimer) {
+   680→      clearInterval(this.hbTimer);
+   681→      this.hbTimer = null;
+   682→    }
+   683→  }
+   684→
+   685→  // ── ambient beds ──
+   686→  startAmbient(profile: AmbientProfile) {
+   687→    if (!this.ctx || !this.started) return;
+   688→    if (this.currentAmbient === profile) return;
+   689→    this.stopAmbient();
+   690→    this.currentAmbient = profile;
+   691→    const ctx = this.ctx;
+   692→
+   693→    const mkDrone = (freqs: number[], gainV: number, lfoF: number, type: OscillatorType = "sine") => {
+   694→      const g = ctx.createGain();
+   695→      g.gain.value = gainV;
+   696→      g.connect(this.ambBus);
+   697→      const nodes: (OscillatorNode | AudioBufferSourceNode)[] = [];
+   698→      freqs.forEach((f, i) => {
+   699→        const o = ctx.createOscillator();
+   700→        o.type = type;
+   701→        o.frequency.value = f * (1 + i * 0.003);
+   702→        const og = ctx.createGain();
+   703→        og.gain.value = 1 / freqs.length;
+   704→        o.connect(og);
+   705→        og.connect(g);
+   706→        o.start();
+   707→        nodes.push(o);
+   708→      });
+   709→      const lfo = ctx.createOscillator();
+   710→      lfo.frequency.value = lfoF;
+   711→      const lg = ctx.createGain();
+   712→      lg.gain.value = gainV * 0.4;
+   713→      lfo.connect(lg);
+   714→      lg.connect(g.gain);
+   715→      lfo.start();
+   716→      nodes.push(lfo);
+   717→      nodes.forEach((n) => this.ambNodes.push({ stop: () => n.stop() }));
+   718→      return { nodes, g };
+   719→    };
+   720→
+   721→    const mkWind = (gainV: number, cutoff: number, rate: number) => {
+   722→      if (!this.noiseBuf) return { nodes: [] as AudioBufferSourceNode[], g: ctx.createGain() };
+   723→      const src = ctx.createBufferSource();
+   724→      src.buffer = this.noiseBuf;
+   725→      src.loop = true;
+   726→      src.playbackRate.value = rate;
+   727→      const f = ctx.createBiquadFilter();
+   728→      f.type = "lowpass";
+   729→      f.frequency.value = cutoff;
+   730→      const g = ctx.createGain();
+   731→      g.gain.value = gainV;
+   732→      const lfo = ctx.createOscillator();
+   733→      lfo.frequency.value = 0.07 + Math.random() * 0.05;
+   734→      const lg = ctx.createGain();
+   735→      lg.gain.value = gainV * 0.55;
+   736→      lfo.connect(lg);
+   737→      lg.connect(g.gain);
+   738→      src.connect(f);
+   739→      f.connect(g);
+   740→      g.connect(this.ambBus);
+   741→      src.start();
+   742→      lfo.start();
+   743→      ([src, lfo] as (AudioBufferSourceNode | OscillatorNode)[]).forEach((n) =>
+   744→        this.ambNodes.push({ stop: () => n.stop() }),
+   745→      );
+   746→      return { nodes: [src, lfo] as (AudioBufferSourceNode | OscillatorNode)[], g };
+   747→    };
+   748→
+   749→    // threat layer (persistent, gain 0)
+   750→    const tg = ctx.createGain();
+   751→    tg.gain.value = 0;
+   752→    tg.connect(this.musicBus);
+   753→    [110, 116.54, 155.56].forEach((f) => {
+   754→      const o = ctx.createOscillator();
+   755→      o.type = "sawtooth";
+   756→      o.frequency.value = f;
+   757→      const og = ctx.createGain();
+   758→      og.gain.value = 0.33;
+   759→      o.connect(og);
+   760→      og.connect(tg);
+   761→      o.start();
+   762→      this.ambNodes.push({ stop: () => o.stop() });
+   763→    });
+   764→    const pulse = ctx.createOscillator();
+   765→    pulse.type = "sine";
+   766→    pulse.frequency.value = 2.2;
+   767→    const pg = ctx.createGain();
+   768→    pg.gain.value = 0.25;
+   769→    pulse.connect(pg);
+   770→    pg.connect(tg.gain);
+   771→    pulse.start();
+   772→    this.ambNodes.push({ stop: () => pulse.stop() });
+   773→    this.threatGains = [tg];
+   774→
+   775→    const scheduleCreaks = (minGap: number, maxGap: number, sfx: SfxName, vol: number) => {
+   776→      const loop = () => {
+   777→        this.ambTimer = setTimeout(
+   778→          () => {
+   779→            if (this.currentAmbient === profile) this.play(sfx, { volume: vol, pan: Math.random() * 1.6 - 0.8 });
+   780→            loop();
+   781→          },
+   782→          minGap + Math.random() * (maxGap - minGap),
+   783→        );
+   784→      };
+   785→      loop();
+   786→    };
+   787→
+   788→    switch (profile) {
+   789→      case "menu":
+   790→        mkDrone([55, 58.27], 0.12, 0.05);
+   791→        mkWind(0.1, 300, 0.4);
+   792→        scheduleCreaks(5000, 11000, "metal_creak", 0.5);
+   793→        break;
+   794→      case "city":
+   795→        mkDrone([49, 51.9], 0.1, 0.04);
+   796→        mkWind(0.16, 420, 0.5);
+   797→        mkDrone([98], 0.05, 0.03, "triangle");
+   798→        scheduleCreaks(6000, 14000, "metal_creak", 0.7);
+   799→        scheduleCreaks(9000, 20000, "growl_far", 1);
+   800→        scheduleCreaks(15000, 30000, "thunder", 0.7);
+   801→        break;
+   802→      case "indoor":
+   803→        mkDrone([62, 65.4], 0.09, 0.06);
+   804→        mkWind(0.07, 200, 0.35);
+   805→        scheduleCreaks(7000, 15000, "metal_creak", 0.8);
+   806→        scheduleCreaks(8000, 18000, "growl_far", 0.9);
+   807→        break;
+   808→      case "lab": {
+   809→        mkDrone([60, 120.5], 0.11, 0.08, "square");
+   810→        mkWind(0.06, 180, 0.3);
+   811→        const beepLoop = () => {
+   812→          this.ambTimer = setTimeout(() => {
+   813→            if (this.currentAmbient === "lab" && this.ctx) {
+   814→              const t0 = this.ctx.currentTime + 0.01;
+   815→              const o = this.ctx.createOscillator();
+   816→              o.type = "sine";
+   817→              o.frequency.value = 1400 + Math.random() * 1200;
+   818→              const g = this.ctx.createGain();
+   819→              this.env(g, t0, 0.01, 0.05, 0.2);
+   820→              o.connect(g);
+   821→              g.connect(this.ambBus);
+   822→              o.start(t0);
+   823→              o.stop(t0 + 0.3);
+   824→            }
+   825→            beepLoop();
+   826→          }, 3000 + Math.random() * 7000);
+   827→        };
+   828→        beepLoop();
+   829→        scheduleCreaks(9000, 18000, "growl_far", 1);
+   830→        break;
+   831→      }
+   832→      case "harbor":
+   833→        mkDrone([45], 0.09, 0.03);
+   834→        mkWind(0.22, 700, 0.6);
+   835→        scheduleCreaks(5000, 10000, "metal_creak", 0.9);
+   836→        break;
+   837→    }
+   838→  }
+   839→
+   840→  setThreat(t: number) {
+   841→    if (!this.ctx || this.threatGains.length === 0) return;
+   842→    const v = Math.max(0, Math.min(1, t));
+   843→    this.threatGains.forEach((g) =>
+   844→      g.gain.setTargetAtTime(v * 0.14, this.ctx!.currentTime, 0.4),
+   845→    );
+   846→  }
+   847→
+   848→  stopAmbient() {
+   849→    this.ambNodes.forEach((n) => {
+   850→      try {
+   851→        n.stop();
+   852→      } catch {
+   853→        /* noop */
+   854→      }
+   855→    });
+   856→    this.ambNodes = [];
+   857→    this.threatGains = [];
+   858→    if (this.ambTimer) {
+   859→      clearTimeout(this.ambTimer);
+   860→      this.ambTimer = null;
+   861→    }
+   862→    this.currentAmbient = null;
+   863→  }
+   864→
+   865→  // ── pre-generated voice files (/public/audio/voices/{name}.mp3) ──
+   866→  private currentVoice: HTMLAudioElement | null = null;
+   867→
+   868→  playVoice(name: string, onEnd?: () => void): boolean {
+   869→    const a = new Audio(`/audio/voices/${name}.wav`);
+   870→    a.volume = this.volumes.master;
+   871→    let ok = true;
+   872→    a.onerror = () => {
+   873→      ok = false;
+   874→      onEnd?.();
+   875→    };
+   876→    a.onended = () => onEnd?.();
+   877→    a.play().catch(() => {
+   878→      ok = false;
+   879→      onEnd?.();
+   880→    });
+   881→    this.currentVoice = a;
+   882→    return ok;
+   883→  }
+   884→
+   885→  stopVoice() {
+   886→    if (this.currentVoice) {
+   887→      this.currentVoice.pause();
+   888→      this.currentVoice = null;
+   889→    }
+   890→  }
+   891→}
+   892→
+   893→export const audio = new AudioEngine();
+   894→

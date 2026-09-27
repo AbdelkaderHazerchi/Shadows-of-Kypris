@@ -1,0 +1,1562 @@
+     1→"use client";
+     2→
+     3→// ─────────────────────────────────────────────────────────────
+     4→// محرك ظلال كيبريس — GameEngine
+     5→// Three.js + PointerLock + قتال + قصة + نهايات + حفظ
+     6→// ─────────────────────────────────────────────────────────────
+     7→import * as THREE from "three";
+     8→import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
+     9→import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
+    10→import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
+    11→import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
+    12→import { ShaderPass } from "three/examples/jsm/postprocessing/ShaderPass.js";
+    13→
+    14→import { audio } from "./audio";
+    15→import { setEngine } from "./engineRef";
+    16→import { EnemyManager, collideCircle, type Enemy } from "./enemies";
+    17→import { buildWorld, zoneAt, type WorldData, type Interactable } from "./world";
+    18→import { clearCheckpoint, loadCheckpoint, saveCheckpoint, unlockEnding } from "./save";
+    19→import { useGame } from "./state";
+    20→import { AI_REACTIONS, ITEMS, MESSAGES, OBJECTIVE_BY_ID, SURVIVOR_BY_ID, WEAPONS } from "./content";
+    21→import type { EndingId, MapSnapshot, WeaponId } from "./types";
+    22→
+    23→// ── grain/vignette shader ──
+    24→const HorrorShader = {
+    25→  uniforms: {
+    26→    tDiffuse: { value: null as THREE.Texture | null },
+    27→    uTime: { value: 0 },
+    28→    uDamage: { value: 0 },
+    29→    uThreat: { value: 0 },
+    30→  },
+    31→  vertexShader: /* glsl */ `
+    32→    varying vec2 vUv;
+    33→    void main() {
+    34→      vUv = uv;
+    35→      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    36→    }
+    37→  `,
+    38→  fragmentShader: /* glsl */ `
+    39→    uniform sampler2D tDiffuse;
+    40→    uniform float uTime;
+    41→    uniform float uDamage;
+    42→    uniform float uThreat;
+    43→    varying vec2 vUv;
+    44→    float rand(vec2 co) { return fract(sin(dot(co, vec2(12.9898, 78.233))) * 43758.5453); }
+    45→    void main() {
+    46→      vec2 uv = vUv;
+    47→      // تشويش خفيف
+    48→      float grain = rand(uv * vec2(1024.0 + mod(uTime * 60.0, 100.0), 768.0)) * 0.055;
+    49→      // انحراف لوني خفيف عند الحواف
+    50→      vec2 dir = uv - 0.5;
+    51→      float d2 = dot(dir, dir);
+    52→      vec2 off = dir * d2 * 0.012;
+    53→      float r = texture2D(tDiffuse, uv - off).r;
+    54→      vec4 c = texture2D(tDiffuse, uv);
+    55→      float b = texture2D(tDiffuse, uv + off).b;
+    56→      vec3 col = vec3(r, c.g, b);
+    57→      col += grain - 0.027;
+    58→      // فينيت
+    59→      float vig = smoothstep(0.95, 0.32, length(dir) * 1.32);
+    60→      col *= mix(0.32, 1.0, vig);
+    61→      // حواف حمراء عند الخطر/الجرح
+    62→      float edge = smoothstep(0.55, 1.0, length(dir) * 1.6);
+    63→      col += vec3(0.28, 0.015, 0.01) * edge * (uDamage * 1.4 + uThreat * 0.35);
+    64→      col = mix(col, vec3(0.25, 0.02, 0.02), uDamage * 0.35 * edge);
+    65→      gl_FragColor = vec4(col, c.a);
+    66→    }
+    67→  `,
+    68→};
+    69→
+    70→const PLAYER_R = 0.42;
+    71→const EYE_H = 1.66;
+    72→
+    73→interface BloodParticle {
+    74→  mesh: THREE.Mesh;
+    75→  vel: THREE.Vector3;
+    76→  life: number;
+    77→}
+    78→
+    79→export class GameEngine {
+    80→  private canvas: HTMLCanvasElement;
+    81→  private renderer!: THREE.WebGLRenderer;
+    82→  private scene!: THREE.Scene;
+    83→  private camera!: THREE.PerspectiveCamera;
+    84→  private composer: EffectComposer | null = null;
+    85→  private horrorPass: ShaderPass | null = null;
+    86→  private world: WorldData | null = null;
+    87→  private enemies: EnemyManager | null = null;
+    88→  private raycaster = new THREE.Raycaster();
+    89→  private clock = new THREE.Clock();
+    90→  private rafId = 0;
+    91→  private disposed = false;
+    92→  private runStarted = false;
+    93→  private staticMeshes: THREE.Mesh[] = [];
+    94→
+    95→  // player
+    96→  private pos = new THREE.Vector3(69, EYE_H, 70);
+    97→  private vel = new THREE.Vector3();
+    98→  private yaw = 0;
+    99→  private pitch = 0;
+   100→  private keys = new Set<string>();
+   101→  private mouseDown = false;
+   102→  private lastShot = 0;
+   103→  private reloadT = 0;
+   104→  private swingT = 0;
+   105→  private walkPhase = 0;
+   106→  private footT = 0;
+   107→  private staminaLock = 0;
+   108→  private secAcc = 0;
+   109→  private zoneT = 0;
+   110→
+   111→  // flashlight
+   112→  private flashlight!: THREE.SpotLight;
+   113→  private flashTarget!: THREE.Object3D;
+   114→  private flickerT = 0;
+   115→
+   116→  // viewmodel
+   117→  private vmGroup!: THREE.Group;
+   118→  private vmPistol!: THREE.Group;
+   119→  private vmShotgun!: THREE.Group;
+   120→  private vmCrowbar!: THREE.Group;
+   121→  private vmRecoil = 0;
+   122→  private muzzle!: THREE.PointLight;
+   123→  private muzzleT = 0;
+   124→
+   125→  // fx
+   126→  private blood: BloodParticle[] = [];
+   127→  private ash: THREE.Points | null = null;
+   128→
+   129→  // story
+   130→  private poiFound = new Set<string>();
+   131→  private pendingSave: ReturnType<typeof loadCheckpoint> = null;
+   132→  private radioChain = 0;
+   133→  private waveSpawnT = 0;
+   134→  private waveN = 0;
+   135→  private extractionReady = false;
+   136→  private bossGateClosed = false;
+   137→  private bossGateCollider = { minX: 596.8, maxX: 603.2, minZ: -8.4, maxZ: -7.6 };
+   138→  private labDoorColliderIdx = -1;
+   139→
+   140→  constructor(canvas: HTMLCanvasElement) {
+   141→    this.canvas = canvas;
+   142→    this.initThree();
+   143→    this.bindInput();
+   144→    setEngine({ ...this.api, dispose: () => this.dispose() });
+   145→    this.loop();
+   146→  }
+   147→
+   148→  // ══════════ init ══════════
+   149→  private initThree() {
+   150→    const w = () => this.canvas.clientWidth || window.innerWidth;
+   151→    const h = () => this.canvas.clientHeight || window.innerHeight;
+   152→    this.renderer = new THREE.WebGLRenderer({
+   153→      canvas: this.canvas,
+   154→      antialias: true,
+   155→      powerPreference: "high-performance",
+   156→    });
+   157→    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+   158→    this.renderer.setSize(w(), h(), false);
+   159→    this.renderer.shadowMap.enabled = true;
+   160→    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+   161→    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+   162→    this.renderer.toneMappingExposure = 1.05;
+   163→
+   164→    this.scene = new THREE.Scene();
+   165→    this.scene.background = new THREE.Color(0x05070a);
+   166→    this.scene.fog = new THREE.FogExp2(0x07080b, 0.021);
+   167→
+   168→    this.camera = new THREE.PerspectiveCamera(72, w() / h(), 0.08, 260);
+   169→    this.scene.add(this.camera);
+   170→
+   171→    // إضاءة أساسية خافتة
+   172→    const hemi = new THREE.HemisphereLight(0x27303a, 0x0a0a0c, 0.32);
+   173→    this.scene.add(hemi);
+   174→    const moon = new THREE.DirectionalLight(0x8a93a8, 0.22);
+   175→    moon.position.set(-60, 90, -80);
+   176→    this.scene.add(moon);
+   177→
+   178→    // كشاف
+   179→    this.flashlight = new THREE.SpotLight(0xfff0d0, 0, 34, 0.5, 0.6, 1.5);
+   180→    this.flashlight.castShadow = true;
+   181→    this.flashlight.shadow.mapSize.set(1024, 1024);
+   182→    this.flashlight.shadow.camera.near = 0.2;
+   183→    this.flashlight.shadow.camera.far = 36;
+   184→    this.flashlight.shadow.bias = -0.003;
+   185→    this.flashlight.position.set(0.18, -0.14, 0);
+   186→    this.camera.add(this.flashlight);
+   187→    this.flashTarget = new THREE.Object3D();
+   188→    this.flashTarget.position.set(0, -0.06, -6);
+   189→    this.camera.add(this.flashTarget);
+   190→    this.flashlight.target = this.flashTarget;
+   191→
+   192→    // نموذج السلاح
+   193→    this.vmGroup = new THREE.Group();
+   194→    this.vmGroup.position.set(0.26, -0.24, -0.5);
+   195→    this.camera.add(this.vmGroup);
+   196→    this.vmPistol = this.buildPistolVM();
+   197→    this.vmShotgun = this.buildShotgunVM();
+   198→    this.vmCrowbar = this.buildCrowbarVM();
+   199→    this.vmGroup.add(this.vmPistol, this.vmShotgun, this.vmCrowbar);
+   200→    this.muzzle = new THREE.PointLight(0xffc871, 0, 14, 1.8);
+   201→    this.muzzle.position.set(0.26, -0.1, -1.1);
+   202→    this.camera.add(this.muzzle);
+   203→
+   204→    // رماد متساقط
+   205→    const ashGeo = new THREE.BufferGeometry();
+   206→    const N = 700;
+   207→    const arr = new Float32Array(N * 3);
+   208→    for (let i = 0; i < N; i++) {
+   209→      arr[i * 3] = (Math.random() - 0.5) * 60;
+   210→      arr[i * 3 + 1] = Math.random() * 26;
+   211→      arr[i * 3 + 2] = (Math.random() - 0.5) * 60;
+   212→    }
+   213→    ashGeo.setAttribute("position", new THREE.BufferAttribute(arr, 3));
+   214→    this.ash = new THREE.Points(
+   215→      ashGeo,
+   216→      new THREE.PointsMaterial({ color: 0x8a8478, size: 0.07, transparent: true, opacity: 0.5, sizeAttenuation: true }),
+   217→    );
+   218→    this.scene.add(this.ash);
+   219→
+   220→    // post-processing
+   221→    this.composer = new EffectComposer(this.renderer);
+   222→    this.composer.addPass(new RenderPass(this.scene, this.camera));
+   223→    const bloom = new UnrealBloomPass(new THREE.Vector2(w(), h()), 0.32, 0.75, 0.82);
+   224→    this.composer.addPass(bloom);
+   225→    this.composer.addPass(new OutputPass());
+   226→    this.horrorPass = new ShaderPass(HorrorShader);
+   227→    this.composer.addPass(this.horrorPass);
+   228→
+   229→    window.addEventListener("resize", this.onResize);
+   230→  }
+   231→
+   232→  private buildPistolVM(): THREE.Group {
+   233→    const g = new THREE.Group();
+   234→    const dark = new THREE.MeshStandardMaterial({ color: 0x23262a, roughness: 0.5, metalness: 0.7 });
+   235→    const grip = new THREE.MeshStandardMaterial({ color: 0x1a1512, roughness: 0.85 });
+   236→    const body = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.08, 0.26), dark);
+   237→    body.position.z = -0.05;
+   238→    const barrel = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.035, 0.16), dark);
+   239→    barrel.position.set(0, 0.028, -0.2);
+   240→    const handle = new THREE.Mesh(new THREE.BoxGeometry(0.045, 0.14, 0.06), grip);
+   241→    handle.position.set(0, -0.09, 0.03);
+   242→    handle.rotation.x = 0.22;
+   243→    g.add(body, barrel, handle);
+   244→    g.rotation.y = -0.06;
+   245→    return g;
+   246→  }
+   247→  private buildShotgunVM(): THREE.Group {
+   248→    const g = new THREE.Group();
+   249→    const dark = new THREE.MeshStandardMaterial({ color: 0x2a2118, roughness: 0.6, metalness: 0.4 });
+   250→    const wood = new THREE.MeshStandardMaterial({ color: 0x4a3220, roughness: 0.8 });
+   251→    const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.024, 0.024, 0.62, 10), dark);
+   252→    barrel.rotation.x = Math.PI / 2;
+   253→    barrel.position.set(0, 0.02, -0.28);
+   254→    const pump = new THREE.Mesh(new THREE.CylinderGeometry(0.032, 0.032, 0.16, 10), wood);
+   255→    pump.rotation.x = Math.PI / 2;
+   256→    pump.position.set(0, -0.03, -0.3);
+   257→    const stock = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.09, 0.24), wood);
+   258→    stock.position.set(0, -0.045, 0.1);
+   259→    g.add(barrel, pump, stock);
+   260→    g.rotation.y = -0.04;
+   261→    return g;
+   262→  }
+   263→  private buildCrowbarVM(): THREE.Group {
+   264→    const g = new THREE.Group();
+   265→    const mat = new THREE.MeshStandardMaterial({ color: 0x5c2222, roughness: 0.55, metalness: 0.65 });
+   266→    const bar = new THREE.Mesh(new THREE.CylinderGeometry(0.016, 0.016, 0.6, 8), mat);
+   267→    bar.rotation.set(Math.PI / 2 - 0.5, 0, 0.3);
+   268→    bar.position.set(0, 0.05, -0.22);
+   269→    const hook = new THREE.Mesh(new THREE.TorusGeometry(0.045, 0.015, 6, 12, Math.PI * 1.2), mat);
+   270→    hook.position.set(0.09, 0.16, -0.46);
+   271→    hook.rotation.set(Math.PI / 2, 0, 0.8);
+   272→    g.add(bar, hook);
+   273→    g.rotation.z = 0.35;
+   274→    return g;
+   275→  }
+   276→
+   277→  // ══════════ input ══════════
+   278→  private onKeyDown = (e: KeyboardEvent) => {
+   279→    if (e.code === "Tab") e.preventDefault();
+   280→    this.keys.add(e.code);
+   281→    const st = useGame.getState();
+   282→    if (st.screen === "playing") {
+   283→      if (e.code === "KeyF") this.toggleFlashlight();
+   284→      else if (e.code === "KeyR") this.startReload();
+   285→      else if (e.code === "Digit1") this.switchWeapon("crowbar");
+   286→      else if (e.code === "Digit2" && st.weapons.pistol) this.switchWeapon("pistol");
+   287→      else if (e.code === "Digit3" && st.weapons.shotgun) this.switchWeapon("shotgun");
+   288→      else if (e.code === "KeyE") this.tryInteract();
+   289→      else if (e.code === "Tab") {
+   290→        st.setScreen("inventory");
+   291→        document.exitPointerLock();
+   292→      } else if (e.code === "KeyM") {
+   293→        st.setScreen("map");
+   294→        document.exitPointerLock();
+   295→      }
+   296→    } else if (st.screen === "inventory" && (e.code === "Tab" || e.code === "Escape")) {
+   297→      st.setScreen("playing");
+   298→      this.lockPointer();
+   299→    } else if (st.screen === "map" && (e.code === "KeyM" || e.code === "Escape" || e.code === "Tab")) {
+   300→      st.setScreen("playing");
+   301→      this.lockPointer();
+   302→    }
+   303→  };
+   304→  private onKeyUp = (e: KeyboardEvent) => this.keys.delete(e.code);
+   305→  private onMouseMove = (e: MouseEvent) => {
+   306→    if (document.pointerLockElement !== this.canvas) return;
+   307→    const st = useGame.getState();
+   308→    if (st.screen !== "playing") return;
+   309→    const s = 0.0022;
+   310→    this.yaw -= e.movementX * s;
+   311→    this.pitch -= e.movementY * s;
+   312→    this.pitch = Math.max(-1.35, Math.min(1.35, this.pitch));
+   313→  };
+   314→  private onMouseDown = (e: MouseEvent) => {
+   315→    if (e.button !== 0) return;
+   316→    const st = useGame.getState();
+   317→    if (st.screen !== "playing") return;
+   318→    if (document.pointerLockElement !== this.canvas) {
+   319→      this.lockPointer();
+   320→      return;
+   321→    }
+   322→    this.mouseDown = true;
+   323→    this.shoot();
+   324→  };
+   325→  private onMouseUp = () => {
+   326→    this.mouseDown = false;
+   327→  };
+   328→  private onPointerLockChange = () => {
+   329→    const st = useGame.getState();
+   330→    if (document.pointerLockElement !== this.canvas && st.screen === "playing" && !st.aiChoiceOpen) {
+   331→      st.setScreen("paused");
+   332→    }
+   333→  };
+   334→  private onResize = () => {
+   335→    const w = this.canvas.clientWidth || window.innerWidth;
+   336→    const h = this.canvas.clientHeight || window.innerHeight;
+   337→    this.renderer.setSize(w, h, false);
+   338→    this.camera.aspect = w / h;
+   339→    this.camera.updateProjectionMatrix();
+   340→    this.composer?.setSize(w, h);
+   341→  };
+   342→  private bindInput() {
+   343→    window.addEventListener("keydown", this.onKeyDown);
+   344→    window.addEventListener("keyup", this.onKeyUp);
+   345→    window.addEventListener("mousemove", this.onMouseMove);
+   346→    this.canvas.addEventListener("mousedown", this.onMouseDown);
+   347→    window.addEventListener("mouseup", this.onMouseUp);
+   348→    document.addEventListener("pointerlockchange", this.onPointerLockChange);
+   349→  }
+   350→
+   351→  private lockPointer() {
+   352→    if (document.pointerLockElement !== this.canvas) {
+   353→      this.canvas.requestPointerLock?.();
+   354→    }
+   355→  }
+   356→
+   357→  // ══════════ public API ══════════
+   358→  private api = {
+   359→    startNewGame: () => {
+   360→      clearCheckpoint();
+   361→      useGame.getState().setHasSave(false);
+   362→      useGame.getState().resetRun();
+   363→      this.lastLoadedPos = null;
+   364→      this.lastLoadedYaw = 0;
+   365→      this.radioChain = 0;
+   366→      this.extractionReady = false;
+   367→      this.bossGateClosed = false;
+   368→      this.waveN = 0;
+   369→      useGame.getState().setScreen("intro");
+   370→    },
+   371→    continueGame: () => {
+   372→      const save = loadCheckpoint();
+   373→      if (!save) {
+   374→        useGame.getState().showHint("لا يوجد حفظ متاح");
+   375→        return;
+   376→      }
+   377→      this.pendingSave = save;
+   378→      this.lastLoadedPos = [save.pos[0], save.pos[1]];
+   379→      this.lastLoadedYaw = save.yaw;
+   380→      useGame.getState().applySave(save);
+   381→      this.beginRun();
+   382→    },
+   383→    startRun: () => {
+   384→      this.beginRun();
+   385→    },
+   386→    pause: () => {
+   387→      const st = useGame.getState();
+   388→      if (st.screen === "playing") {
+   389→        st.setScreen("paused");
+   390→        document.exitPointerLock();
+   391→      }
+   392→    },
+   393→    resume: () => {
+   394→      const st = useGame.getState();
+   395→      if (st.screen === "paused" || st.screen === "playing") {
+   396→        st.setScreen("playing");
+   397→        this.lockPointer();
+   398→      }
+   399→    },
+   400→    quitToMenu: () => {
+   401→      useGame.getState().setScreen("menu");
+   402→      document.exitPointerLock();
+   403→      audio.stopHeartbeat();
+   404→      audio.setThreat(0);
+   405→      audio.startAmbient("menu");
+   406→    },
+   407→    equipWeapon: (w: WeaponId | null) => {
+   408→      useGame.getState().equip(w);
+   409→    },
+   410→    reload: () => this.startReload(),
+   411→    getMapSnapshot: (): MapSnapshot | null => {
+   412→      if (!this.world) return null;
+   413→      const st = useGame.getState();
+   414→      const discovered = (name: string) => this.poiFound.has(name);
+   415→      const markers: MapSnapshot["markers"] = [];
+   416→      const objPos: Record<string, [number, number]> = {
+   417→        obj_wake: [69, 62],
+   418→        obj_weapon: [23, 23],
+   419→        obj_radio: [-23, -69],
+   420→        obj_survive: [0, -100],
+   421→        obj_cards: !st.hasItem("keycard_blue") ? [-23, 23] : [-69, -23],
+   422→        obj_lab: [23, -23],
+   423→        obj_core: [23, -31],
+   424→        obj_escape: [23, -20],
+   425→        obj_gate: [-8, -97],
+   426→        obj_wave: [0, -104],
+   427→      };
+   428→      const op = objPos[st.objectiveId];
+   429→      if (op) markers.push({ x: op[0], z: op[1], kind: "objective" });
+   430→      if (st.flags.radioDone || st.flags.coreDestroyed || st.flags.dealAccepted) {
+   431→        markers.push({ x: 0, z: -104, kind: "extraction", label: "الإخلاء" });
+   432→        if (!st.flags.saraSaved) markers.push({ x: -10.5, z: 32, kind: "survivor", label: "سارة" });
+   433→        if (!st.flags.adelSaved) markers.push({ x: -60, z: 29, kind: "survivor", label: "عادل" });
+   434→        if (!st.flags.soldierSaved) markers.push({ x: -59, z: -30.5, kind: "survivor", label: "الرقيب" });
+   435→      }
+   436→      if (this.poiFound.has("lab")) markers.push({ x: 23, z: -23, kind: "lab", label: "المختبر" });
+   437→      return {
+   438→        buildings: this.world.buildings.map((b) => ({
+   439→          ...b,
+   440→          discovered: b.poi ? discovered(b.name!) : true,
+   441→        })),
+   442→        roads: this.world.roads.map((r) => ({
+   443→          ...r,
+   444→          blocked: this.world!.blockedRoads.some(
+   445→            (b) => Math.abs(b.x - r.x) < r.w / 2 + 1 && Math.abs(b.z - r.z) < 5,
+   446→          ),
+   447→        })),
+   448→        player: { x: this.pos.x, z: this.pos.z, yaw: this.yaw },
+   449→        markers,
+   450→      };
+   451→    },
+   452→    chooseAI: (choice: "destroy" | "deal" | "leave") => {
+   453→      this.resolveAI(choice);
+   454→    },
+   455→  };
+   456→
+   457→  // ══════════ run lifecycle ══════════
+   458→  private beginRun() {
+   459→    const st = useGame.getState();
+   460→    st.resetRun();
+   461→    if (this.pendingSave) {
+   462→      st.applySave(this.pendingSave);
+   463→      this.pendingSave = null;
+   464→    }
+   465→    if (!this.world) {
+   466→      this.world = buildWorld(this.scene);
+   467→      this.enemies = new EnemyManager(this.scene, {
+   468→        damagePlayer: (n, fx, fz) => this.damagePlayer(n, fx, fz),
+   469→        onDeath: (e) => this.onEnemyDeath(e),
+   470→        spawnAdds: (x, z, kind, n) => {
+   471→          for (let i = 0; i < n; i++) {
+   472→            this.enemies!.addAt(x + (Math.random() - 0.5) * 6, z + 4 + i * 2, kind);
+   473→          }
+   474→        },
+   475→      });
+   476→      this.enemies.spawnFromPoints(this.world.spawns);
+   477→      // جثث مزيفة في الشوارع تنهض عند الاقتراب
+   478→      const fakeSpots: [number, number][] = [
+   479→        [30, 30],
+   480→        [-30, -30],
+   481→        [-55, 15],
+   482→        [40, -26],
+   483→      ];
+   484→      for (const [fx, fz] of fakeSpots) {
+   485→        const e = this.enemies.addAt(fx, fz, "runner");
+   486→        e.group.visible = false;
+   487→        e.wanderT = 9999;
+   488→        e.state = "idle";
+   489→        e.targetX = fx;
+   490→        e.targetZ = fz;
+   491→      }
+   492→    }
+   493→
+   494→    // موضع البداية أو نقطة الحفظ
+   495→    if (this.lastLoadedPos) {
+   496→      this.pos.set(this.lastLoadedPos[0], EYE_H, this.lastLoadedPos[1]);
+   497→      this.yaw = this.lastLoadedYaw;
+   498→    } else {
+   499→      this.pos.set(69, EYE_H, 70.5);
+   500→      this.yaw = 0;
+   501→    }
+   502→    this.pitch = 0;
+   503→    this.vel.set(0, 0, 0);
+   504→
+   505→    // حالة مشتقة من الأعلام (استكمال من حفظ)
+   506→    const s = useGame.getState();
+   507→    if (s.flags.generatorFixed || s.flags.coreDestroyed || s.flags.dealAccepted) {
+   508→      this.openGateBarrier();
+   509→    }
+   510→    if (s.flags.waveDone) {
+   511→      this.extractionReady = true;
+   512→      this.world!.boatLight.intensity = 3.2;
+   513→    }
+   514→    if (s.flags.coreDestroyed && s.hud.escapeTimer < 0 && !s.flags.extracted) {
+   515→      useGame.getState().setHud({ escapeTimer: 240 });
+   516→    }
+   517→    if (s.flags.labEntered) {
+   518→      this.world.labDoor.open = true;
+   519→      this.world.labDoor.group.position.y = -3.5;
+   520→      this.removeLabDoorCollider();
+   521→    }
+   522→    if (s.flags.bossKilled) this.openBossGate();
+   523→    this.poiFound.add("شقتك");
+   524→
+   525→    // أهداف واجهة
+   526→    const obj = OBJECTIVE_BY_ID[s.objectiveId];
+   527→    s.setHud({ objective: obj?.text ?? "", optionalObjective: obj?.optional ?? "", zone: "" });
+   528→
+   529→    this.runStarted = true;
+   530→    s.setScreen("playing");
+   531→    audio.init();
+   532→    audio.startAmbient(s.flags.labEntered ? "lab" : "city");
+   533→    this.lockPointer();
+   534→    st.showHint("اضغط على الشاشة للتقاط مؤشر الفأرة إن لم يُقفل");
+   535→  }
+   536→
+   537→  private lastLoadedPos: [number, number] | null = null;
+   538→  private lastLoadedYaw = 0;
+   539→  private lastEscapeSec = -1;
+   540→  private lastWaveSec = -1;
+   541→
+   542→  dispose() {
+   543→    this.disposed = true;
+   544→    cancelAnimationFrame(this.rafId);
+   545→    window.removeEventListener("keydown", this.onKeyDown);
+   546→    window.removeEventListener("keyup", this.onKeyUp);
+   547→    window.removeEventListener("mousemove", this.onMouseMove);
+   548→    this.canvas.removeEventListener("mousedown", this.onMouseDown);
+   549→    window.removeEventListener("mouseup", this.onMouseUp);
+   550→    document.removeEventListener("pointerlockchange", this.onPointerLockChange);
+   551→    window.removeEventListener("resize", this.onResize);
+   552→    audio.stopHeartbeat();
+   553→    audio.stopAmbient();
+   554→    setEngine(null);
+   555→    this.renderer?.dispose();
+   556→  }
+   557→
+   558→  // ══════════ combat ══════════
+   559→  private switchWeapon(w: WeaponId) {
+   560→    const st = useGame.getState();
+   561→    if (st.hud.equipped === w) return;
+   562→    st.equip(w);
+   563→    this.reloadT = 0;
+   564→    st.setHud({ reloading: false });
+   565→    audio.play("ui_click", { volume: 0.5 });
+   566→  }
+   567→
+   568→  private startReload() {
+   569→    const st = useGame.getState();
+   570→    const w = st.hud.equipped;
+   571→    if (!w || WEAPONS[w].melee) return;
+   572→    const def = WEAPONS[w];
+   573→    const mag = w === "pistol" ? st.hud.pistolMag : st.hud.shotgunMag;
+   574→    const reserve = w === "pistol" ? st.hud.pistolAmmo : st.hud.shotgunAmmo;
+   575→    if (this.reloadT > 0 || mag >= def.magSize || reserve <= 0) return;
+   576→    this.reloadT = def.reloadTime;
+   577→    st.setHud({ reloading: true });
+   578→    audio.play("reload_start");
+   579→  }
+   580→
+   581→  private finishReload() {
+   582→    const st = useGame.getState();
+   583→    const w = st.hud.equipped;
+   584→    if (!w) return;
+   585→    const def = WEAPONS[w];
+   586→    if (w === "pistol") {
+   587→      const need = def.magSize - st.hud.pistolMag;
+   588→      const take = Math.min(need, st.hud.pistolAmmo);
+   589→      st.setHud({ pistolMag: st.hud.pistolMag + take, pistolAmmo: st.hud.pistolAmmo - take, reloading: false });
+   590→    } else {
+   591→      const need = def.magSize - st.hud.shotgunMag;
+   592→      const take = Math.min(need, st.hud.shotgunAmmo);
+   593→      st.setHud({ shotgunMag: st.hud.shotgunMag + take, shotgunAmmo: st.hud.shotgunAmmo - take, reloading: false });
+   594→    }
+   595→    audio.play("reload_end");
+   596→  }
+   597→
+   598→  private shoot() {
+   599→    const st = useGame.getState();
+   600→    const w = st.hud.equipped;
+   601→    if (!w || st.hud.reloading) return;
+   602→    const def = WEAPONS[w];
+   603→    const now = performance.now() / 1000;
+   604→    if (now - this.lastShot < def.fireRate) return;
+   605→
+   606→    if (def.melee) {
+   607→      this.lastShot = now;
+   608→      this.swingT = 0.28;
+   609→      this.vmRecoil = 1;
+   610→      audio.play("swing");
+   611→      // ضربة قريبة
+   612→      this.raycaster.setFromCamera(new THREE.Vector2(0, 0), this.camera);
+   613→      this.raycaster.far = def.range;
+   614→      const hits = this.raycaster.intersectObjects(this.hitTargets(), true);
+   615→      const hit = this.pickEnemyHit(hits);
+   616→      if (hit) {
+   617→        const e = hit.object.userData.enemy as Enemy;
+   618→        this.enemies!.damageAt(e, def.damage, hit.object.userData.isHead === true);
+   619→        this.spawnBlood(hit.point);
+   620→        audio.play("hit_flesh", { volume: 0.8 });
+   621→      }
+   622→      return;
+   623→    }
+   624→
+   625→    const mag = w === "pistol" ? st.hud.pistolMag : st.hud.shotgunMag;
+   626→    if (mag <= 0) {
+   627→      audio.play("dryfire");
+   628→      this.startReload();
+   629→      return;
+   630→    }
+   631→    this.lastShot = now;
+   632→    st.addShot();
+   633→    if (w === "pistol") st.setHud({ pistolMag: mag - 1 });
+   634→    else st.setHud({ shotgunMag: mag - 1 });
+   635→
+   636→    audio.play(w === "pistol" ? "shot_pistol" : "shot_shotgun");
+   637→    this.muzzleT = 0.06;
+   638→    this.muzzle.intensity = 26;
+   639→    this.vmRecoil = 1;
+   640→    this.pitch = Math.min(1.35, this.pitch + (w === "shotgun" ? 0.035 : 0.016));
+   641→    this.enemies!.noise(this.pos.x, this.pos.z, def.noise);
+   642→
+   643→    const pellets = def.pellets ?? 1;
+   644→    for (let i = 0; i < pellets; i++) {
+   645→      const spread = def.spread ?? 0.004;
+   646→      const v = new THREE.Vector2(
+   647→        (Math.random() - 0.5) * spread * 2,
+   648→        (Math.random() - 0.5) * spread * 2,
+   649→      );
+   650→      this.raycaster.setFromCamera(v, this.camera);
+   651→      this.raycaster.far = def.range;
+   652→      const hits = this.raycaster.intersectObjects(this.hitTargets(), true);
+   653→      const res = this.pickEnemyHit(hits);
+   654→      if (res) {
+   655→        const e = res.object.userData.enemy as Enemy;
+   656→        const isHead = res.object.userData.isHead === true;
+   657→        const dmg = def.damage * (isHead ? def.headMult : 1);
+   658→        this.enemies!.damageAt(e, dmg, isHead);
+   659→        this.spawnBlood(res.point);
+   660→        audio.play(isHead ? "hit_head" : "hit_flesh", { volume: 0.7 });
+   661→        if (isHead) st.addHeadshot();
+   662→      } else if (hits.length > 0) {
+   663→        // اصطدام بجدار — شرارة غبار
+   664→        this.spawnBlood(hits[0].point, 0x6a655c, 3);
+   665→      }
+   666→    }
+   667→  }
+   668→
+   669→  private hitMeshesCache: THREE.Object3D[] | null = null;
+   670→  private hitTargets(): THREE.Object3D[] {
+   671→    if (!this.hitMeshesCache) {
+   672→      const list: THREE.Object3D[] = [];
+   673→      this.scene.traverse((o) => {
+   674→        if (o instanceof THREE.Mesh) {
+   675→          if (o.userData.noHit === true) return;
+   676→          // تجاهل أشجار الكاميرا (نموذج السلاح)
+   677→          let p: THREE.Object3D | null = o;
+   678→          while (p) {
+   679→            if (p === this.camera) return;
+   680→            p = p.parent;
+   681→          }
+   682→          list.push(o);
+   683→        }
+   684→      });
+   685→      this.hitMeshesCache = list;
+   686→    }
+   687→    return this.hitMeshesCache;
+   688→  }
+   689→
+   690→  private pickEnemyHit(hits: THREE.Intersection[]): THREE.Intersection | null {
+   691→    for (const h of hits) {
+   692→      if (h.object.userData.enemy) return h;
+   693→    }
+   694→    return null;
+   695→  }
+   696→
+   697→  private spawnBlood(p: THREE.Vector3, color = 0x5c0f0f, n = 6) {
+   698→    for (let i = 0; i < n; i++) {
+   699→      const m = new THREE.Mesh(
+   700→        new THREE.PlaneGeometry(0.05, 0.05),
+   701→        new THREE.MeshBasicMaterial({ color, transparent: true }),
+   702→      );
+   703→      m.position.copy(p);
+   704→      m.userData.noHit = true;
+   705→      this.scene.add(m);
+   706→      this.blood.push({
+   707→        mesh: m,
+   708→        vel: new THREE.Vector3(
+   709→          (Math.random() - 0.5) * 2.4,
+   710→          Math.random() * 2.2,
+   711→          (Math.random() - 0.5) * 2.4,
+   712→        ),
+   713→        life: 0.42,
+   714→      });
+   715→    }
+   716→  }
+   717→
+   718→  private onEnemyDeath(e: Enemy) {
+   719→    const st = useGame.getState();
+   720→    st.addKill();
+   721→    // إسقاط غنيمة أحياناً
+   722→    if (Math.random() < 0.22 && this.world) {
+   723→      const kinds = ["pistol_ammo", "bandage", "pistol_ammo", "battery"];
+   724→      const item = kinds[Math.floor(Math.random() * kinds.length)];
+   725→      const qty = item === "pistol_ammo" ? 8 : 1;
+   726→      this.world.interactables.push({
+   727→        id: `drop_${e.id}`,
+   728→        kind: "item",
+   729→        x: e.group.position.x + (Math.random() - 0.5) * 1.4,
+   730→        z: e.group.position.z + (Math.random() - 0.5) * 1.4,
+   731→        radius: 1.8,
+   732→        prompt: "التقاط الغنيمة",
+   733→        data: { item, qty },
+   734→        used: false,
+   735→      });
+   736→    }
+   737→    if (e.kind === "brute" && Math.hypot(e.group.position.x + 23, e.group.position.z - 23) < 26) {
+   738→      st.setFlag("bruteHospitalKilled", true);
+   739→      st.toastMsg("سقط المتحول العملاق… المستشفى تتنفس من جديد");
+   740→    }
+   741→    if (e.kind === "boss") {
+   742→      st.setFlag("bossKilled", true);
+   743→      this.openBossGate();
+   744→      st.toastMsg("«الحارس» سقط — الطريق إلى النواة مفتوح");
+   745→      audio.play("stinger_discover");
+   746→    }
+   747→  }
+   748→
+   749→  private openBossGate() {
+   750→    if (!this.world || !this.bossGateClosed) return;
+   751→    this.bossGateClosed = false;
+   752→    this.world.labBossGate.mesh.visible = false;
+   753→    this.world.dynamicColliders.delete("bossGate");
+   754→  }
+   755→
+   756→  private closeBossGate() {
+   757→    if (!this.world || this.bossGateClosed) return;
+   758→    this.bossGateClosed = true;
+   759→    this.world.labBossGate.mesh.visible = true;
+   760→    this.world.dynamicColliders.set("bossGate", this.bossGateCollider);
+   761→  }
+   762→
+   763→  // ══════════ player damage / death ══════════
+   764→  private damagePlayer(n: number, fromX: number, fromZ: number) {
+   765→    const st = useGame.getState();
+   766→    if (st.hud.hp <= 0) return;
+   767→    const newHp = Math.max(0, st.hud.hp - n);
+   768→    st.setHud({ hp: newHp });
+   769→    st.damageFlash();
+   770→    st.addDamage(n);
+   771→    audio.play("hit_flesh", { volume: 0.9 });
+   772→    // دفعة للخلف
+   773→    const dx = this.pos.x - fromX;
+   774→    const dz = this.pos.z - fromZ;
+   775→    const d = Math.hypot(dx, dz) || 1;
+   776→    this.vel.x += (dx / d) * 2.6;
+   777→    this.vel.z += (dz / d) * 2.6;
+   778→    if (newHp <= 0) {
+   779→      this.finish("ending_death");
+   780→    }
+   781→  }
+   782→
+   783→  private finish(endingId: EndingId) {
+   784→    const st = useGame.getState();
+   785→    st.setEnding(endingId);
+   786→    st.setScreen("ending");
+   787→    document.exitPointerLock();
+   788→    audio.stopHeartbeat();
+   789→    audio.setThreat(0);
+   790→    if (endingId === "ending_death") {
+   791→      audio.play("explosion", { volume: 0.5 });
+   792→      clearCheckpoint();
+   793→      st.setHasSave(false);
+   794→    }
+   795→    unlockEnding(endingId);
+   796→  }
+   797→
+   798→  // ══════════ interaction ══════════
+   799→  private currentInteract: Interactable | null = null;
+   800→  private forward = new THREE.Vector3();
+   801→
+   802→  private findInteract(): Interactable | null {
+   803→    if (!this.world) return null;
+   804→    this.camera.getWorldDirection(this.forward);
+   805→    let best: Interactable | null = null;
+   806→    let bestScore = -1;
+   807→    for (const it of this.world.interactables) {
+   808→      if (it.used) continue;
+   809→      const dx = it.x - this.pos.x;
+   810→      const dz = it.z - this.pos.z;
+   811→      const d = Math.hypot(dx, dz);
+   812→      if (d > it.radius) continue;
+   813→      const dot = (dx / (d || 1)) * this.forward.x + (dz / (d || 1)) * this.forward.z;
+   814→      if (dot < 0.15 && d > 1.1) continue;
+   815→      const score = dot + (it.radius - d);
+   816→      if (score > bestScore) {
+   817→        bestScore = score;
+   818→        best = it;
+   819→      }
+   820→    }
+   821→    return best;
+   822→  }
+   823→
+   824→  private tryInteract() {
+   825→    const it = this.currentInteract;
+   826→    if (!it) return;
+   827→    const st = useGame.getState();
+   828→    switch (it.kind) {
+   829→      case "item": {
+   830→        const item = it.data?.item as string;
+   831→        const qty = (it.data?.qty as number) ?? 1;
+   832→        if (it.data?.weapon) {
+   833→          st.giveWeapon(it.data.weapon as "pistol" | "shotgun");
+   834→          st.toastMsg(`التقطت: ${WEAPONS[it.data.weapon as "pistol" | "shotgun"].name}`);
+   835→          audio.play("pickup");
+   836→          it.used = true;
+   837→          this.hidePickup(it.id);
+   838→          st.showHint("اضغط 2/3 لتبديل الأسلحة — 1 للعُقلة");
+   839→          return;
+   840→        }
+   841→        const ok = st.addItem(item as never, qty);
+   842→        if (!ok) {
+   843→          st.toastMsg(MESSAGES.inventoryFull);
+   844→          return;
+   845→        }
+   846→        const { ITEMS: IT } = { ITEMS };
+   847→        st.toastMsg(`التقطت: ${IT[item as keyof typeof IT]?.name ?? item}${qty > 1 ? ` ×${qty}` : ""}`);
+   848→        audio.play("pickup");
+   849→        it.used = true;
+   850→        this.hidePickup(it.id);
+   851→        break;
+   852→      }
+   853→      case "note": {
+   854→        const docId = it.data?.docId as string;
+   855→        st.setNote(docId as never);
+   856→        st.markDoc(docId as never);
+   857→        st.setScreen("note");
+   858→        document.exitPointerLock();
+   859→        it.used = true;
+   860→        break;
+   861→      }
+   862→      case "checkpoint": {
+   863→        this.doCheckpoint("خزانة");
+   864→        break;
+   865→      }
+   866→      case "console": {
+   867→        this.useTowerConsole(it);
+   868→        break;
+   869→      }
+   870→      case "npc": {
+   871→        this.talkSurvivor(it);
+   872→        break;
+   873→      }
+   874→      case "generator": {
+   875→        this.useGenerator(it);
+   876→        break;
+   877→      }
+   878→      case "gate": {
+   879→        this.useLabDoor(it);
+   880→        break;
+   881→      }
+   882→      case "core": {
+   883→        this.useCore(it);
+   884→        break;
+   885→      }
+   886→      case "exit": {
+   887→        if (it.data?.labExit) {
+   888→          this.exitLab();
+   889→        } else {
+   890→          this.tryExtract();
+   891→        }
+   892→        break;
+   893→      }
+   894→    }
+   895→  }
+   896→
+   897→  private hidePickup(id: string) {
+   898→    if (!this.world) return;
+   899→    this.scene.traverse((o) => {
+   900→      if (o instanceof THREE.Mesh && o.userData.pickupId === id) o.visible = false;
+   901→    });
+   902→  }
+   903→
+   904→  private doCheckpoint(label: string) {
+   905→    const st = useGame.getState();
+   906→    const ok = saveCheckpoint(
+   907→      st.getSaveData([this.pos.x, this.pos.z], this.yaw),
+   908→    );
+   909→    if (ok) {
+   910→      st.setHasSave(true);
+   911→      st.toastMsg(`${MESSAGES.checkpointSaved} (${label})`);
+   912→      audio.play("radio_beep", { volume: 0.5 });
+   913→    }
+   914→  }
+   915→
+   916→  private useTowerConsole(it: Interactable) {
+   917→    const st = useGame.getState();
+   918→    if (st.flags.radioDone) {
+   919→      st.showHint("البث انتهى. لا شيء آخر في هذه القناة.");
+   920→      return;
+   921→    }
+   922→    if (!st.flags.hasTowerKey && !st.hasItem("key_tower")) {
+   923→      st.toastMsg(MESSAGES.towerLocked);
+   924→      audio.play("door_locked");
+   925→      return;
+   926→    }
+   927→    it.used = true;
+   928→    st.toastMsg("…يُبث نداء الاستغاثة…");
+   929→    audio.play("radio_static", { volume: 0.8 });
+   930→    this.playRadioChain();
+   931→  }
+   932→
+   933→  private playRadioChain() {
+   934→    const st = useGame.getState();
+   935→    const lines = ["radio_1", "radio_2", "radio_3"];
+   936→    const idx = this.radioChain;
+   937→    if (idx >= lines.length) {
+   938→      st.setFlag("radioDone", true);
+   939→      st.setObjective("obj_survive");
+   940→      st.toastMsg("استجاب الفريق السريع! الميناء الشمالي — نقطة الإخلاء");
+   941→      audio.play("stinger_discover", { volume: 0.7 });
+   942→      this.doCheckpoint("بعد البث");
+   943→      return;
+   944→    }
+   945→    audio.play("radio_static", { volume: 0.4 });
+   946→    audio.playVoice(lines[idx], () => {
+   947→      setTimeout(() => {
+   948→        this.radioChain = idx + 1;
+   949→        this.playRadioChain();
+   950→      }, 900);
+   951→    });
+   952→  }
+   953→
+   954→  private talkSurvivor(it: Interactable) {
+   955→    const st = useGame.getState();
+   956→    const sid = it.data?.survivor as "sara" | "adel" | "soldier";
+   957→    const s = SURVIVOR_BY_ID[sid];
+   958→    if (!s) return;
+   959→    it.used = true;
+   960→    if (sid === "sara") st.setFlag("saraSaved", true);
+   961→    if (sid === "adel") st.setFlag("adelSaved", true);
+   962→    if (sid === "soldier") {
+   963→      st.setFlag("soldierSaved", true);
+   964→      st.addItem("shotgun_ammo", 10);
+   965→    }
+   966→    st.toastMsg(s.line);
+   967→    audio.play("radio_beep", { volume: 0.4 });
+   968→    const f = useGame.getState().flags;
+   969→    const n = (f.saraSaved ? 1 : 0) + (f.adelSaved ? 1 : 0) + (f.soldierSaved ? 1 : 0);
+   970→    st.showHint(`${MESSAGES.savedSurvivor(s.name)} (${n}/3 ناجين)`);
+   971→    st.setHud({
+   972→      optionalObjective: `الناجون الذين أنقذتهم: ${n}/3`,
+   973→    });
+   974→  }
+   975→
+   976→  private useGenerator(it: Interactable) {
+   977→    const st = useGame.getState();
+   978→    if (st.flags.generatorFixed) {
+   979→      st.showHint("المولد يعمل.");
+   980→      return;
+   981→    }
+   982→    if (!st.consumeFirst("fuel")) {
+   983→      st.toastMsg(MESSAGES.needFuel);
+   984→      audio.play("door_locked");
+   985→      return;
+   986→    }
+   987→    it.used = true;
+   988→    st.setFlag("generatorFixed", true);
+   989→    audio.play("generator", { volume: 1 });
+   990→    this.openGateBarrier();
+   991→    st.toastMsg(MESSAGES.generatorFixed);
+   992→    st.setObjective("obj_wave");
+   993→    useGame.getState().setHud({ waveTimer: 120 });
+   994→    this.waveN = 0;
+   995→    this.waveSpawnT = 4;
+   996→    this.doCheckpoint("البوابة");
+   997→  }
+   998→
+   999→  private openGateBarrier() {
+  1000→    if (!this.world || this.world.gateBarrier.open) return;
+  1001→    this.world.gateBarrier.open = true;
+  1002→    const g = this.world.gateBarrier.group;
+  1003→    g.children.forEach((c) => (c.position.y -= 3.2));
+  1004→    // إزالة مصادم البوابة (أول مصادم حول 0,-100)
+  1005→    for (let i = this.world.colliders.length - 1; i >= 0; i--) {
+  1006→      const c = this.world.colliders[i];
+  1007→      if (c.minX < 0 && c.maxX > 0 && c.minZ > -102 && c.maxZ < -97.5) {
+  1008→        this.world.colliders.splice(i, 1);
+  1009→        break;
+  1010→      }
+  1011→    }
+  1012→  }
+  1013→
+  1014→  private useLabDoor(it: Interactable) {
+  1015→    const st = useGame.getState();
+  1016→    if (st.flags.labEntered) {
+  1017→      st.showHint("البوابة مفتوحة.");
+  1018→      return;
+  1019→    }
+  1020→    const blue = st.hasItem("keycard_blue");
+  1021→    const red = st.hasItem("keycard_red");
+  1022→    if (!blue || !red) {
+  1023→      const missing: string[] = [];
+  1024→      if (!blue) missing.push("الزرقاء (المستشفى)");
+  1025→      if (!red) missing.push("الحمراء (المصنع)");
+  1026→      st.toastMsg(`${MESSAGES.labDoorNeed} — ينقص: ${missing.join(" و ")}`);
+  1027→      audio.play("door_locked");
+  1028→      if (st.objectiveId === "obj_survive") st.setObjective("obj_cards");
+  1029→      return;
+  1030→    }
+  1031→    it.used = true;
+  1032→    st.setFlag("labEntered", true);
+  1033→    this.world!.labDoor.open = true;
+  1034→    this.world!.labDoor.group.position.y = -3.5;
+  1035→    this.removeLabDoorCollider();
+  1036→    audio.play("door_open", { volume: 1 });
+  1037→    st.toastMsg("البوابة تنفتح على صوت حديدي ميت… سلالم تنزل نحو العتمة");
+  1038→    st.setObjective("obj_core");
+  1039→    this.enterLab();
+  1040→  }
+  1041→
+  1042→  private removeLabDoorCollider() {
+  1043→    if (!this.world || this.labDoorColliderIdx >= 0) return;
+  1044→    for (let i = this.world.colliders.length - 1; i >= 0; i--) {
+  1045→      const c = this.world.colliders[i];
+  1046→      if (Math.abs((c.minX + c.maxX) / 2 - 23) < 0.3 && Math.abs((c.minZ + c.maxZ) / 2 + 3.2) < 0.4) {
+  1047→        this.labDoorColliderIdx = i;
+  1048→        this.world.colliders.splice(i, 1);
+  1049→        break;
+  1050→      }
+  1051→    }
+  1052→  }
+  1053→
+  1054→  private enterLab() {
+  1055→    this.pos.set(600, EYE_H, 21);
+  1056→    this.yaw = Math.PI; // نحو -Z داخل النفق
+  1057→    this.vel.set(0, 0, 0);
+  1058→    audio.startAmbient("lab");
+  1059→    const st = useGame.getState();
+  1060→    st.setHud({ zone: "المختبر — تحت الأرض" });
+  1061→    audio.play("stinger_danger", { volume: 0.8 });
+  1062→    this.doCheckpoint("مدخل المختبر");
+  1063→  }
+  1064→
+  1065→  private exitLab() {
+  1066→    this.pos.set(23, EYE_H, -20);
+  1067→    this.yaw = Math.PI;
+  1068→    this.vel.set(0, 0, 0);
+  1069→    audio.startAmbient(useGame.getState().flags.coreDestroyed ? "city" : "city");
+  1070→    useGame.getState().setHud({ zone: "" });
+  1071→    useGame.getState().showHint("عدتَ إلى السطح. الهواء… أحمر.");
+  1072→  }
+  1073→
+  1074→  private useCore(it: Interactable) {
+  1075→    const st = useGame.getState();
+  1076→    if (st.flags.metAI) return;
+  1077→    it.used = true;
+  1078→    st.setFlag("metAI", true);
+  1079→    st.setAiChoiceOpen(true);
+  1080→    document.exitPointerLock();
+  1081→    audio.play("radio_static", { volume: 0.5 });
+  1082→    audio.play("stinger_discover", { volume: 0.8 });
+  1083→  }
+  1084→
+  1085→  private resolveAI(choice: "destroy" | "deal" | "leave") {
+  1086→    const st = useGame.getState();
+  1087→    st.setAiChoiceOpen(false);
+  1088→    const reaction = AI_REACTIONS[choice];
+  1089→    if (reaction) {
+  1090→      st.toastMsg(reaction.text);
+  1091→      if (reaction.voice) audio.playVoice(reaction.voice);
+  1092→    }
+  1093→    if (choice === "destroy") {
+  1094→      st.setFlag("coreDestroyed", true);
+  1095→      st.setObjective("obj_escape");
+  1096→      useGame.getState().setHud({ escapeTimer: 240 });
+  1097→      audio.play("explosion", { volume: 0.35 });
+  1098→      audio.play("alarm", { volume: 0.8 });
+  1099→      // فتح كل الأبواب: البوابة والمختبر
+  1100→      this.openGateBarrier();
+  1101→      this.extractionReady = true;
+  1102→      st.toastMsg(MESSAGES.coreSignal);
+  1103→      audio.startAmbient("city");
+  1104→      this.doCheckpoint("بعد النواة");
+  1105→    } else if (choice === "deal") {
+  1106→      st.setFlag("dealAccepted", true);
+  1107→      st.setObjective("obj_gate");
+  1108→      this.openGateBarrier();
+  1109→      this.extractionReady = true;
+  1110→      st.toastMsg("البوابة فُتحت من تلقاء نفسها… لا تلمس هذا الصمت");
+  1111→      audio.startAmbient("harbor");
+  1112→      this.doCheckpoint("الصفقة");
+  1113→    } else {
+  1114→      st.setObjective("obj_gate");
+  1115→      st.showHint("اتركك النواة خلفك. الميناء الشمالي — حيّاً.");
+  1116→    }
+  1117→    this.lockPointer();
+  1118→  }
+  1119→
+  1120→  private tryExtract() {
+  1121→    const st = useGame.getState();
+  1122→    if (!this.extractionReady) {
+  1123→      st.showHint("انتظر! الفريق لم يصل بعد — واصل الصمود");
+  1124→      audio.play("door_locked");
+  1125→      return;
+  1126→    }
+  1127→    // حساب النهاية
+  1128→    let ending: EndingId;
+  1129→    if (st.flags.dealAccepted) ending = "ending_deal";
+  1130→    else if (st.flags.coreDestroyed)
+  1131→      ending = st.docsRead.length >= 6 ? "ending_truth" : "ending_sacrifice";
+  1132→    else {
+  1133→      const saved =
+  1134→        (st.flags.saraSaved ? 1 : 0) + (st.flags.adelSaved ? 1 : 0) + (st.flags.soldierSaved ? 1 : 0);
+  1135→      ending = saved >= 3 ? "ending_rescue" : "ending_escape";
+  1136→    }
+  1137→    audio.play("radio_beep");
+  1138→    audio.playVoice("radio_3");
+  1139→    this.finish(ending);
+  1140→  }
+  1141→
+  1142→  // ══════════ flashlight ══════════
+  1143→  private toggleFlashlight() {
+  1144→    const st = useGame.getState();
+  1145→    if (!st.hud.flashlightOn && st.hud.battery <= 0) {
+  1146→      st.toastMsg(MESSAGES.flashlightDead);
+  1147→      return;
+  1148→    }
+  1149→    st.setHud({ flashlightOn: !st.hud.flashlightOn });
+  1150→    audio.play("ui_click", { volume: 0.4 });
+  1151→  }
+  1152→
+  1153→  // ══════════ main loop ══════════
+  1154→  private loop = () => {
+  1155→    if (this.disposed) return;
+  1156→    this.rafId = requestAnimationFrame(this.loop);
+  1157→    const dt = Math.min(this.clock.getDelta(), 0.05);
+  1158→    const st = useGame.getState();
+  1159→    const playing = st.screen === "playing" && !st.aiChoiceOpen;
+  1160→    const active = this.runStarted;
+  1161→
+  1162→    if (active) {
+  1163→      this.updateWorldFx(dt);
+  1164→      if (playing) {
+  1165→        this.updatePlayer(dt, true, st);
+  1166→        this.updateCombatTimers(dt, st);
+  1167→        this.enemies!.update(dt, this.pos, this.allColliders(), st.hud.hp > 0);
+  1168→        this.updateStory(dt, st);
+  1169→        this.updateAudioDirectors(dt, st);
+  1170→        // وقت اللعب
+  1171→        this.secAcc += dt;
+  1172→        if (this.secAcc >= 1) {
+  1173→          st.tickPlaySeconds(Math.floor(this.secAcc));
+  1174→          this.secAcc -= Math.floor(this.secAcc);
+  1175→        }
+  1176→      } else {
+  1177→        this.updatePromptIdle(st);
+  1178→      }
+  1179→    }
+  1180→
+  1181→    // الكاميرا
+  1182→    this.camera.position.copy(this.pos);
+  1183→    this.camera.rotation.order = "YXZ";
+  1184→    this.camera.rotation.y = this.yaw;
+  1185→    this.camera.rotation.x = this.pitch;
+  1186→    this.camera.rotation.z = 0;
+  1187→
+  1188→    // نموذج السلاح
+  1189→    this.updateViewmodel(dt, st);
+  1190→
+  1191→    // مؤثرات الدم
+  1192→    for (let i = this.blood.length - 1; i >= 0; i--) {
+  1193→      const b = this.blood[i];
+  1194→      b.life -= dt;
+  1195→      b.vel.y -= 6 * dt;
+  1196→      b.mesh.position.addScaledVector(b.vel, dt);
+  1197→      (b.mesh.material as THREE.MeshBasicMaterial).opacity = Math.max(0, b.life * 2.2);
+  1198→      if (b.life <= 0) {
+  1199→        this.scene.remove(b.mesh);
+  1200→        b.mesh.geometry.dispose();
+  1201→        this.blood.splice(i, 1);
+  1202→      }
+  1203→    }
+  1204→
+  1205→    // الرماد يتبع اللاعب
+  1206→    if (this.ash) {
+  1207→      this.ash.position.set(this.pos.x, 0, this.pos.z);
+  1208→      const arr = this.ash.geometry.attributes.position as THREE.BufferAttribute;
+  1209→      const a = arr.array as Float32Array;
+  1210→      for (let i = 1; i < a.length; i += 3) {
+  1211→        a[i] -= dt * 0.55;
+  1212→        if (a[i] < 0) a[i] = 26;
+  1213→      }
+  1214→      arr.needsUpdate = true;
+  1215→    }
+  1216→
+  1217→    if (this.horrorPass) {
+  1218→      this.horrorPass.uniforms.uTime.value += dt;
+  1219→      const dmg = Math.max(0, 1 - (Date.now() - st.hud.damageAt) / 700);
+  1220→      this.horrorPass.uniforms.uDamage.value = dmg;
+  1221→      this.horrorPass.uniforms.uThreat.value = st.hud.threat;
+  1222→    }
+  1223→
+  1224→    if (this.composer && active) {
+  1225→      this.composer.render();
+  1226→    }
+  1227→  };
+  1228→
+  1229→  private allColliders() {
+  1230→    const list = this.world!.colliders;
+  1231→    const dyn = this.world!.dynamicColliders;
+  1232→    if (dyn.size === 0) return list;
+  1233→    return [...list, ...dyn.values()];
+  1234→  }
+  1235→
+  1236→  private updatePlayer(dt: number, canMove: boolean, st: ReturnType<typeof useGame.getState>) {
+  1237→    void canMove;
+  1238→    // جري ولياقة
+  1239→    const wantRun = this.keys.has("ShiftLeft") || this.keys.has("ShiftRight");
+  1240→    let run = false;
+  1241→    if (canMove && wantRun && st.hud.stamina > 4) {
+  1242→      run = true;
+  1243→      st.setHud({ stamina: Math.max(0, st.hud.stamina - 17 * dt) });
+  1244→      this.staminaLock = 0.9;
+  1245→    } else {
+  1246→      this.staminaLock -= dt;
+  1247→      if (this.staminaLock <= 0 && st.hud.stamina < 100) {
+  1248→        st.setHud({ stamina: Math.min(100, st.hud.stamina + 11 * dt) });
+  1249→      }
+  1250→    }
+  1251→
+  1252→    const speed = run ? 6.9 : 4.1;
+  1253→    const mf = new THREE.Vector3(-Math.sin(this.yaw), 0, -Math.cos(this.yaw));
+  1254→    const mr = new THREE.Vector3(-mf.z, 0, mf.x); // يمين الكاميرا الحقيقي
+  1255→    const wish = new THREE.Vector3();
+  1256→    if (canMove) {
+  1257→      if (this.keys.has("KeyW")) wish.add(mf);
+  1258→      if (this.keys.has("KeyS")) wish.sub(mf);
+  1259→      if (this.keys.has("KeyD")) wish.add(mr);
+  1260→      if (this.keys.has("KeyA")) wish.sub(mr);
+  1261→    }
+  1262→    if (wish.lengthSq() > 0) wish.normalize().multiplyScalar(speed);
+  1263→    // تسارع/تباطؤ
+  1264→    this.vel.x += (wish.x - this.vel.x) * Math.min(1, dt * 10);
+  1265→    this.vel.z += (wish.z - this.vel.z) * Math.min(1, dt * 10);
+  1266→
+  1267→    const p = { x: this.pos.x + this.vel.x * dt, z: this.pos.z + this.vel.z * dt };
+  1268→    collideCircle(p, PLAYER_R, this.allColliders());
+  1269→    const moved = Math.hypot(p.x - this.pos.x, p.z - this.pos.z);
+  1270→    this.pos.x = p.x;
+  1271→    this.pos.z = p.z;
+  1272→    this.pos.y = EYE_H;
+  1273→
+  1274→    // خطوات
+  1275→    if (moved > 0.001) {
+  1276→      this.walkPhase += dt * (run ? 11 : 6.4);
+  1277→      this.footT -= dt;
+  1278→      if (this.footT <= 0) {
+  1279→        this.footT = run ? 0.31 : 0.47;
+  1280→        audio.play(run ? "footstep_run" : "footstep", { volume: 0.55 });
+  1281→      }
+  1282→    }
+  1283→
+  1284→    // كشاف
+  1285→    const bat = st.hud.battery;
+  1286→    if (st.hud.flashlightOn) {
+  1287→      const nb = Math.max(0, bat - dt * (100 / 240));
+  1288→      if (Math.abs(nb - bat) > 0.4 || nb === 0) {
+  1289→        st.setHud({ battery: nb });
+  1290→      }
+  1291→      if (nb <= 0) {
+  1292→        st.setHud({ flashlightOn: false });
+  1293→        st.toastMsg(MESSAGES.flashlightDead);
+  1294→      }
+  1295→    }
+  1296→    this.flickerT -= dt;
+  1297→    let intensity = st.hud.flashlightOn ? 46 : 0;
+  1298→    if (st.hud.flashlightOn && bat < 15 && this.flickerT <= 0) {
+  1299→      this.flickerT = 0.09;
+  1300→      intensity *= Math.random() < 0.3 ? 0.25 : 1;
+  1301→    }
+  1302→    this.flashlight.intensity = intensity;
+  1303→
+  1304→    // ترويج الهدف/الموجة
+  1305→    if (st.hud.escapeTimer >= 0) {
+  1306→      const t = st.hud.escapeTimer - dt;
+  1307→      if (t <= 0) {
+  1308→        st.setHud({ escapeTimer: -1 });
+  1309→        st.toastMsg("وصل الانفجار…");
+  1310→        this.finish("ending_death");
+  1311→        return;
+  1312→      }
+  1313→      const sec = Math.ceil(t);
+  1314→      if (sec !== this.lastEscapeSec) {
+  1315→        this.lastEscapeSec = sec;
+  1316→        st.setHud({ escapeTimer: t });
+  1317→      } else {
+  1318→        st.hud.escapeTimer = t; // تحديث صامت للقراءة الداخلية
+  1319→      }
+  1320→    }
+  1321→    if (st.hud.waveTimer >= 0) {
+  1322→      const t = st.hud.waveTimer - dt;
+  1323→      if (t <= 0) {
+  1324→        st.setHud({ waveTimer: -1 });
+  1325→        this.waveDone();
+  1326→      } else {
+  1327→        const sec = Math.ceil(t);
+  1328→        if (sec !== this.lastWaveSec) {
+  1329→          this.lastWaveSec = sec;
+  1330→          st.setHud({ waveTimer: t });
+  1331→        } else {
+  1332→          st.hud.waveTimer = t;
+  1333→        }
+  1334→        this.waveSpawnT -= dt;
+  1335→        if (this.waveSpawnT <= 0 && this.waveN < 4) {
+  1336→          this.waveSpawnT = 22;
+  1337→          this.waveN++;
+  1338→          this.spawnWaveGroup();
+  1339→        }
+  1340→      }
+  1341→    }
+  1342→  }
+  1343→
+  1344→  private updatePromptIdle(st: ReturnType<typeof useGame.getState>) {
+  1345→    st.setPrompt("");
+  1346→  }
+  1347→
+  1348→  private updateCombatTimers(dt: number, st: ReturnType<typeof useGame.getState>) {
+  1349→    if (this.reloadT > 0) {
+  1350→      this.reloadT -= dt;
+  1351→      if (this.reloadT <= 0) this.finishReload();
+  1352→    }
+  1353→    if (this.swingT > 0) this.swingT -= dt;
+  1354→    if (this.muzzleT > 0) {
+  1355→      this.muzzleT -= dt;
+  1356→      if (this.muzzleT <= 0) this.muzzle.intensity = 0;
+  1357→    }
+  1358→    this.vmRecoil = Math.max(0, this.vmRecoil - dt * 5);
+  1359→    void st;
+  1360→  }
+  1361→
+  1362→  private updateViewmodel(dt: number, st: ReturnType<typeof useGame.getState>) {
+  1363→    const w = st.hud.equipped;
+  1364→    this.vmPistol.visible = w === "pistol";
+  1365→    this.vmShotgun.visible = w === "shotgun";
+  1366→    this.vmCrowbar.visible = w === "crowbar";
+  1367→    const bobX = Math.sin(this.walkPhase) * 0.012;
+  1368→    const bobY = Math.abs(Math.cos(this.walkPhase)) * 0.014;
+  1369→    const reloadDip = st.hud.reloading ? -0.16 : 0;
+  1370→    const swing = this.swingT > 0 ? Math.sin((0.28 - this.swingT) / 0.28 * Math.PI) * 0.3 : 0;
+  1371→    const group = this.vmGroup;
+  1372→    group.position.set(0.26 + bobX, -0.24 + bobY + reloadDip - this.vmRecoil * 0.03, -0.5 + this.vmRecoil * 0.06 + swing * 0.35);
+  1373→    group.rotation.x = reloadDip * 1.4 + this.vmRecoil * 0.16 + swing * -1.1;
+  1374→    group.rotation.z = bobX * 0.6;
+  1375→  }
+  1376→
+  1377→  private updateWorldFx(dt: number) {
+  1378→    if (!this.world) return;
+  1379→    const t = performance.now() / 1000;
+  1380→    for (const f of this.world.fireLights) {
+  1381→      f.light.intensity = f.base * (0.72 + Math.sin(t * 11 + f.light.position.x) * 0.14 + Math.random() * 0.14);
+  1382→    }
+  1383→    for (const f of this.world.flickerLights) {
+  1384→      if (f.speed > 6) {
+  1385→        f.light.intensity = Math.random() < 0.08 ? 0 : f.base * (0.6 + Math.random() * 0.5);
+  1386→      } else if (f.speed > 2) {
+  1387→        f.light.intensity = f.base * (0.75 + Math.sin(t * f.speed) * 0.25);
+  1388→      } else {
+  1389→        f.light.intensity = f.base * (0.5 + Math.max(0, Math.sin(t * f.speed * 2)) * 0.5);
+  1390→      }
+  1391→    }
+  1392→  }
+  1393→
+  1394→  private updateStory(dt: number, st: ReturnType<typeof useGame.getState>) {
+  1395→    if (!this.world || !playingSafe()) return;
+  1396→    void dt;
+  1397→    // محفزات القصة
+  1398→    for (const tr of this.world.triggers) {
+  1399→      if (tr.fired) continue;
+  1400→      if (Math.hypot(this.pos.x - tr.x, this.pos.z - tr.z) < tr.radius) {
+  1401→        tr.fired = true;
+  1402→        this.onTrigger(tr.id);
+  1403→      }
+  1404→    }
+  1405→    // بوابة ساحة الزعيم
+  1406→    if (
+  1407→      !this.bossGateClosed &&
+  1408→      !st.flags.bossKilled &&
+  1409→      st.flags.labEntered &&
+  1410→      this.pos.x > 596 &&
+  1411→      this.pos.x < 604 &&
+  1412→      this.pos.z < -7.4 &&
+  1413→      this.pos.z > -12
+  1414→    ) {
+  1415→      this.closeBossGate();
+  1416→      st.toastMsg(MESSAGES.bossAwaken);
+  1417→      audio.play("roar", { volume: 1 });
+  1418→      const boss = this.enemies!.enemies.find((e) => e.kind === "boss" && e.state !== "dead");
+  1419→      if (boss) {
+  1420→        boss.state = "chase";
+  1421→        boss.hasHeard = true;
+  1422→        boss.heardX = this.pos.x;
+  1423→        boss.heardZ = this.pos.z;
+  1424→      }
+  1425→    }
+  1426→    // إنقاذ نفس البوابة عند قتل الزعيم قبل الوصول
+  1427→    if (st.flags.bossKilled && this.bossGateClosed) this.openBossGate();
+  1428→
+  1429→    // منطقة/هدف/تلميح تفاعل
+  1430→    this.zoneT -= dt;
+  1431→    if (this.zoneT <= 0) {
+  1432→      this.zoneT = 0.5;
+  1433→      const z = zoneAt(this.pos.x, this.pos.z);
+  1434→      if (z !== st.hud.zone) st.setHud({ zone: z });
+  1435→      // اكتشاف نقاط الخريطة
+  1436→      for (const poi of this.world.pois) {
+  1437→        if (!this.poiFound.has(poi.name) && Math.hypot(this.pos.x - poi.x, this.pos.z - poi.z) < poi.r + 10) {
+  1438→          this.poiFound.add(poi.name);
+  1439→        }
+  1440→      }
+  1441→    }
+  1442→    const it = this.findInteract();
+  1443→    this.currentInteract = it;
+  1444→    st.setPrompt(it ? `E — ${it.prompt}` : "");
+  1445→  }
+  1446→
+  1447→  private onTrigger(id: string) {
+  1448→    const st = useGame.getState();
+  1449→    switch (id) {
+  1450→      case "trig_apartment_exit":
+  1451→        st.setFlag("exitedApartment", true);
+  1452→        st.setObjective("obj_weapon");
+  1453→        st.showHint("الشارع… لا تنجُ دون سلاح. انتبه للصوت — الرصاص يجذبهم");
+  1454→        break;
+  1455→      case "trig_gunshop":
+  1456→        this.poiFound.add("متجر الأسلحة");
+  1457→        break;
+  1458→      case "trig_police":
+  1459→        this.poiFound.add("مركز الشرطة");
+  1460→        st.showHint("مركز الشرطة… قد يكون مفتاح برج الإذاعة هنا");
+  1461→        break;
+  1462→      case "trig_tower":
+  1463→        this.poiFound.add("برج الإذاعة");
+  1464→        break;
+  1465→      case "trig_hospital":
+  1466→        this.poiFound.add("المستشفى المركزي");
+  1467→        st.toastMsg(MESSAGES.bruteWarn);
+  1468→        audio.play("stinger_danger", { volume: 0.6 });
+  1469→        break;
+  1470→      case "trig_factory":
+  1471→        this.poiFound.add("المصنع الغربي");
+  1472→        break;
+  1473→      case "trig_warehouse":
+  1474→        this.poiFound.add("المستودع الغربي");
+  1475→        break;
+  1476→      case "trig_gas":
+  1477→        this.poiFound.add("محطة الوقود");
+  1478→        break;
+  1479→      case "trig_metro":
+  1480→        this.poiFound.add("مدخل المختبر (المترو)");
+  1481→        this.poiFound.add("lab");
+  1482→        if (st.flags.radioDone) st.showHint("بوابة صناعية خلف المترو… تحتاج بطاقتي وصول");
+  1483→        break;
+  1484→      case "trig_harbor":
+  1485→        this.poiFound.add("الميناء الشمالي");
+  1486→        if (!st.flags.generatorFixed && !st.flags.coreDestroyed && !st.flags.dealAccepted) {
+  1487→          st.showHint("بوابة الميناء مقفلة — المولد بجانبها يحتاج وقوداً");
+  1488→        }
+  1489→        break;
+  1490→    }
+  1491→  }
+  1492→
+  1493→  private spawnWaveGroup() {
+  1494→    const base = [
+  1495→      [-24, -104],
+  1496→      [24, -104],
+  1497→      [-14, -96],
+  1498→      [14, -96],
+  1499→    ];
+  1500→    for (let i = 0; i < 3; i++) {
+  1501→      const [x, z] = base[Math.floor(Math.random() * base.length)];
+  1502→      this.enemies!.addAt(x + (Math.random() - 0.5) * 8, z + (Math.random() - 0.5) * 6, i === 2 ? "runner" : "walker");
+  1503→    }
+  1504→    if (this.waveN >= 3) {
+  1505→      this.enemies!.addAt(0, -108, "brute");
+  1506→      audio.play("roar", { volume: 0.9 });
+  1507→    }
+  1508→  }
+  1509→
+  1510→  private waveDone() {
+  1511→    const st = useGame.getState();
+  1512→    st.setFlag("waveDone", true);
+  1513→    this.extractionReady = true;
+  1514→    st.toastMsg("وصل الفريق! اركض إلى القارب الآن!");
+  1515→    audio.play("radio_beep");
+  1516→    this.world!.boatLight.intensity = 3.2;
+  1517→    this.enemies!.killAllInRadius(this.pos.x, this.pos.z, 6);
+  1518→  }
+  1519→
+  1520→  private updateAudioDirectors(dt: number, st: ReturnType<typeof useGame.getState>) {
+  1521→    void dt;
+  1522→    if (!this.enemies) return;
+  1523→    const { dist, chasing, boss } = this.enemies.nearestThreat(this.pos.x, this.pos.z);
+  1524→    let threat = 0;
+  1525→    if (chasing) threat = Math.max(0.35, 1 - dist / 30);
+  1526→    if (boss && dist < 45) threat = Math.max(threat, 0.55);
+  1527→    if (Math.abs(threat - st.hud.threat) > 0.05) {
+  1528→      st.setHud({ threat });
+  1529→      audio.setThreat(threat);
+  1530→    }
+  1531→    const wantHb = st.hud.hp < 30 || threat > 0.8;
+  1532→    if (wantHb !== st.hud.heartbeat) {
+  1533→      st.setHud({ heartbeat: wantHb });
+  1534→      if (wantHb) audio.startHeartbeat();
+  1535→      else audio.stopHeartbeat();
+  1536→    }
+  1537→    // تغيير الأجواء حسب المنطقة
+  1538→    const x = this.pos.x;
+  1539→    const z = this.pos.z;
+  1540→    if (x > 560) {
+  1541→      if (st.ambient !== "lab") {
+  1542→        st.setAmbient("lab");
+  1543→        audio.startAmbient("lab");
+  1544→      }
+  1545→    } else if (z < -92) {
+  1546→      if (st.ambient !== "harbor") {
+  1547→        st.setAmbient("harbor");
+  1548→        audio.startAmbient("harbor");
+  1549→      }
+  1550→    } else if (st.ambient === "menu" || st.ambient === "lab" || st.ambient === "harbor") {
+  1551→      st.setAmbient("city");
+  1552→      audio.startAmbient("city");
+  1553→    }
+  1554→  }
+  1555→}
+  1556→
+  1557→// (استيراد مباشر من content — لا حاجة لأدوات مؤجلة)
+  1558→
+  1559→function playingSafe() {
+  1560→  return useGame.getState().screen === "playing";
+  1561→}
+  1562→

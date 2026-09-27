@@ -1,0 +1,1660 @@
+     1→"use client";
+     2→
+     3→// ─────────────────────────────────────────────────────────────
+     4→// توليد مدينة كيبريس — نسخة AAA
+     5→// شوارع منظمة بأرصفة ودهانات، أحياء بطابع مميز، ساحة الساعة،
+     6→// مبانٍ قابلة للدخول مؤثثة بالكامل مع أبواب حقيقية، مختبر، ميناء
+     7→// ─────────────────────────────────────────────────────────────
+     8→import * as THREE from "three";
+     9→import { ZONES } from "./content";
+    10→import {
+    11→  type PropCtx,
+    12→  type DoorDef,
+    13→  makePropTextures,
+    14→  makePropMaterials,
+    15→  mergePropBuckets,
+    16→  mat4,
+    17→  car,
+    18→  busWreck,
+    19→  lampPost,
+    20→  trafficLight,
+    21→  hydrant,
+    22→  bench,
+    23→  trashBin,
+    24→  trashBags,
+    25→  deadTree,
+    26→  barrier,
+    27→  sandbagWall,
+    28→  shopSign,
+    29→  clockTower,
+    30→  fountain,
+    31→  desk,
+    32→  officeChair,
+    33→  shelfStocked,
+    34→  cabinet,
+    35→  lockerRow,
+    36→  bed,
+    37→  gurney,
+    38→  ivStand,
+    39→  sofa,
+    40→  tvSet,
+    41→  coffeeTable,
+    42→  kitchenCounter,
+    43→  fridge,
+    44→  cratesStack,
+    45→  barrel,
+    46→  serverRack,
+    47→  pressMachine,
+    48→  conveyor,
+    49→  controlPanel,
+    50→  forklift,
+    51→  vending,
+    52→  shopShelf,
+    53→  counter,
+    54→  gunRack,
+    55→  turnstile,
+    56→  deadPlant,
+    57→  wallPipes,
+    58→  coveredBody,
+    59→  bodyBag,
+    60→  survivorModel,
+    61→  pickupModel,
+    62→  makeDoor,
+    63→  seededRandom,
+    64→} from "./props";
+    65→
+    66→export interface Collider {
+    67→  minX: number;
+    68→  maxX: number;
+    69→  minZ: number;
+    70→  maxZ: number;
+    71→}
+    72→
+    73→export interface Poi {
+    74→  id: string;
+    75→  x: number;
+    76→  z: number;
+    77→  name: string;
+    78→  r: number;
+    79→}
+    80→
+    81→export interface SpawnPoint {
+    82→  kind: "walker" | "runner" | "spitter" | "brute" | "boss";
+    83→  x: number;
+    84→  z: number;
+    85→  wander: number;
+    86→  fakeCorpse?: boolean;
+    87→}
+    88→
+    89→export type InteractKind =
+    90→  | "item"
+    91→  | "note"
+    92→  | "door"
+    93→  | "console"
+    94→  | "npc"
+    95→  | "generator"
+    96→  | "core"
+    97→  | "gate"
+    98→  | "exit"
+    99→  | "checkpoint";
+   100→
+   101→export interface Interactable {
+   102→  id: string;
+   103→  kind: InteractKind;
+   104→  x: number;
+   105→  z: number;
+   106→  y?: number;
+   107→  radius: number;
+   108→  prompt: string;
+   109→  data?: Record<string, unknown>;
+   110→  used?: boolean;
+   111→}
+   112→
+   113→export interface Trigger {
+   114→  id: string;
+   115→  x: number;
+   116→  z: number;
+   117→  radius: number;
+   118→  once: boolean;
+   119→  fired?: boolean;
+   120→}
+   121→
+   122→export interface WorldDoor {
+   123→  id: string;
+   124→  def: DoorDef;
+   125→  collider: Collider;
+   126→  open: boolean;
+   127→}
+   128→
+   129→export interface WorldData {
+   130→  colliders: Collider[];
+   131→  dynamicColliders: Map<string, Collider>;
+   132→  pois: Poi[];
+   133→  spawns: SpawnPoint[];
+   134→  interactables: Interactable[];
+   135→  triggers: Trigger[];
+   136→  buildings: { x: number; z: number; w: number; d: number; name?: string; poi?: boolean }[];
+   137→  roads: { x: number; z: number; w: number; d: number; blocked?: boolean }[];
+   138→  blockedRoads: { x: number; z: number; w: number; d: number }[];
+   139→  fireLights: { light: THREE.PointLight; base: number }[];
+   140→  flickerLights: { light: THREE.PointLight; base: number; speed: number }[];
+   141→  labBossGate: { mesh: THREE.Mesh; colliderId: string };
+   142→  labDoor: { group: THREE.Group; open: boolean };
+   143→  corePedestal: THREE.Vector3;
+   144→  gateBarrier: { group: THREE.Group; open: boolean };
+   145→  boat: THREE.Group;
+   146→  boatLight: THREE.PointLight;
+   147→  clockHands: THREE.Object3D[];
+   148→  pickups: { id: string; obj: THREE.Group }[];
+   149→  doors: WorldDoor[];
+   150→}
+   151→
+   152→const WALL_H = 4.2;
+   153→const T = 0.5; // سماكة الجدار
+   154→
+   155→// مراجع تُسند أثناء البناء
+   156→let doorGroupRef: THREE.Group | null = null;
+   157→let barrierRef: THREE.Group | null = null;
+   158→let boatRef: THREE.Group | null = null;
+   159→let boatLightRef: THREE.PointLight | null = null;
+   160→
+   161→// ── Canvas texture helpers ──
+   162→function canvasTex(
+   163→  w: number,
+   164→  h: number,
+   165→  draw: (ctx: CanvasRenderingContext2D) => void,
+   166→  repeat = 1,
+   167→): THREE.Texture {
+   168→  const c = document.createElement("canvas");
+   169→  c.width = w;
+   170→  c.height = h;
+   171→  const ctx = c.getContext("2d")!;
+   172→  draw(ctx);
+   173→  const tex = new THREE.CanvasTexture(c);
+   174→  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+   175→  tex.repeat.set(repeat, repeat);
+   176→  tex.anisotropy = 4;
+   177→  return tex;
+   178→}
+   179→
+   180→function noiseFill(
+   181→  ctx: CanvasRenderingContext2D,
+   182→  w: number,
+   183→  h: number,
+   184→  base: string,
+   185→  amt: number,
+   186→  dark: string,
+   187→) {
+   188→  ctx.fillStyle = base;
+   189→  ctx.fillRect(0, 0, w, h);
+   190→  const img = ctx.getImageData(0, 0, w, h);
+   191→  const d = img.data;
+   192→  for (let i = 0; i < d.length; i += 4) {
+   193→    const n = (Math.random() - 0.5) * amt;
+   194→    d[i] = Math.max(0, Math.min(255, d[i] + n));
+   195→    d[i + 1] = Math.max(0, Math.min(255, d[i + 1] + n));
+   196→    d[i + 2] = Math.max(0, Math.min(255, d[i + 2] + n));
+   197→  }
+   198→  ctx.putImageData(img, 0, 0);
+   199→  for (let i = 0; i < 14; i++) {
+   200→    const x = Math.random() * w;
+   201→    const y = Math.random() * h;
+   202→    const r = 6 + Math.random() * 30;
+   203→    const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+   204→    g.addColorStop(0, dark);
+   205→    g.addColorStop(1, "rgba(0,0,0,0)");
+   206→    ctx.fillStyle = g;
+   207→    ctx.fillRect(x - r, y - r, r * 2, r * 2);
+   208→  }
+   209→}
+   210→
+   211→export function makeTextures() {
+   212→  const asphalt = canvasTex(256, 256, (ctx) => {
+   213→    noiseFill(ctx, 256, 256, "#141416", 46, "rgba(0,0,0,0.55)");
+   214→    ctx.strokeStyle = "rgba(0,0,0,0.5)";
+   215→    for (let i = 0; i < 7; i++) {
+   216→      ctx.beginPath();
+   217→      let x = Math.random() * 256;
+   218→      let y = Math.random() * 256;
+   219→      ctx.moveTo(x, y);
+   220→      for (let j = 0; j < 5; j++) {
+   221→        x += (Math.random() - 0.5) * 90;
+   222→        y += (Math.random() - 0.5) * 90;
+   223→        ctx.lineTo(x, y);
+   224→      }
+   225→      ctx.stroke();
+   226→    }
+   227→  }, 6);
+   228→
+   229→  const concrete = canvasTex(256, 256, (ctx) => {
+   230→    noiseFill(ctx, 256, 256, "#3a3a38", 30, "rgba(0,0,0,0.4)");
+   231→    ctx.strokeStyle = "rgba(0,0,0,0.25)";
+   232→    ctx.lineWidth = 2;
+   233→    for (let y = 0; y < 256; y += 64) {
+   234→      ctx.beginPath();
+   235→      ctx.moveTo(0, y);
+   236→      ctx.lineTo(256, y);
+   237→      ctx.stroke();
+   238→    }
+   239→  }, 3);
+   240→
+   241→  const brick = canvasTex(256, 256, (ctx) => {
+   242→    noiseFill(ctx, 256, 256, "#3b2f28", 26, "rgba(0,0,0,0.5)");
+   243→    ctx.strokeStyle = "rgba(15,12,10,0.9)";
+   244→    ctx.lineWidth = 2;
+   245→    for (let y = 0; y < 256; y += 22) {
+   246→      ctx.beginPath();
+   247→      ctx.moveTo(0, y);
+   248→      ctx.lineTo(256, y);
+   249→      ctx.stroke();
+   250→      const off = (y / 22) % 2 === 0 ? 0 : 24;
+   251→      for (let x = off; x < 256; x += 48) {
+   252→        ctx.beginPath();
+   253→        ctx.moveTo(x, y);
+   254→        ctx.lineTo(x, y + 22);
+   255→        ctx.stroke();
+   256→      }
+   257→    }
+   258→  }, 3);
+   259→
+   260→  const lit = new Set<number>();
+   261→  for (let i = 0; i < 26; i++) lit.add(Math.floor(Math.random() * 64));
+   262→  const facadeDraw = (ctx: CanvasRenderingContext2D) => {
+   263→    noiseFill(ctx, 256, 256, "#232527", 20, "rgba(0,0,0,0.5)");
+   264→    ctx.fillStyle = "#0c0d10";
+   265→    for (let gy = 0; gy < 8; gy++) {
+   266→      for (let gx = 0; gx < 8; gx++) {
+   267→        const idx = gy * 8 + gx;
+   268→        ctx.fillRect(8 + gx * 32, 10 + gy * 30, 20, 18);
+   269→        if (lit.has(idx)) {
+   270→          ctx.fillStyle = Math.random() > 0.5 ? "#c98a3a" : "#b0472f";
+   271→          ctx.fillRect(8 + gx * 32, 10 + gy * 30, 20, 18);
+   272→          ctx.fillStyle = "#0c0d10";
+   273→        }
+   274→      }
+   275→    }
+   276→  };
+   277→  const facade = canvasTex(256, 256, facadeDraw, 2);
+   278→  const facadeEmissive = canvasTex(256, 256, (ctx) => {
+   279→    ctx.fillStyle = "#000";
+   280→    ctx.fillRect(0, 0, 256, 256);
+   281→    for (let gy = 0; gy < 8; gy++) {
+   282→      for (let gx = 0; gx < 8; gx++) {
+   283→        const idx = gy * 8 + gx;
+   284→        if (lit.has(idx)) {
+   285→          ctx.fillStyle = Math.random() > 0.5 ? "#c98a3a" : "#b0472f";
+   286→          ctx.fillRect(8 + gx * 32, 10 + gy * 30, 20, 18);
+   287→        }
+   288→      }
+   289→    }
+   290→  }, 2);
+   291→
+   292→  const metal = canvasTex(256, 256, (ctx) => {
+   293→    noiseFill(ctx, 256, 256, "#2c3033", 18, "rgba(0,0,0,0.4)");
+   294→    ctx.strokeStyle = "rgba(120,130,135,0.12)";
+   295→    for (let x = 0; x < 256; x += 16) {
+   296→      ctx.beginPath();
+   297→      ctx.moveTo(x, 0);
+   298→      ctx.lineTo(x, 256);
+   299→      ctx.stroke();
+   300→    }
+   301→  }, 2);
+   302→
+   303→  const blood = canvasTex(128, 128, (ctx) => {
+   304→    ctx.clearRect(0, 0, 128, 128);
+   305→    for (let i = 0; i < 5; i++) {
+   306→      const x = 40 + Math.random() * 48;
+   307→      const y = 40 + Math.random() * 48;
+   308→      const r = 14 + Math.random() * 26;
+   309→      const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+   310→      g.addColorStop(0, "rgba(70,8,8,0.9)");
+   311→      g.addColorStop(0.7, "rgba(45,6,6,0.55)");
+   312→      g.addColorStop(1, "rgba(30,4,4,0)");
+   313→      ctx.fillStyle = g;
+   314→      ctx.beginPath();
+   315→      ctx.arc(x, y, r, 0, Math.PI * 2);
+   316→      ctx.fill();
+   317→    }
+   318→  });
+   319→
+   320→  return { asphalt, concrete, brick, facade, facadeEmissive, metal, blood };
+   321→}
+   322→
+   323→export type Textures = ReturnType<typeof makeTextures>;
+   324→
+   325→export function makeMats(t: Textures) {
+   326→  return {
+   327→    asphalt: new THREE.MeshStandardMaterial({ map: t.asphalt, roughness: 0.95 }),
+   328→    concrete: new THREE.MeshStandardMaterial({ map: t.concrete, roughness: 0.92 }),
+   329→    brick: new THREE.MeshStandardMaterial({ map: t.brick, roughness: 0.9 }),
+   330→    facade: new THREE.MeshStandardMaterial({
+   331→      map: t.facade,
+   332→      emissiveMap: t.facadeEmissive,
+   333→      emissive: new THREE.Color(0xffffff),
+   334→      emissiveIntensity: 0.9,
+   335→      roughness: 0.85,
+   336→    }),
+   337→    metal: new THREE.MeshStandardMaterial({ map: t.metal, roughness: 0.55, metalness: 0.6 }),
+   338→    dark: new THREE.MeshStandardMaterial({ color: 0x1b1c1e, roughness: 0.9 }),
+   339→    wood: new THREE.MeshStandardMaterial({ color: 0x4a3826, roughness: 0.85 }),
+   340→    paper: new THREE.MeshStandardMaterial({ color: 0xd8cba8, roughness: 0.9 }),
+   341→    rubble: new THREE.MeshStandardMaterial({ color: 0x2e2c29, roughness: 1 }),
+   342→    blood: new THREE.MeshBasicMaterial({ map: t.blood, transparent: true, depthWrite: false }),
+   343→    amberLight: new THREE.MeshStandardMaterial({
+   344→      color: 0x221a08,
+   345→      emissive: 0xd07a28,
+   346→      emissiveIntensity: 2.2,
+   347→    }),
+   348→    redLight: new THREE.MeshStandardMaterial({
+   349→      color: 0x220808,
+   350→      emissive: 0xc22a1e,
+   351→      emissiveIntensity: 2.4,
+   352→    }),
+   353→    greenLight: new THREE.MeshStandardMaterial({
+   354→      color: 0x08220c,
+   355→      emissive: 0x2fae4e,
+   356→      emissiveIntensity: 2.2,
+   357→    }),
+   358→  };
+   359→}
+   360→
+   361→export type Mats = ReturnType<typeof makeMats>;
+   362→
+   363→// ── Builder state ──
+   364→interface BuildCtx {
+   365→  scene: THREE.Scene;
+   366→  mats: Mats;
+   367→  colliders: Collider[];
+   368→  buildings: WorldData["buildings"];
+   369→  spawns: SpawnPoint[];
+   370→  interactables: Interactable[];
+   371→  triggers: Trigger[];
+   372→  fireLights: WorldData["fireLights"];
+   373→  flickerLights: WorldData["flickerLights"];
+   374→  staticGeos: Map<string, THREE.BufferGeometry[]>;
+   375→  blockedRoads: WorldData["blockedRoads"];
+   376→  pickups: WorldData["pickups"];
+   377→  doors: WorldDoor[];
+   378→}
+   379→
+   380→function pushStatic(ctx: BuildCtx, bucket: string, geo: THREE.BufferGeometry, matrix: THREE.Matrix4) {
+   381→  const g = geo.clone();
+   382→  g.applyMatrix4(matrix);
+   383→  if (!ctx.staticGeos.has(bucket)) ctx.staticGeos.set(bucket, []);
+   384→  ctx.staticGeos.get(bucket)!.push(g);
+   385→}
+   386→
+   387→function addBox(
+   388→  ctx: BuildCtx,
+   389→  bucket: string,
+   390→  x: number,
+   391→  y: number,
+   392→  z: number,
+   393→  w: number,
+   394→  h: number,
+   395→  d: number,
+   396→  solid = true,
+   397→) {
+   398→  const m = new THREE.Matrix4().compose(
+   399→    new THREE.Vector3(x, y + h / 2, z),
+   400→    new THREE.Quaternion(),
+   401→    new THREE.Vector3(w, h, d),
+   402→  );
+   403→  pushStatic(ctx, bucket, new THREE.BoxGeometry(1, 1, 1), m);
+   404→  if (solid) {
+   405→    ctx.colliders.push({
+   406→      minX: x - w / 2,
+   407→      maxX: x + w / 2,
+   408→      minZ: z - d / 2,
+   409→      maxZ: z + d / 2,
+   410→    });
+   411→  }
+   412→}
+   413→
+   414→/** جدار مع فتحات للأبواب: gaps = [{at, width}] مواقع على طول الجدار */
+   415→function wallWithGaps(
+   416→  ctx: BuildCtx,
+   417→  bucket: string,
+   418→  x1: number,
+   419→  z1: number,
+   420→  x2: number,
+   421→  z2: number,
+   422→  gaps: { at: number; width: number }[] = [],
+   423→) {
+   424→  const horiz = Math.abs(x2 - x1) > Math.abs(z2 - z1);
+   425→  const len = horiz ? Math.abs(x2 - x1) : Math.abs(z2 - z1);
+   426→  const cx = (x1 + x2) / 2;
+   427→  const cz = (z1 + z2) / 2;
+   428→  const segs: { s: number; e: number }[] = [];
+   429→  let cur = 0;
+   430→  const sorted = [...gaps].sort((a, b) => a.at - b.at);
+   431→  for (const g of sorted) {
+   432→    const s = g.at - g.width / 2;
+   433→    if (s > cur) segs.push({ s: cur, e: s });
+   434→    cur = g.at + g.width / 2;
+   435→  }
+   436→  if (cur < len) segs.push({ s: cur, e: len });
+   437→
+   438→  for (const seg of segs) {
+   439→    const segLen = seg.e - seg.s;
+   440→    if (segLen <= 0.05) continue;
+   441→    const mid = (seg.s + seg.e) / 2;
+   442→    if (horiz) {
+   443→      const sx = x1 + (x2 > x1 ? mid : -mid);
+   444→      addBox(ctx, bucket, sx, 0, cz, segLen, WALL_H, T);
+   445→    } else {
+   446→      const sz = z1 + (z2 > z1 ? mid : -mid);
+   447→      addBox(ctx, bucket, cx, 0, sz, T, WALL_H, segLen);
+   448→    }
+   449→  }
+   450→  for (const g of sorted) {
+   451→    const gapLen = g.width;
+   452→    const mid = g.at;
+   453→    if (horiz) {
+   454→      const sx = x1 + (x2 > x1 ? mid : -mid);
+   455→      addBox(ctx, bucket, sx, 2.6, cz, gapLen, WALL_H - 2.6, T, false);
+   456→    } else {
+   457→      const sz = z1 + (z2 > z1 ? mid : -mid);
+   458→      addBox(ctx, bucket, cx, 2.6, sz, T, WALL_H - 2.6, gapLen, false);
+   459→    }
+   460→  }
+   461→}
+   462→
+   463→function roomFloor(ctx: BuildCtx, x: number, z: number, w: number, d: number, bucket = "floorIn") {
+   464→  addBox(ctx, bucket, x, 0.02, z, w, 0.06, d, false);
+   465→}
+   466→
+   467→function roomRoof(ctx: BuildCtx, x: number, z: number, w: number, d: number, bucket = "roof") {
+   468→  addBox(ctx, bucket, x, WALL_H, z, w, 0.35, d, false);
+   469→}
+   470→
+   471→function addFlickerLight(
+   472→  ctx: BuildCtx,
+   473→  x: number,
+   474→  y: number,
+   475→  z: number,
+   476→  color: number,
+   477→  intensity: number,
+   478→  dist: number,
+   479→  speed = 9,
+   480→) {
+   481→  const l = new THREE.PointLight(color, intensity, dist, 1.6);
+   482→  l.position.set(x, y, z);
+   483→  ctx.scene.add(l);
+   484→  ctx.flickerLights.push({ light: l, base: intensity, speed });
+   485→  return l;
+   486→}
+   487→
+   488→/** مصباح فلورسنت سقفي — هيئة + ضوء */
+   489→function fluoro(ctx: BuildCtx, x: number, z: number, color = 0xd0a860, intensity = 1.1, dist = 12, speed = 7) {
+   490→  const p = propCtxOf(ctx);
+   491→  p.push("white", new THREE.BoxGeometry(1.3, 0.07, 0.32), mat4(x, 3.95, z));
+   492→  p.push("screenGlow", new THREE.BoxGeometry(1.14, 0.03, 0.22), mat4(x, 3.9, z));
+   493→  addFlickerLight(ctx, x, 3.55, z, color, intensity, dist, speed);
+   494→}
+   495→
+   496→function addFire(ctx: BuildCtx, x: number, z: number, scale = 1) {
+   497→  const l = new THREE.PointLight(0xd4562a, 3.4 * scale, 16 * scale, 1.7);
+   498→  l.position.set(x, 1 + scale, z);
+   499→  ctx.scene.add(l);
+   500→  ctx.fireLights.push({ light: l, base: 3.4 * scale });
+   501→  const p = propCtxOf(ctx);
+   502→  // لهب مخروطي مزدوج
+   503→  const flame = new THREE.ConeGeometry(0.42 * scale, 1.5 * scale, 7);
+   504→  flame.translate(x, 0.75 * scale, z);
+   505→  p.push("fireCone", flame, mat4(0, 0, 0));
+   506→  const core = new THREE.ConeGeometry(0.24 * scale, 1.0 * scale, 6);
+   507→  core.translate(x, 0.6 * scale, z);
+   508→  p.push("fireCore", core, mat4(0, 0, 0));
+   509→  // دخان
+   510→  for (let i = 0; i < 3; i++) {
+   511→    const sm = new THREE.SphereGeometry((0.5 + i * 0.35) * scale, 7, 6);
+   512→    sm.translate(x + (Math.random() - 0.5) * 0.4, (1.8 + i * 0.9) * scale, z);
+   513→    p.push("smoke", sm, mat4(0, 0, 0));
+   514→  }
+   515→  // أثر الحرق
+   516→  const decal = new THREE.Mesh(
+   517→    new THREE.CircleGeometry(1.6 * scale, 12),
+   518→    new THREE.MeshBasicMaterial({ color: 0x090909 }),
+   519→  );
+   520→  decal.rotation.x = -Math.PI / 2;
+   521→  decal.position.set(x, 0.03, z);
+   522→  ctx.scene.add(decal);
+   523→  decal.userData.noHit = true;
+   524→}
+   525→
+   526→function bloodDecal(ctx: BuildCtx, x: number, z: number, s = 1.4) {
+   527→  const m = new THREE.Mesh(new THREE.PlaneGeometry(s, s), ctx.mats.blood);
+   528→  m.rotation.x = -Math.PI / 2;
+   529→  m.rotation.z = Math.random() * Math.PI;
+   530→  m.position.set(x, 0.035, z);
+   531→  m.userData.noHit = true;
+   532→  ctx.scene.add(m);
+   533→}
+   534→
+   535→/** أثر زحف دموي (خط) */
+   536→function bloodTrail(ctx: BuildCtx, x1: number, z1: number, x2: number, z2: number) {
+   537→  const steps = Math.max(3, Math.floor(Math.hypot(x2 - x1, z2 - z1) / 0.8));
+   538→  for (let i = 0; i <= steps; i++) {
+   539→    const t = i / steps;
+   540→    bloodDecal(ctx, x1 + (x2 - x1) * t + (Math.random() - 0.5) * 0.3, z1 + (z2 - z1) * t + (Math.random() - 0.5) * 0.3, 0.5 + Math.random() * 0.5);
+   541→  }
+   542→}
+   543→
+   544→function corpse(ctx: BuildCtx, x: number, z: number) {
+   545→  coveredBody(propCtxOf(ctx), x, z, Math.random() * Math.PI * 2);
+   546→  bloodDecal(ctx, x, z, 1.9);
+   547→}
+   548→
+   549→function emergencyLight(ctx: BuildCtx, x: number, y: number, z: number, color: number) {
+   550→  const l = new THREE.PointLight(color, 1.4, 12, 1.8);
+   551→  l.position.set(x, y, z);
+   552→  ctx.scene.add(l);
+   553→  ctx.flickerLights.push({ light: l, base: 1.4, speed: 1.2 });
+   554→  const m = new THREE.Mesh(new THREE.SphereGeometry(0.09, 8, 8), color === 0xc22a1e ? ctx.mats.redLight : ctx.mats.amberLight);
+   555→  m.position.set(x, y, z);
+   556→  m.userData.noHit = true;
+   557→  ctx.scene.add(m);
+   558→}
+   559→
+   560→// ── محول PropCtx ──
+   561→function propCtxOf(ctx: BuildCtx): PropCtx {
+   562→  return {
+   563→    push: (bucket, geo, m) => pushStatic(ctx, bucket, geo, m),
+   564→    collider: (minX, maxX, minZ, maxZ) => ctx.colliders.push({ minX, maxX, minZ, maxZ }),
+   565→  };
+   566→}
+   567→
+   568→// ── التقاط بنموذج حقيقي ──
+   569→function pickupProp(
+   570→  ctx: BuildCtx,
+   571→  id: string,
+   572→  kind: InteractKind,
+   573→  x: number,
+   574→  z: number,
+   575→  prompt: string,
+   576→  data?: Record<string, unknown>,
+   577→  y = 0.14,
+   578→) {
+   579→  const model = pickupModel(data);
+   580→  model.position.set(x, y, z);
+   581→  model.rotation.y = Math.random() * Math.PI * 2;
+   582→  model.userData.pickupId = id;
+   583→  model.traverse((o) => {
+   584→    o.userData.pickupId = id;
+   585→  });
+   586→  ctx.scene.add(model);
+   587→  ctx.pickups.push({ id, obj: model });
+   588→  ctx.interactables.push({ id, kind, x, z, radius: 1.9, prompt, data, used: false });
+   589→}
+   590→
+   591→function noteProp(ctx: BuildCtx, id: string, docId: string, x: number, z: number, y = 0.82) {
+   592→  pickupProp(ctx, id, "note", x, z, "قراءة الوثيقة", { docId }, y);
+   593→}
+   594→
+   595→/** باب حقيقي بمفصلة + تفاعل */
+   596→function addDoorAt(
+   597→  ctx: BuildCtx,
+   598→  id: string,
+   599→  cx: number,
+   600→  cz: number,
+   601→  orient: "x" | "z",
+   602→  width: number,
+   603→  style: "wood" | "metal" | "double" = "wood",
+   604→) {
+   605→  const def = makeDoor(width, style);
+   606→  if (orient === "x") {
+   607→    def.group.position.set(cx - width / 2, 0, cz);
+   608→    def.group.rotation.y = 0;
+   609→  } else {
+   610→    def.group.position.set(cx, 0, cz - width / 2);
+   611→    def.group.rotation.y = -Math.PI / 2;
+   612→  }
+   613→  def.group.traverse((o) => {
+   614→    if (o instanceof THREE.Mesh) o.userData.doorMesh = id;
+   615→  });
+   616→  ctx.scene.add(def.group);
+   617→  const half = width / 2 + 0.08;
+   618→  const collider: Collider =
+   619→    orient === "x"
+   620→      ? { minX: cx - half, maxX: cx + half, minZ: cz - 0.14, maxZ: cz + 0.14 }
+   621→      : { minX: cx - 0.14, maxX: cx + 0.14, minZ: cz - half, maxZ: cz + half };
+   622→  ctx.doors.push({ id, def, collider, open: false });
+   623→  ctx.interactables.push({
+   624→    id,
+   625→    kind: "door",
+   626→    x: cx,
+   627→    z: cz,
+   628→    radius: 2.3,
+   629→    prompt: "فتح / إغلاق الباب",
+   630→    data: { doorId: id },
+   631→    used: false,
+   632→  });
+   633→}
+   634→
+   635→// ═══════════════ المدينة ═══════════════
+   636→export function buildWorld(scene: THREE.Scene): WorldData {
+   637→  clockHandsRef.length = 0;
+   638→  const t = makeTextures();
+   639→  const mats = makeMats(t);
+   640→  const ctx: BuildCtx = {
+   641→    scene,
+   642→    mats,
+   643→    colliders: [],
+   644→    buildings: [],
+   645→    spawns: [],
+   646→    interactables: [],
+   647→    triggers: [],
+   648→    fireLights: [],
+   649→    flickerLights: [],
+   650→    staticGeos: new Map(),
+   651→    blockedRoads: [],
+   652→    pickups: [],
+   653→    doors: [],
+   654→  };
+   655→  const w = propCtxOf(ctx);
+   656→  const rnd = seededRandom(20260114);
+   657→
+   658→  // ── الأرضية والطرق ──
+   659→  const ground = new THREE.Mesh(new THREE.PlaneGeometry(340, 340), mats.asphalt);
+   660→  ground.rotation.x = -Math.PI / 2;
+   661→  scene.add(ground);
+   662→
+   663→  const roadXs = [-92, -46, 0, 46, 92];
+   664→  const roadZs = [-92, -46, 0, 46, 92];
+   665→  for (const x of roadXs) {
+   666→    const r = new THREE.Mesh(new THREE.PlaneGeometry(10, 240), mats.asphalt);
+   667→    r.rotation.x = -Math.PI / 2;
+   668→    r.position.set(x, 0.01, 0);
+   669→    scene.add(r);
+   670→  }
+   671→  for (const z of roadZs) {
+   672→    const r = new THREE.Mesh(new THREE.PlaneGeometry(240, 10), mats.asphalt);
+   673→    r.rotation.x = -Math.PI / 2;
+   674→    r.position.set(0, 0.015, z);
+   675→    scene.add(r);
+   676→  }
+   677→
+   678→  // ── أرصفة مرتفعة حول كل حرم بلوك ──
+   679→  const blockCs = [-69, -23, 23, 69];
+   680→  for (const bx of blockCs) {
+   681→    for (const bz of blockCs) {
+   682→      // شريطان أفقيان + شريطان عموديان (بدون تداخل)
+   683→      w.push("sidewalk", new THREE.BoxGeometry(36, 0.12, 2.5), mat4(bx, 0.06, bz - 16.75));
+   684→      w.push("sidewalk", new THREE.BoxGeometry(36, 0.12, 2.5), mat4(bx, 0.06, bz + 16.75));
+   685→      w.push("sidewalk", new THREE.BoxGeometry(2.5, 0.12, 31), mat4(bx - 16.75, 0.06, bz));
+   686→      w.push("sidewalk", new THREE.BoxGeometry(2.5, 0.12, 31), mat4(bx + 16.75, 0.06, bz));
+   687→      // حافة رصيف (كورب) داكنة
+   688→      w.push("concrete", new THREE.BoxGeometry(36.3, 0.16, 0.22), mat4(bx, 0.05, bz - 18));
+   689→      w.push("concrete", new THREE.BoxGeometry(36.3, 0.16, 0.22), mat4(bx, 0.05, bz + 18));
+   690→      w.push("concrete", new THREE.BoxGeometry(0.22, 0.16, 36.3), mat4(bx - 18, 0.05, bz));
+   691→      w.push("concrete", new THREE.BoxGeometry(0.22, 0.16, 36.3), mat4(bx + 18, 0.05, bz));
+   692→    }
+   693→  }
+   694→
+   695→  // ── دهانات الطرق: خطوط متقطعة + معابر ──
+   696→  const dash = new THREE.BoxGeometry(0.18, 0.02, 2.2);
+   697→  for (const x of roadXs) {
+   698→    for (let z = -99; z <= 99; z += 4.6) {
+   699→      if (roadZs.some((rz) => Math.abs(z - rz) < 8)) continue;
+   700→      w.push("paint", dash, mat4(x, 0.021, z));
+   701→    }
+   702→  }
+   703→  for (const z of roadZs) {
+   704→    for (let x = -99; x <= 99; x += 4.6) {
+   705→      if (roadXs.some((rx) => Math.abs(x - rx) < 8)) continue;
+   706→      w.push("paint", dash, mat4(x, 0.022, z, { ry: Math.PI / 2 }));
+   707→    }
+   708→  }
+   709→  // معابر مشاة عند تقاطعات رئيسية
+   710→  const zebra = new THREE.BoxGeometry(0.6, 0.02, 2.6);
+   711→  const crosswalk = (cx: number, cz: number, horiz: boolean) => {
+   712→    for (let i = -3; i <= 3; i++) {
+   713→      if (horiz) w.push("paint", zebra, mat4(cx + i * 1.05, 0.023, cz));
+   714→      else w.push("paint", zebra, mat4(cx, 0.023, cz + i * 1.05, { ry: Math.PI / 2 }));
+   715→    }
+   716→  };
+   717→  crosswalk(0, -6.5, true);
+   718→  crosswalk(0, 6.5, true);
+   719→  crosswalk(-6.5, 0, false);
+   720→  crosswalk(6.5, 0, false);
+   721→  crosswalk(23, -40, true); // أمام المترو
+   722→  crosswalk(-23, 6.5, true); // أمام المستشفى/الساحة
+   723→
+   724→  // جدران حدود المدينة
+   725→  const B = 118;
+   726→  wallWithGaps(ctx, "rubble", -B, -B, B, -B);
+   727→  wallWithGaps(ctx, "rubble", -B, B, B, B);
+   728→  wallWithGaps(ctx, "rubble", -B, -B, -B, B);
+   729→  wallWithGaps(ctx, "rubble", B, -B, B, B);
+   730→
+   731→  // ── أحياء خلفية بطابع مميز لكل منطقة ──
+   732→  const usedBlocks = new Set([
+   733→    "-23,23", "-69,-23", "-69,23", "69,23", "69,69", "23,23", "69,-23", "-23,-69", "23,-23", "-23,-23",
+   734→  ]);
+   735→  for (const bx of blockCs) {
+   736→    for (const bz of blockCs) {
+   737→      if (usedBlocks.has(`${bx},${bz}`)) continue;
+   738→      const downtown = bx > 0 && bz < 0;
+   739→      const commercial = bz > 0;
+   740→      if (commercial && bx !== 69) {
+   741→        // حي تجاري: مبنيان متجاوران بلافتات مضيئة ومظلات
+   742→        const h1 = 8 + rnd() * 4;
+   743→        const h2 = 7 + rnd() * 5;
+   744→        addBox(ctx, "facade", bx - 7.5, 0, bz, 15, h1, 26);
+   745→        addBox(ctx, "facade", bx + 8, 0, bz + 2, 14, h2, 22);
+   746→        ctx.colliders.push({ minX: bx - 15.5, maxX: bx, minZ: bz - 13.5, maxZ: bz + 13.5 });
+   747→        ctx.colliders.push({ minX: bx + 0.5, maxX: bx + 15.5, minZ: bz - 9.5, maxZ: bz + 13.5 });
+   748→        ctx.buildings.push({ x: bx - 7.5, z: bz, w: 15, d: 26 });
+   749→        ctx.buildings.push({ x: bx + 8, z: bz + 2, w: 14, d: 22 });
+   750→        // خزانات ومكيفات على السطح
+   751→        w.push("metal", new THREE.CylinderGeometry(1.1, 1.1, 2, 10), mat4(bx - 10, h1 + 1, bz + 6));
+   752→        w.push("metal", new THREE.BoxGeometry(1.4, 0.9, 1.1), mat4(bx + 10, h2 + 0.45, bz - 2, { ry: 0.4 }));
+   753→        // مظلات قماشية فوق الواجهات
+   754→        w.push("fabric2", new THREE.BoxGeometry(8, 0.08, 1.6), mat4(bx - 7.5, 3.4, bz - 13.6, { rx: 0.25 }));
+   755→        w.push("fabric2", new THREE.BoxGeometry(7, 0.08, 1.6), mat4(bx + 8, 3.3, bz - 11.7, { rx: 0.25, ry: 0.06 }));
+   756→        // لافتات عربية مضيئة
+   757→        const s1 = shopSign(bx - 7.5, 4.4, bz - 13.2, Math.PI, ["صيدلية النور", "بقالة الأمانة", "مكتبة الأمل"][Math.floor(rnd() * 3)]);
+   758→        const s2 = shopSign(bx + 8, 4.2, bz - 11.2, Math.PI, ["مقهى الشرق", "مصورات المدينة", "حلاق الشارع"][Math.floor(rnd() * 3)]);
+   759→        s1.userData.noHit = true;
+   760→        s2.userData.noHit = true;
+   761→        scene.add(s1, s2);
+   762→      } else if (downtown) {
+   763→        // وسط المدينة: أبراج أعلى بواجهة داكنة
+   764→        const hgt = 20 + rnd() * 12;
+   765→        addBox(ctx, "facadeTower", bx, 0, bz, 26, hgt, 26);
+   766→        ctx.buildings.push({ x: bx, z: bz, w: 26, d: 26 });
+   767→        ctx.colliders.push({ minX: bx - 14, maxX: bx + 14, minZ: bz - 14, maxZ: bz + 14 });
+   768→        // هوائي سطح
+   769→        w.push("metal", new THREE.CylinderGeometry(0.08, 0.12, 5, 6), mat4(bx + 4, hgt + 2.5, bz - 4));
+   770→        w.push("redEmissive", new THREE.SphereGeometry(0.14, 6, 6), mat4(bx + 4, hgt + 5, bz - 4));
+   771→      } else {
+   772→        // سكني: مبانٍ متوسطة بتنويع
+   773→        const wdt = 24 + rnd() * 4;
+   774→        const dpt = 24 + rnd() * 4;
+   775→        const hgt = 9 + rnd() * 10;
+   776→        addBox(ctx, rnd() < 0.5 ? "facadeOld" : "facade", bx, 0, bz, wdt, hgt, dpt);
+   777→        ctx.buildings.push({ x: bx, z: bz, w: wdt, d: dpt });
+   778→        ctx.colliders.push({ minX: bx - wdt / 2 - 1, maxX: bx + wdt / 2 + 1, minZ: bz - dpt / 2 - 1, maxZ: bz + dpt / 2 + 1 });
+   779→        w.push("metal", new THREE.CylinderGeometry(0.9, 0.9, 1.8, 10), mat4(bx + wdt / 4, hgt + 0.9, bz - dpt / 4));
+   780→        if (rnd() < 0.6) w.push("metal", new THREE.BoxGeometry(1.3, 0.8, 1), mat4(bx - wdt / 4, hgt + 0.4, bz + dpt / 4, { ry: 0.3 }));
+   781→        if (rnd() < 0.4) {
+   782→          // مبنى منهار الزاوية
+   783→          w.push("rubble", new THREE.BoxGeometry(8, 3, 6), mat4(bx + wdt / 2 - 2, 1.5, bz + dpt / 2 + 2.5, { ry: 0.5, rz: 0.12 }));
+   784→          debrisPile(ctx, bx + wdt / 2 + 2, bz + dpt / 2 + 4, 7, 6);
+   785→        }
+   786→      }
+   787→    }
+   788→  }
+   789→
+   790→  // ── ساحة الساعة (البلوك المركزي الغربي) ──
+   791→  {
+   792→    const px = -23, pz = -23;
+   793→    // أرضية ساحة مبلطة
+   794→    w.push("sidewalk", new THREE.BoxGeometry(30, 0.13, 30), mat4(px, 0.065, pz));
+   795→    const tower = clockTower(w, px, pz);
+   796→    tower.faces.forEach((f) => scene.add(f));
+   797→    // الساعة متجمدة لحظة الكارثة: 2:47
+   798→    for (let i = 0; i < tower.hands.length; i += 2) {
+   799→      (tower.hands[i] as THREE.Object3D).rotation.z = -1.31;
+   800→      (tower.hands[i + 1] as THREE.Object3D).rotation.z = -4.92;
+   801→    }
+   802→    clockHandsRef.push(...tower.hands);
+   803→    fountain(w, px + 7, pz + 8);
+   804→    bench(w, px - 8, pz + 6, 0.3);
+   805→    bench(w, px + 4, pz - 9, Math.PI + 0.2);
+   806→    bench(w, px - 6, pz - 8, 1.2);
+   807→    deadTree(w, px - 10, pz - 9);
+   808→    deadTree(w, px + 11, pz - 6);
+   809→    deadTree(w, px - 9, pz + 12);
+   810→    lampPost(w, px - 12, pz - 12, Math.PI / 2, false);
+   811→    lampPost(w, px + 12, pz + 12, -Math.PI / 2, true);
+   812→    addFlickerLight(ctx, px + 12, 5, pz + 13.5, 0xe8a850, 1.1, 14, 2.2);
+   813→    trashBin(w, px + 2, pz + 12.5);
+   814→    trashBags(w, px - 13, pz + 2);
+   815→    hydrant(w, px + 13, pz + 2);
+   816→    ctx.buildings.push({ x: px, z: pz, w: 30, d: 30, name: "ساحة الساعة", poi: true });
+   817→    ctx.spawns.push({ kind: "spitter", x: px - 4, z: pz + 3, wander: 7 });
+   818→    ctx.spawns.push({ kind: "walker", x: px - 8, z: pz - 6, wander: 8 });
+   819→    ctx.spawns.push({ kind: "walker", x: px + 9, z: pz - 10, wander: 8 });
+   820→    ctx.triggers.push({ id: "trig_plaza", x: px, z: pz, radius: 20, once: true });
+   821→  }
+   822→
+   823→  // ── الحطام الذي يسد الطرق ──
+   824→  debrisPile(ctx, 46, 34, 9, 7);
+   825→  debrisPile(ctx, -46, -34, 9, 7);
+   826→  debrisPile(ctx, 0, 68, 9, 7);
+   827→  debrisPile(ctx, -92, 58, 7, 9);
+   828→  debrisPile(ctx, 92, -58, 7, 9);
+   829→  debrisPile(ctx, 34, -92, 9, 7);
+   830→  debrisPile(ctx, -34, 92, 9, 7);
+   831→  debrisPile(ctx, 68, 0, 7, 9);
+   832→
+   833→  // ── سيارات: مواقف + حوادث ──
+   834→  const cars: [number, number, number, CarVariantLike][] = [
+   835→    [3.4, -60, 0, "sedan"], [-3.4, -55, Math.PI, "taxi"], [3.4, -30, 0.06, "wreck"],
+   836→    [-3.6, 10, 0, "sedan"], [3.4, 45, Math.PI, "sedan"], [-3.4, 70, 0.04, "van"],
+   837→    [-45, 3.4, Math.PI / 2, "sedan"], [-60, -3.4, Math.PI / 2 + 0.05, "wreck"],
+   838→    [25, 3.4, Math.PI / 2, "taxi"], [55, -3.4, Math.PI / 2, "sedan"], [80, 3.4, Math.PI / 2 + 0.03, "van"],
+   839→    [48.4, -60, 0, "sedan"], [43.6, -25, Math.PI, "sedan"], [48.4, 15, 0.05, "wreck"], [43.6, 60, Math.PI, "sedan"],
+   840→    [-25, -48.4, 0, "van"], [20, -43.6, Math.PI + 0.05, "sedan"], [-60, -43.6, 0, "sedan"], [70, -48.4, 0.03, "sedan"],
+   841→    [-20, 48.4, Math.PI, "sedan"], [30, 43.6, 0, "wreck"], [70, 43.6, 0.04, "van"], [-70, 43.6, 0, "sedan"],
+   842→    [-48.4, 60, Math.PI, "taxi"], [-43.6, -60, 0, "sedan"], [-48.4, 15, Math.PI + 0.04, "sedan"],
+   843→    [0, 0, 0.7, "wreck"], [-46, 46, 2.2, "sedan"], [46, -46, 1.1, "van"], [0, -23, 2.8, "sedan"],
+   844→    [65, -35, 0.15, "police"], [-15, 15, 1.6, "ambulance"],
+   845→  ];
+   846→  for (const [cx, cz, cr, variant] of cars) {
+   847→    car(w, cx, cz, cr, variant, rnd());
+   848→  }
+   849→  // حافلة محترقة تسد الشارع الرئيسي
+   850→  busWreck(w, 0, -40, 0.3);
+   851→  // حرائق سيارات (ضوءان فقط حفاظاً على الأداء)
+   852→  addFire(ctx, 0.8, 0.8, 0.75);
+   853→  addFire(ctx, 48.4, 14.2, 0.7);
+   854→
+   855→  // جثث مغطاة وآثار دماء
+   856→  const corpseSpots: [number, number][] = [
+   857→    [30, 30], [-30, -30], [50, 8], [-8, 50], [15, -55], [-55, 15], [80, -10], [-80, 10],
+   858→    [26, 62], [-60, -60], [40, -26], [-26, 40],
+   859→  ];
+   860→  corpseSpots.forEach(([x, z], i) => {
+   861→    if (i % 3 === 0) bodyBag(w, x, z, rnd() * Math.PI * 2);
+   862→    else coveredBody(w, x, z, rnd() * Math.PI * 2);
+   863→    bloodDecal(ctx, x, z, 1.8);
+   864→  });
+   865→  bloodTrail(ctx, -26, 40, -30, 46);
+   866→  bloodTrail(ctx, 30, 30, 24, 36);
+   867→
+   868→  // ── أعمدة إنارة (8 مضاءة) وإشارات ──
+   869→  const litLamps: [number, number, number][] = [
+   870→    [6.4, -70, Math.PI / 2], [-6.4, -20, -Math.PI / 2], [6.4, 30, Math.PI / 2], [-6.4, 80, -Math.PI / 2],
+   871→    [30, 6.4, Math.PI], [-30, -6.4, 0], [75, -6.4, 0], [-52.4, 20, Math.PI / 2],
+   872→  ];
+   873→  for (const [lx, lz, lr] of litLamps) {
+   874→    lampPost(w, lx, lz, lr, true);
+   875→    addFlickerLight(ctx, lx + Math.sin(lr) * 1.75, 4.9, lz + Math.cos(lr) * 1.75, 0xe8a850, 1.0, 14, 1.4 + rnd() * 2);
+   876→  }
+   877→  const deadLamps: [number, number, number][] = [
+   878→    [-6.4, 45, -Math.PI / 2], [6.4, 5, Math.PI / 2], [-52.4, -20, Math.PI / 2], [52.4, -30, -Math.PI / 2],
+   879→    [20, 52.4, Math.PI], [-70, -52.4, 0], [80, 52.4, Math.PI], [23, 52.6, Math.PI], [-23, -52.6, 0],
+   880→  ];
+   881→  for (const [lx, lz, lr] of deadLamps) lampPost(w, lx, lz, lr, false);
+   882→
+   883→  trafficLight(w, 7, 7, Math.PI * 0.75, "green");
+   884→  trafficLight(w, -7, -7, -Math.PI * 0.25, "dead");
+   885→  trafficLight(w, 7, -7, Math.PI * 0.25, "dead");
+   886→  trafficLight(w, -7, 7, -Math.PI * 0.75, "dead");
+   887→
+   888→  hydrant(w, 12, 7);
+   889→  hydrant(w, -52, 41);
+   890→  hydrant(w, 41, -52);
+   891→  trashBin(w, 18, 41);
+   892→  trashBin(w, -41, -18);
+   893→  trashBags(w, 18.8, -18);
+   894→  trashBags(w, 44, 8);
+   895→  trashBags(w, -14, 44);
+   896→  deadTree(w, 52, 7);
+   897→  deadTree(w, -7, 52);
+   898→
+   899→  // لوحة إعلانية قرب الحي التجاري
+   900→  {
+   901→    w.push("metal", new THREE.CylinderGeometry(0.14, 0.18, 6, 8), mat4(13.5, 3, 57));
+   902→    w.push("metal", new THREE.CylinderGeometry(0.14, 0.18, 6, 8), mat4(19.5, 3, 57));
+   903→    w.push("dark", new THREE.BoxGeometry(7.2, 3.4, 0.25), mat4(16.5, 5.6, 57));
+   904→    const bbTex = canvasTex(256, 128, (c) => {
+   905→      c.fillStyle = "#171310";
+   906→      c.fillRect(0, 0, 256, 128);
+   907→      c.fillStyle = "#7a1a12";
+   908→      c.font = "bold 34px Cairo, Arial";
+   909→      c.textAlign = "center";
+   910→      c.fillText("كيبريس", 128, 52);
+   911→      c.fillStyle = "#8a7a4a";
+   912→      c.font = "22px Cairo, Arial";
+   913→      c.fillText("مستقبلٌ آمن… وعدٌ صادق", 128, 92);
+   914→      c.fillStyle = "rgba(0,0,0,0.5)";
+   915→      c.fillRect(20 + Math.random() * 100, 0, 40, 128);
+   916→    });
+   917→    const bb = new THREE.Mesh(
+   918→      new THREE.PlaneGeometry(6.8, 3.1),
+   919→      new THREE.MeshStandardMaterial({ map: bbTex, roughness: 0.8, emissive: 0x333333, emissiveIntensity: 0.25 }),
+   920→    );
+   921→    bb.position.set(16.5, 5.6, 56.85);
+   922→    bb.rotation.y = Math.PI;
+   923→    bb.userData.noHit = true;
+   924→    scene.add(bb);
+   925→  }
+   926→
+   927→  // ═══════════ المباني القابلة للدخول ═══════════
+   928→
+   929→  // ── 1) شقة جون (البداية) في (69,69) ──
+   930→  {
+   931→    const cx = 69, cz = 69;
+   932→    roomFloor(ctx, cx, cz, 16, 12);
+   933→    w.push("woodFloor", new THREE.BoxGeometry(15.6, 0.04, 11.6), mat4(cx, 0.06, cz));
+   934→    roomRoof(ctx, cx, cz, 16, 12);
+   935→    wallWithGaps(ctx, "brick", cx - 8, cz - 6, cx + 8, cz - 6, [{ at: 12, width: 1.6 }]);
+   936→    wallWithGaps(ctx, "brick", cx - 8, cz + 6, cx + 8, cz + 6);
+   937→    wallWithGaps(ctx, "brick", cx - 8, cz - 6, cx - 8, cz + 6);
+   938→    wallWithGaps(ctx, "brick", cx + 8, cz - 6, cx + 8, cz + 6, [{ at: 3, width: 2.6 }]);
+   939→    // جدار داخلي للحمام
+   940→    wallWithGaps(ctx, "wallpaper", cx + 5, cz - 6, cx + 5, cz - 3, [{ at: 1.2, width: 1.2 }]);
+   941→    w.push("wallpaper", new THREE.BoxGeometry(3, 4.2, 0.3), mat4(cx + 6.5, 2.1, cz - 6 + T / 2));
+   942→    addBox(ctx, "white", cx + 7, 0, cz - 4.8, 0.5, 0.75, 0.6); // مرحاض
+   943→    addBox(ctx, "white", cx + 6, 0, cz - 4.6, 0.55, 0.9, 0.45); // مغسلة
+   944→    // فتحة سقف (ضوء قمر)
+   945→    const holeLight = new THREE.SpotLight(0x8a93a8, 40, 20, 0.5, 0.6, 1.5);
+   946→    holeLight.position.set(cx + 4, 9, cz);
+   947→    holeLight.target.position.set(cx + 4, 0, cz);
+   948→    scene.add(holeLight, holeLight.target);
+   949→    // الأثاث
+   950→    kitchenCounter(w, cx - 6.8, cz + 2, Math.PI / 2, 2.6);
+   951→    fridge(w, cx - 6.8, cz + 4.2, Math.PI / 2, true);
+   952→    sofa(w, cx + 1, cz + 4.6, Math.PI, 2.1);
+   953→    tvSet(w, cx + 1, cz - 4.9, 0);
+   954→    coffeeTable(w, cx + 1, cz + 2.2, 0);
+   955→    desk(w, cx + 2, cz + 3, 0, true);
+   956→    bed(w, cx - 4, cz + 2, 0.2);
+   957→    shelfStocked(w, cx + 6.8, cz + 1.5, -Math.PI / 2, 2.4, true);
+   958→    cabinet(w, cx - 6, cz - 3.5, Math.PI / 2);
+   959→    deadPlant(w, cx - 3, cz + 4.8);
+   960→    deadPlant(w, cx + 5.5, cz - 2.5);
+   961→    coveredBody(w, cx + 4.5, cz + 1.5, 0.7);
+   962→    bloodDecal(ctx, cx + 3, cz - 1, 2);
+   963→    bloodDecal(ctx, cx - 2, cz + 3.5, 1.5);
+   964→    // الخزانة + نقطة حفظ
+   965→    addBox(ctx, "metal", cx - 6.5, 0, cz - 5, 1.4, 2.2, 0.7);
+   966→    ctx.interactables.push({ id: "apt_safe", kind: "checkpoint", x: cx - 6.5, z: cz - 4.4, radius: 2, prompt: "خزانة الحفظ — حفظ التقدم", used: false });
+   967→    fluoro(ctx, cx, cz, 0xd0a860, 1.1, 11, 7);
+   968→    // الالتقاطات
+   969→    noteProp(ctx, "apt_rec", "doc_1", cx + 2, cz + 3);
+   970→    pickupProp(ctx, "apt_battery", "item", cx - 6.6, cz + 1.2, "التقاط بطارية", { item: "battery", qty: 1 }, 1.0);
+   971→    pickupProp(ctx, "apt_band", "item", cx + 6, cz - 4.6, "التقاط ضمادة", { item: "bandage", qty: 1 }, 0.95);
+   972→    // الباب
+   973→    addDoorAt(ctx, "door_apt", cx + 4, cz - 6, "x", 1.6, "wood");
+   974→    ctx.buildings.push({ x: cx, z: cz, w: 16, d: 12, name: "شقتك", poi: true });
+   975→    ctx.spawns.push({ kind: "walker", x: cx - 2, z: cz - 12, wander: 6 });
+   976→    ctx.spawns.push({ kind: "walker", x: cx + 14, z: cz - 14, wander: 8 });
+   977→    ctx.triggers.push({ id: "trig_apartment_exit", x: cx, z: cz - 10, radius: 5, once: true });
+   978→  }
+   979→
+   980→  // ── 2) متجر الأسلحة (23,23) ──
+   981→  {
+   982→    const cx = 23, cz = 23;
+   983→    roomFloor(ctx, cx, cz, 14, 12);
+   984→    w.push("woodFloor", new THREE.BoxGeometry(13.6, 0.04, 11.6), mat4(cx, 0.06, cz));
+   985→    roomRoof(ctx, cx, cz, 14, 12);
+   986→    wallWithGaps(ctx, "brick", cx - 7, cz - 6, cx + 7, cz - 6, [{ at: 7, width: 1.7 }]);
+   987→    wallWithGaps(ctx, "brick", cx - 7, cz + 6, cx + 7, cz + 6);
+   988→    wallWithGaps(ctx, "brick", cx - 7, cz - 6, cx - 7, cz + 6);
+   989→    wallWithGaps(ctx, "brick", cx + 7, cz - 6, cx + 7, cz + 6);
+   990→    counter(w, cx + 1, cz - 3, 0, 2.6);
+   991→    gunRack(w, cx, cz + 5.5, Math.PI);
+   992→    shelfStocked(w, cx + 5.6, cz + 1, Math.PI / 2, 2.6, true);
+   993→    w.push("glassDark", new THREE.BoxGeometry(1.9, 0.06, 0.8), mat4(cx - 3, 1.18, cz + 2));
+   994→    counter(w, cx - 3, cz + 2, Math.PI / 2, 1.8);
+   995→    // لوحة target على الجدار الغربي
+   996→    w.push("medRed", new THREE.PlaneGeometry(0.7, 0.9), mat4(cx - 6.7, 1.9, cz - 2, { ry: Math.PI / 2 }));
+   997→    cratesStack(w, cx - 5.5, cz + 4.5);
+   998→    barrel(w, cx + 5.5, cz - 4.5, "greenMetal");
+   999→    bloodDecal(ctx, cx - 2, cz + 2, 2.2);
+  1000→    fluoro(ctx, cx, cz, 0xd0a860, 1.2, 11, 11);
+  1001→    pickupProp(ctx, "gun_pistol", "item", cx + 1, cz - 3, "التقاط مسدس الخدمة", { weapon: "pistol" }, 1.25);
+  1002→    pickupProp(ctx, "gun_ammo1", "item", cx - 0.5, cz - 3.2, "التقاط ذخيرة مسدس", { item: "pistol_ammo", qty: 24 }, 1.25);
+  1003→    pickupProp(ctx, "gun_shotgun", "item", cx + 5.4, cz + 0.4, "التقاط بندقية الصيد", { weapon: "shotgun" }, 0.95);
+  1004→    pickupProp(ctx, "gun_shells", "item", cx + 5.8, cz + 1.8, "التقاط خرطوش", { item: "shotgun_ammo", qty: 8 }, 0.95);
+  1005→    addDoorAt(ctx, "door_gunshop", cx, cz - 6, "x", 1.7, "wood");
+  1006→    ctx.buildings.push({ x: cx, z: cz, w: 14, d: 12, name: "متجر الأسلحة", poi: true });
+  1007→    ctx.spawns.push({ kind: "runner", x: cx + 2, z: cz + 2, wander: 3 });
+  1008→    ctx.triggers.push({ id: "trig_gunshop", x: cx, z: cz, radius: 9, once: true });
+  1009→  }
+  1010→
+  1011→  // ── 3) مركز الشرطة (69,-23) ──
+  1012→  {
+  1013→    const cx = 69, cz = -23;
+  1014→    roomFloor(ctx, cx, cz, 20, 16);
+  1015→    w.push("tile", new THREE.BoxGeometry(19.6, 0.04, 15.6), mat4(cx, 0.06, cz));
+  1016→    roomRoof(ctx, cx, cz, 20, 16);
+  1017→    wallWithGaps(ctx, "concrete", cx - 10, cz - 8, cx + 10, cz - 8, [{ at: 4, width: 1.8 }]);
+  1018→    wallWithGaps(ctx, "concrete", cx - 10, cz + 8, cx + 10, cz + 8);
+  1019→    wallWithGaps(ctx, "concrete", cx - 10, cz - 8, cx - 10, cz + 8);
+  1020→    wallWithGaps(ctx, "concrete", cx + 10, cz - 8, cx + 10, cz + 8);
+  1021→    // قسم داخلي: مكتب
+  1022→    wallWithGaps(ctx, "concrete", cx + 2, cz + 2, cx + 10, cz + 2, [{ at: 3, width: 1.5 }]);
+  1023→    // غرفة الأدلة (جنوب غربي)
+  1024→    wallWithGaps(ctx, "concrete", cx - 3, cz + 2, cx - 3, cz + 8, [{ at: 2.5, width: 1.4 }]);
+  1025→    wallWithGaps(ctx, "concrete", cx - 10, cz + 2, cx - 3, cz + 2);
+  1026→    // مكاتب + كراسٍ
+  1027→    desk(w, cx - 5, cz - 3, 0, true);
+  1028→    officeChair(w, cx - 5, cz - 1.8, Math.PI);
+  1029→    desk(w, cx + 5, cz - 3, Math.PI, true);
+  1030→    officeChair(w, cx + 5, cz - 1.8, 0);
+  1031→    desk(w, cx + 6, cz + 5, Math.PI, false);
+  1032→    desk(w, cx - 1, cz - 5.5, 0, true);
+  1033→    officeChair(w, cx - 1, cz - 4.3, Math.PI);
+  1034→    // زنزانة (شمال شرقي): قضبان
+  1035→    for (let bx2 = cx + 7; bx2 <= cx + 9.8; bx2 += 0.28) {
+  1036→      w.push("chrome", new THREE.CylinderGeometry(0.03, 0.03, 3.2, 6), mat4(bx2, 1.6, cz + 5));
+  1037→    }
+  1038→    w.push("chrome", new THREE.CylinderGeometry(0.035, 0.035, 2.9, 6), mat4(cx + 7, 1.6, cz + 6.6, { rx: Math.PI / 2 }));
+  1039→    addBox(ctx, "metal", cx + 8.8, 0, cz + 7, 1.9, 0.5, 0.9); // سرير الزنزانة
+  1040→    ctx.colliders.push({ minX: cx + 6.8, maxX: cx + 10, minZ: cz + 4.8, maxZ: cz + 5.2 });
+  1041→    // لوحة إعلانات
+  1042→    w.push("cork", new THREE.PlaneGeometry(2.2, 1.4), mat4(cx - 9.7, 2, cz - 2, { ry: Math.PI / 2 }));
+  1043→    for (let i = 0; i < 5; i++) {
+  1044→      w.push("paper", new THREE.BoxGeometry(0.02, 0.3, 0.22), mat4(cx - 9.62, 1.7 + (i % 2) * 0.55, cz - 2.7 + i * 0.32, { ry: (rnd() - 0.5) * 0.2 }));
+  1045→    }
+  1046→    // خزانة الأسلحة في غرفة الأدلة
+  1047→    lockerRow(w, cx - 6.5, cz + 6.8, 0, 4);
+  1048→    shelfStocked(w, cx - 8.5, cz + 4.5, Math.PI / 2, 2, true);
+  1049→    bloodDecal(ctx, cx, cz, 2.6);
+  1050→    coveredBody(w, cx - 3, cz - 1, 1.1);
+  1051→    bodyBag(w, cx + 3, cz + 6.5, 0.5);
+  1052→    emergencyLight(ctx, cx, 3.6, cz - 4, 0xc22a1e);
+  1053→    fluoro(ctx, cx - 3, cz + 3, 0xd0a860, 1, 12, 13);
+  1054→    // الالتقاطات
+  1055→    noteProp(ctx, "pol_doc", "doc_4", cx - 5, cz - 3);
+  1056→    pickupProp(ctx, "pol_key", "item", cx + 6, cz + 5, "التقاط مفتاح برج الإذاعة", { item: "key_tower", qty: 1 }, 0.92);
+  1057→    pickupProp(ctx, "pol_ammo", "item", cx + 5, cz - 3, "التقاط ذخيرة مسدس", { item: "pistol_ammo", qty: 24 }, 0.92);
+  1058→    pickupProp(ctx, "pol_med", "item", cx - 8.4, cz + 4.4, "التقاط علبة إسعاف", { item: "medkit", qty: 1 }, 0.95);
+  1059→    pickupProp(ctx, "pol_shells", "item", cx - 2, cz + 6, "التقاط خرطوش", { item: "shotgun_ammo", qty: 6 }, 0.14);
+  1060→    // مفتاح خزانة الأسلحة (مهمة جانبية)
+  1061→    pickupProp(ctx, "pol_lockerkey", "item", cx - 1, cz - 5.5, "التقاط مفتاح خزانة الأسلحة", { item: "key_locker", qty: 1 }, 0.92);
+  1062→    ctx.interactables.push({ id: "pol_locker", kind: "item", x: cx - 6.5, z: cz + 5.6, radius: 2, prompt: "خزانة الأسلحة — تحتاج مفتاح الترسانة", data: { locker: true }, used: false });
+  1063→    // الأبواب
+  1064→    addDoorAt(ctx, "door_police", cx - 6, cz - 8, "x", 1.8, "metal");
+  1065→    addDoorAt(ctx, "door_police_evidence", cx - 3, cz + 4.5, "z", 1.4, "metal");
+  1066→    ctx.buildings.push({ x: cx, z: cz, w: 20, d: 16, name: "مركز الشرطة", poi: true });
+  1067→    ctx.spawns.push({ kind: "walker", x: cx - 6, z: cz, wander: 5 });
+  1068→    ctx.spawns.push({ kind: "walker", x: cx + 3, z: cz - 5, wander: 5 });
+  1069→    ctx.spawns.push({ kind: "walker", x: cx + 14, z: cz + 12, wander: 8 });
+  1070→    ctx.triggers.push({ id: "trig_police", x: cx, z: cz, radius: 12, once: true });
+  1071→  }
+  1072→
+  1073→  // ── 4) برج الإذاعة (-23,-69) ──
+  1074→  {
+  1075→    const cx = -23, cz = -69;
+  1076→    roomFloor(ctx, cx, cz, 12, 10);
+  1077→    roomRoof(ctx, cx, cz, 12, 10);
+  1078→    wallWithGaps(ctx, "metal", cx - 6, cz - 5, cx + 6, cz - 5, [{ at: 3, width: 1.5 }]);
+  1079→    wallWithGaps(ctx, "metal", cx - 6, cz + 5, cx + 6, cz + 5);
+  1080→    wallWithGaps(ctx, "metal", cx - 6, cz - 5, cx - 6, cz + 5);
+  1081→    wallWithGaps(ctx, "metal", cx + 6, cz - 5, cx + 6, cz + 5);
+  1082→    // البرج نفسه
+  1083→    const tower = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 1.6, 34, 6, 1, true), mats.metal);
+  1084→    tower.position.set(cx, 17, cz + 8);
+  1085→    scene.add(tower);
+  1086→    tower.userData.noHit = true;
+  1087→    ctx.colliders.push({ minX: cx - 1.4, maxX: cx + 1.4, minZ: cz + 6.6, maxZ: cz + 9.4 });
+  1088→    const beacon = new THREE.Mesh(new THREE.SphereGeometry(0.3, 8, 8), mats.redLight);
+  1089→    beacon.position.set(cx, 34.4, cz + 8);
+  1090→    beacon.userData.noHit = true;
+  1091→    scene.add(beacon);
+  1092→    const beaconLight = new THREE.PointLight(0xc22a1e, 2, 20, 2);
+  1093→    beaconLight.position.set(cx, 34, cz + 8);
+  1094→    scene.add(beaconLight);
+  1095→    ctx.flickerLights.push({ light: beaconLight, base: 2, speed: 0.7 });
+  1096→    // خوادم وأجهزة
+  1097→    serverRack(w, cx - 5.2, cz - 2, Math.PI / 2);
+  1098→    serverRack(w, cx - 5.2, cz + 0.6, Math.PI / 2);
+  1099→    serverRack(w, cx - 5.2, cz + 3.2, Math.PI / 2);
+  1100→    desk(w, cx - 2, cz - 3.4, 0, true);
+  1101→    controlPanel(w, cx + 2, cz - 3.4, 0);
+  1102→    counter(w, cx + 4.5, cz + 3, -Math.PI / 2, 2.2);
+  1103→    wallPipes(w, cx, 3.2, cz - 4.7, 0, 6);
+  1104→    // كونسول البث
+  1105→    addBox(ctx, "metal", cx + 2, 0, cz - 1.4, 1.6, 1.1, 0.7);
+  1106→    const screen = new THREE.Mesh(new THREE.PlaneGeometry(1.1, 0.6), mats.greenLight);
+  1107→    screen.position.set(cx + 2, 1.5, cz - 1.02);
+  1108→    screen.userData.noHit = true;
+  1109→    scene.add(screen);
+  1110→    ctx.interactables.push({ id: "tower_console", kind: "console", x: cx + 2, z: cz - 0.6, radius: 2, prompt: "البث — نداء استغاثة", used: false });
+  1111→    fluoro(ctx, cx, cz, 0x6ac070, 0.9, 10, 5);
+  1112→    addDoorAt(ctx, "door_tower", cx - 3, cz - 5, "x", 1.5, "metal");
+  1113→    ctx.buildings.push({ x: cx, z: cz, w: 12, d: 10, name: "برج الإذاعة", poi: true });
+  1114→    ctx.spawns.push({ kind: "runner", x: cx + 2, z: cz + 2, wander: 4 });
+  1115→    ctx.spawns.push({ kind: "walker", x: cx - 10, z: cz + 10, wander: 8 });
+  1116→    ctx.triggers.push({ id: "trig_tower", x: cx, z: cz, radius: 10, once: true });
+  1117→  }
+  1118→
+  1119→  // ── 5) المستشفى المركزي (-23,23) — الأكبر ──
+  1120→  {
+  1121→    const cx = -23, cz = 23;
+  1122→    roomFloor(ctx, cx, cz, 28, 22);
+  1123→    w.push("tile", new THREE.BoxGeometry(27.6, 0.04, 21.6), mat4(cx, 0.06, cz));
+  1124→    roomRoof(ctx, cx, cz, 28, 22);
+  1125→    wallWithGaps(ctx, "concrete", cx - 14, cz - 11, cx + 14, cz - 11, [{ at: 14, width: 2 }]);
+  1126→    wallWithGaps(ctx, "concrete", cx - 14, cz + 11, cx + 14, cz + 11);
+  1127→    wallWithGaps(ctx, "concrete", cx - 14, cz - 11, cx - 14, cz + 11, [{ at: 11, width: 1.7 }]);
+  1128→    wallWithGaps(ctx, "concrete", cx + 14, cz - 11, cx + 14, cz + 11);
+  1129→    wallWithGaps(ctx, "concrete", cx - 14, cz - 2, cx - 4, cz - 2, [{ at: 5, width: 1.6 }]);
+  1130→    wallWithGaps(ctx, "concrete", cx + 4, cz - 2, cx + 14, cz - 2, [{ at: 5, width: 1.6 }]);
+  1131→    wallWithGaps(ctx, "concrete", cx - 4, cz - 2, cx - 4, cz - 11);
+  1132→    wallWithGaps(ctx, "concrete", cx + 4, cz - 2, cx + 4, cz - 11, [{ at: 4.5, width: 1.5 }]);
+  1133→    wallWithGaps(ctx, "concrete", cx - 12, cz + 3, cx - 4, cz + 3, [{ at: 4, width: 1.5 }]);
+  1134→    // استقبال + انتظار
+  1135→    counter(w, cx, cz - 6.5, 0, 2.8);
+  1136→    officeChair(w, cx, cz - 5.3, Math.PI);
+  1137→    bench(w, cx - 8, cz - 8.5, 0);
+  1138→    bench(w, cx - 4.5, cz - 8.5, 0);
+  1139→    // كرسي متحرك
+  1140→    w.push("rubber", new THREE.CylinderGeometry(0.3, 0.3, 0.06, 12), mat4(cx - 6, 0.3, cz - 7.5, { rz: Math.PI / 2 }));
+  1141→    w.push("rubber", new THREE.CylinderGeometry(0.3, 0.3, 0.06, 12), mat4(cx - 4.9, 0.3, cz - 7.5, { rz: Math.PI / 2 }));
+  1142→    w.push("chrome", new THREE.BoxGeometry(0.6, 0.05, 0.55), mat4(cx - 5.45, 0.55, cz - 7.5));
+  1143→    w.push("fabric", new THREE.BoxGeometry(0.55, 0.6, 0.05), mat4(cx - 5.45, 0.85, cz - 7.75, { rx: -0.15 }));
+  1144→    // أسرّة المستشفى (نقالات)
+  1145→    for (let i = 0; i < 4; i++) gurney(w, cx - 10 + i * 2.6, cz + 7, 0, i !== 1);
+  1146→    for (let i = 0; i < 3; i++) gurney(w, cx + 6 + i * 2.6, cz + 6, 0.1, i === 1);
+  1147→    ivStand(w, cx - 11.2, cz + 7);
+  1148→    ivStand(w, cx - 8.6, cz + 7.4);
+  1149→    ivStand(w, cx + 4.8, cz + 6);
+  1150→    ivStand(w, cx + 10, cz + 6.3);
+  1151→    bodyBag(w, cx - 7.4, cz + 6.1, 0.05);
+  1152→    // عيادة (شرقاً)
+  1153→    shelfStocked(w, cx + 9, cz - 7, 0, 4, true);
+  1154→    desk(w, cx + 10, cz - 5, Math.PI / 2, true);
+  1155→    cabinet(w, cx + 12.8, cz - 9, 0, "medWhite");
+  1156→    // مكتب المدير
+  1157→    desk(w, cx - 8, cz + 6.5, Math.PI, true);
+  1158→    officeChair(w, cx - 8, cz + 5.2, 0);
+  1159→    shelfStocked(w, cx - 12.5, cz + 7, Math.PI / 2, 2.2, false);
+  1160→    cabinet(w, cx - 11, cz + 9.6, Math.PI, "wood2");
+  1161→    coveredBody(w, cx - 6, cz + 8, 2.1);
+  1162→    // غسيل الملابس (شرقاً) — سارة
+  1163→    wallWithGaps(ctx, "concrete", cx + 6, cz + 3, cx + 14, cz + 3);
+  1164→    machineProp(ctx, cx + 8, cz + 8.5, 1.8, 2, 1.6);
+  1165→    machineProp(ctx, cx + 11, cz + 8.5, 1.8, 2, 1.6);
+  1166→    counter(w, cx + 13, cz + 5, Math.PI / 2, 2);
+  1167→    // دماء
+  1168→    for (let i = 0; i < 7; i++) bloodDecal(ctx, cx - 12 + rnd() * 24, cz - 9 + rnd() * 18, 2 + rnd() * 2);
+  1169→    bloodTrail(ctx, cx - 2, cz - 11, cx - 6, cz - 4);
+  1170→    corpse(ctx, cx + 3, cz - 6);
+  1171→    coveredBody(w, cx + 12, cz + 1.5, 0.4);
+  1172→    emergencyLight(ctx, cx, 3.7, cz, 0xc22a1e);
+  1173→    emergencyLight(ctx, cx - 8, 3.6, cz + 6, 0xd0a860);
+  1174→    fluoro(ctx, cx + 8, cz - 6, 0xd0a860, 1.1, 13, 15);
+  1175→    fluoro(ctx, cx - 1, cz - 7, 0xd8e8d0, 0.8, 10, 9);
+  1176→    // الالتقاطات
+  1177→    noteProp(ctx, "hos_doc3", "doc_3", cx + 10, cz - 5);
+  1178→    noteProp(ctx, "hos_doc5", "doc_5", cx - 8, cz + 6.5);
+  1179→    pickupProp(ctx, "hos_blue", "item", cx - 8.6, cz + 6.9, "التقاط بطاقة وصول زرقاء", { item: "keycard_blue", qty: 1 }, 0.92);
+  1180→    pickupProp(ctx, "hos_med1", "item", cx - 12.4, cz - 8, "التقاط علبة إسعاف", { item: "medkit", qty: 1 }, 0.95);
+  1181→    pickupProp(ctx, "hos_med2", "item", cx + 9.2, cz - 7, "التقاط علبة إسعاف", { item: "medkit", qty: 1 }, 0.95);
+  1182→    pickupProp(ctx, "hos_bat", "item", cx + 2, cz + 8, "التقاط بطارية", { item: "battery", qty: 1 }, 1.0);
+  1183→    pickupProp(ctx, "hos_band", "item", cx - 5, cz - 6, "التقاط ضمادتين", { item: "bandage", qty: 2 }, 0.62);
+  1184→    // الأبواب
+  1185→    addDoorAt(ctx, "door_hospital", cx, cz - 11, "x", 2, "double");
+  1186→    addDoorAt(ctx, "door_hospital_west", cx - 14, cz, "z", 1.7, "metal");
+  1187→    addDoorAt(ctx, "door_hospital_clinic", cx + 4, cz - 6.5, "z", 1.5, "wood");
+  1188→    addDoorAt(ctx, "door_hospital_office", cx - 8, cz + 3, "x", 1.5, "wood");
+  1189→    ctx.buildings.push({ x: cx, z: cz, w: 28, d: 22, name: "المستشفى المركزي", poi: true });
+  1190→    ctx.spawns.push({ kind: "walker", x: cx - 8, z: cz - 5, wander: 5 });
+  1191→    ctx.spawns.push({ kind: "walker", x: cx + 5, z: cz - 8, wander: 5 });
+  1192→    ctx.spawns.push({ kind: "runner", x: cx + 10, z: cz + 5, wander: 6 });
+  1193→    ctx.spawns.push({ kind: "walker", x: cx + 8, z: cz + 8.5, wander: 3 });
+  1194→    ctx.spawns.push({ kind: "brute", x: cx, z: cz + 3, wander: 7 });
+  1195→    ctx.spawns.push({ kind: "spitter", x: cx - 18, z: cz - 1, wander: 8 });
+  1196→    // سارة — نموذج بشري يجلس على حافة الغسالة
+  1197→    const sara = survivorModel("sara");
+  1198→    sara.position.set(cx + 12.5, 1.98, cz + 9);
+  1199→    sara.rotation.y = Math.PI * 0.85;
+  1200→    scene.add(sara);
+  1201→    ctx.interactables.push({ id: "npc_sara", kind: "npc", x: cx + 12.5, z: cz + 9, radius: 2.2, prompt: "التحدث مع سارة", data: { survivor: "sara" }, used: false });
+  1202→    ctx.triggers.push({ id: "trig_hospital", x: cx, z: cz, radius: 14, once: true });
+  1203→  }
+  1204→
+  1205→  // ── 6) مصنع القطع الغربي (-69,-23) ──
+  1206→  {
+  1207→    const cx = -69, cz = -23;
+  1208→    roomFloor(ctx, cx, cz, 26, 18);
+  1209→    wallWithGaps(ctx, "metal", cx - 13, cz - 9, cx + 13, cz - 9, [{ at: 20, width: 2 }]);
+  1210→    wallWithGaps(ctx, "metal", cx - 13, cz + 9, cx + 13, cz + 9);
+  1211→    wallWithGaps(ctx, "metal", cx - 13, cz - 9, cx - 13, cz + 9);
+  1212→    wallWithGaps(ctx, "metal", cx + 13, cz - 9, cx + 13, cz + 9);
+  1213→    roomRoof(ctx, cx - 6, cz, 14, 18);
+  1214→    pressMachine(w, cx - 8, cz - 4, 0);
+  1215→    pressMachine(w, cx + 5, cz - 3, Math.PI / 2);
+  1216→    conveyor(w, cx - 1, cz + 3, Math.PI / 2, 6);
+  1217→    controlPanel(w, cx + 1, cz - 6.5, Math.PI);
+  1218→    controlPanel(w, cx - 12, cz + 2, Math.PI / 2);
+  1219→    forklift(w, cx + 9, cz + 4, -0.5);
+  1220→    barrel(w, cx - 11, cz + 6, "greenMetal");
+  1221→    barrel(w, cx + 11.5, cz - 6.5, "carB", true);
+  1222→    barrel(w, cx - 4, cz - 7.5, "carA");
+  1223→    cratesStack(w, cx - 11.5, cz - 6.5);
+  1224→    cratesStack(w, cx + 3, cz + 7);
+  1225→    wallPipes(w, cx, 3.4, cz - 8.6, 0, 9);
+  1226→    wallPipes(w, cx - 12.6, 2.8, cz + 2, Math.PI / 2, 6);
+  1227→    w.push("hazard", new THREE.BoxGeometry(3.4, 0.03, 1), mat4(cx - 8, 0.05, cz - 1.6));
+  1228→    w.push("hazard", new THREE.BoxGeometry(3.4, 0.03, 1), mat4(cx + 5, 0.05, cz - 0.9));
+  1229→    // مكتب المشرفين (زاوية شمال شرق) — الرقيب
+  1230→    wallWithGaps(ctx, "concrete", cx + 6, cz - 9, cx + 6, cz - 2, [{ at: 2.5, width: 1.4 }]);
+  1231→    wallWithGaps(ctx, "concrete", cx + 6, cz - 2, cx + 13, cz - 2);
+  1232→    desk(w, cx + 10, cz - 6.5, Math.PI, false);
+  1233→    officeChair(w, cx + 10, cz - 5.3, 0);
+  1234→    cabinet(w, cx + 12.2, cz - 8, 0);
+  1235→    emergencyLight(ctx, cx - 8, 3.6, cz + 6, 0xc22a1e);
+  1236→    fluoro(ctx, cx + 2, cz + 2, 0xd0a860, 1, 12, 12);
+  1237→    addFire(ctx, cx - 11, cz - 7, 0.9);
+  1238→    bloodDecal(ctx, cx + 2, cz - 1, 2.4);
+  1239→    bloodTrail(ctx, cx - 6, cz, cx - 2, cz + 3);
+  1240→    coveredBody(w, cx - 3, cz + 1, 0.9);
+  1241→    corpse(ctx, cx + 8, cz + 4);
+  1242→    // الالتقاطات
+  1243→    noteProp(ctx, "fac_doc", "doc_2", cx + 10, cz - 6.5);
+  1244→    pickupProp(ctx, "fac_red", "item", cx - 11.5, cz - 6.5, "التقاط بطاقة وصول حمراء", { item: "keycard_red", qty: 1 }, 0.78);
+  1245→    pickupProp(ctx, "fac_ammo", "item", cx - 4, cz + 6, "التقاط ذخيرة مسدس", { item: "pistol_ammo", qty: 20 }, 0.14);
+  1246→    pickupProp(ctx, "fac_band", "item", cx + 5, cz + 6, "التقاط ضمادة", { item: "bandage", qty: 1 }, 0.14);
+  1247→    addDoorAt(ctx, "door_factory", cx + 7, cz - 9, "x", 2, "double");
+  1248→    ctx.buildings.push({ x: cx, z: cz, w: 26, d: 18, name: "المصنع الغربي", poi: true });
+  1249→    ctx.spawns.push({ kind: "walker", x: cx - 6, z: cz, wander: 6 });
+  1250→    ctx.spawns.push({ kind: "walker", x: cx + 3, z: cz + 5, wander: 6 });
+  1251→    ctx.spawns.push({ kind: "runner", x: cx - 10, z: cz - 5, wander: 6 });
+  1252→    ctx.spawns.push({ kind: "walker", x: cx + 10, z: cz - 5, wander: 3 });
+  1253→    ctx.spawns.push({ kind: "spitter", x: cx - 6, z: cz + 7, wander: 7 });
+  1254→    // الرقيب — جاثٍ مصاب
+  1255→    const soldier = survivorModel("soldier");
+  1256→    soldier.position.set(cx + 10.5, 0, cz - 7.5);
+  1257→    soldier.rotation.y = -Math.PI * 0.7;
+  1258→    scene.add(soldier);
+  1259→    ctx.interactables.push({ id: "npc_soldier", kind: "npc", x: cx + 10.5, z: cz - 7.5, radius: 2.2, prompt: "التحدث مع الرقيب", data: { survivor: "soldier" }, used: false });
+  1260→    ctx.triggers.push({ id: "trig_factory", x: cx, z: cz, radius: 13, once: true });
+  1261→  }
+  1262→
+  1263→  // ── 7) المستودع الغربي (-69,23) ──
+  1264→  {
+  1265→    const cx = -69, cz = 23;
+  1266→    roomFloor(ctx, cx, cz, 22, 16);
+  1267→    roomRoof(ctx, cx, cz, 22, 16);
+  1268→    wallWithGaps(ctx, "metal", cx - 11, cz - 8, cx + 11, cz - 8, [{ at: 11, width: 2.2 }]);
+  1269→    wallWithGaps(ctx, "metal", cx - 11, cz + 8, cx + 11, cz + 8);
+  1270→    wallWithGaps(ctx, "metal", cx - 11, cz - 8, cx - 11, cz + 8);
+  1271→    wallWithGaps(ctx, "metal", cx + 11, cz - 8, cx + 11, cz + 8);
+  1272→    shelfStocked(w, cx - 6, cz + 3, 0, 7, true);
+  1273→    shelfStocked(w, cx + 2, cz + 3, 0, 7, true);
+  1274→    shelfStocked(w, cx - 2, cz - 4, Math.PI / 2, 6, true);
+  1275→    // منصات pallet
+  1276→    for (const [px2, pz2, pr] of [[cx + 7, cz - 2, 0.2], [cx - 9, cz - 5, -0.3]] as const) {
+  1277→      for (let s2 = 0; s2 < 3; s2++) {
+  1278→        w.push("wood2", new THREE.BoxGeometry(1.2, 0.05, 1.2), mat4(px2 + s2 * 0.04, 0.05 + s2 * 0.16, pz2, { ry: pr + s2 * 0.1 }));
+  1279→      }
+  1280→    }
+  1281→    forklift(w, cx + 7.5, cz + 2, 2.6);
+  1282→    cratesStack(w, cx - 9.5, cz + 6);
+  1283→    cratesStack(w, cx + 9, cz - 5.5);
+  1284→    cratesStack(w, cx + 5, cz - 6.5);
+  1285→    barrel(w, cx - 10, cz - 1, "carA");
+  1286→    barrel(w, cx - 10.9, cz - 1.4, "carA");
+  1287→    // شرائح قماش متدلية
+  1288→    w.push("fabric", new THREE.BoxGeometry(1.4, 2.2, 0.06), mat4(cx + 4, 3.1, cz - 6.9, { rz: 0.06 }));
+  1289→    w.push("fabric", new THREE.BoxGeometry(1.2, 1.9, 0.06), mat4(cx - 5, 3.2, cz + 7.9, { rz: -0.08 }));
+  1290→    fluoro(ctx, cx, cz, 0xd0a860, 1.1, 13, 8);
+  1291→    bloodDecal(ctx, cx + 4, cz - 2, 2);
+  1292→    coveredBody(w, cx + 5, cz - 3, 2.4);
+  1293→    pickupProp(ctx, "ware_food1", "item", cx - 6, cz + 3, "التقاط طعام معلب", { item: "food", qty: 2 }, 0.95);
+  1294→    pickupProp(ctx, "ware_food2", "item", cx + 2, cz + 3, "التقاط طعام معلب", { item: "food", qty: 1 }, 0.95);
+  1295→    pickupProp(ctx, "ware_ammo", "item", cx - 2, cz - 4, "التقاط ذخيرة مسدس", { item: "pistol_ammo", qty: 16 }, 0.95);
+  1296→    pickupProp(ctx, "ware_bat", "item", cx + 8, cz - 4, "التقاط بطاريتين", { item: "battery", qty: 2 }, 0.14);
+  1297→    addDoorAt(ctx, "door_warehouse", cx, cz - 8, "x", 2.2, "double");
+  1298→    ctx.buildings.push({ x: cx, z: cz, w: 22, d: 16, name: "المستودع الغربي", poi: true });
+  1299→    ctx.spawns.push({ kind: "walker", x: cx - 5, z: cz - 1, wander: 6 });
+  1300→    ctx.spawns.push({ kind: "walker", x: cx + 6, z: cz + 2, wander: 6 });
+  1301→    ctx.spawns.push({ kind: "walker", x: cx + 8.5, z: cz + 6, wander: 2 });
+  1302→    // عادل في الغرفة الخلفية
+  1303→    const adel = survivorModel("adel");
+  1304→    adel.position.set(cx + 9, 0, cz + 6);
+  1305→    adel.rotation.y = Math.PI * 0.8;
+  1306→    scene.add(adel);
+  1307→    ctx.interactables.push({ id: "npc_adel", kind: "npc", x: cx + 9, z: cz + 6, radius: 2.2, prompt: "التحدث مع عادل", data: { survivor: "adel" }, used: false });
+  1308→    ctx.triggers.push({ id: "trig_warehouse", x: cx, z: cz, radius: 12, once: true });
+  1309→  }
+  1310→
+  1311→  // ── 8) محطة الوقود (69,23) ──
+  1312→  {
+  1313→    const cx = 69, cz = 23;
+  1314→    addBox(ctx, "concrete", cx, 5.2, cz, 14, 0.4, 10, false);
+  1315→    [[-6, -4], [6, -4], [-6, 4], [6, 4]].forEach(([ox, oz]) => {
+  1316→      addBox(ctx, "metal", cx + ox, 0, cz + oz, 0.5, 5.2, 0.5);
+  1317→    });
+  1318→    // مضختان مفصلان
+  1319→    for (const sx of [-3, 3]) {
+  1320→      addBox(ctx, "metal", cx + sx, 0, cz, 1.1, 1.5, 0.8);
+  1321→      w.push("screenGlowAmber", new THREE.PlaneGeometry(0.7, 0.4), mat4(cx + sx, 1.95, cz, { rx: -0.35 }));
+  1322→      w.push("chrome", new THREE.TorusGeometry(0.35, 0.03, 6, 12, Math.PI), mat4(cx + sx + 0.55, 1.1, cz, { ry: Math.PI / 2 }));
+  1323→      w.push("rubber", new THREE.CylinderGeometry(0.025, 0.025, 0.9, 6), mat4(cx + sx + 0.55, 1.15, cz + 0.32, { rx: 0.4 }));
+  1324→    }
+  1325→    // متجر صغير
+  1326→    roomFloor(ctx, cx, cz + 10, 10, 8);
+  1327→    w.push("tile", new THREE.BoxGeometry(9.6, 0.04, 7.6), mat4(cx, 0.06, cz + 10));
+  1328→    roomRoof(ctx, cx, cz + 10, 10, 8);
+  1329→    wallWithGaps(ctx, "brick", cx - 5, cz + 6, cx + 5, cz + 6, [{ at: 5, width: 1.5 }]);
+  1330→    wallWithGaps(ctx, "brick", cx - 5, cz + 14, cx + 5, cz + 14);
+  1331→    wallWithGaps(ctx, "brick", cx - 5, cz + 6, cx - 5, cz + 14);
+  1332→    wallWithGaps(ctx, "brick", cx + 5, cz + 6, cx + 5, cz + 14);
+  1333→    shopShelf(w, cx + 3.4, cz + 12, Math.PI / 2, 3.2);
+  1334→    shopShelf(w, cx - 1, cz + 13.2, 0, 2.8);
+  1335→    counter(w, cx - 3.2, cz + 8.6, Math.PI / 2, 2.2);
+  1336→    fridge(w, cx - 4.2, cz + 12.5, Math.PI / 2, true);
+  1337→    w.push("screenGlow", new THREE.BoxGeometry(0.6, 1.2, 0.02), mat4(cx - 4.5, 0.9, cz + 12.5, { ry: Math.PI / 2 }));
+  1338→    vending(w, cx - 6.2, cz + 5.2, 0.3);
+  1339→    fluoro(ctx, cx, cz + 10, 0xd0a860, 1, 10, 6);
+  1340→    addFire(ctx, cx - 5, cz - 2, 1.3);
+  1341→    car(w, cx + 1, cz - 6, 0.4, "sedan", rnd());
+  1342→    bloodDecal(ctx, cx, cz + 2, 1.8);
+  1343→    pickupProp(ctx, "gas_fuel", "item", cx + 3.4, cz + 12, "التقاط جالون وقود", { item: "fuel", qty: 1 }, 0.14);
+  1344→    pickupProp(ctx, "gas_food", "item", cx - 3.2, cz + 8.6, "التقاط طعام معلب", { item: "food", qty: 1 }, 1.2);
+  1345→    pickupProp(ctx, "gas_band", "item", cx - 0.5, cz + 13.2, "التقاط ضمادة", { item: "bandage", qty: 1 }, 0.9);
+  1346→    addDoorAt(ctx, "door_gas", cx, cz + 6, "x", 1.5, "wood");
+  1347→    ctx.buildings.push({ x: cx, z: cz, w: 14, d: 20, name: "محطة الوقود", poi: true });
+  1348→    ctx.spawns.push({ kind: "walker", x: cx - 4, z: cz - 4, wander: 5 });
+  1349→    ctx.spawns.push({ kind: "spitter", x: cx + 8, z: cz - 5, wander: 7 });
+  1350→    ctx.spawns.push({ kind: "walker", x: cx + 2, z: cz + 13, wander: 2 });
+  1351→    ctx.triggers.push({ id: "trig_gas", x: cx, z: cz, radius: 10, once: true });
+  1352→  }
+  1353→
+  1354→  // ── 9) محطة المترو + بوابة المختبر (23,-23) ──
+  1355→  {
+  1356→    const cx = 23, cz = -23;
+  1357→    w.push("tile", new THREE.BoxGeometry(10, 0.06, 8), mat4(cx, 0.04, cz));
+  1358→    [[-4.4, -3.4], [4.4, -3.4], [-4.4, 3.4], [4.4, 3.4]].forEach(([ox, oz]) => {
+  1359→      addBox(ctx, "concrete", cx + ox, 0, cz + oz, 0.6, 4.6, 0.6);
+  1360→    });
+  1361→    addBox(ctx, "concrete", cx, 4.6, cz, 10.4, 0.5, 8.4, false);
+  1362→    // بوابات تذاكر
+  1363→    turnstile(w, cx - 1.6, cz + 1.2, 0);
+  1364→    turnstile(w, cx, cz + 1.2, 0);
+  1365→    turnstile(w, cx + 1.6, cz + 1.2, 0);
+  1366→    // آلات تذاكر
+  1367→    addBox(ctx, "carB", cx + 3.4, 0, cz + 2.8, 0.7, 1.6, 0.5);
+  1368→    w.push("screenGlowAmber", new THREE.PlaneGeometry(0.45, 0.35), mat4(cx + 3.4, 1.15, cz + 2.53, { rx: -0.15 }));
+  1369→    addBox(ctx, "carB", cx - 3.4, 0, cz + 2.8, 0.7, 1.6, 0.5);
+  1370→    w.push("screenGlowAmber", new THREE.PlaneGeometry(0.45, 0.35), mat4(cx - 3.4, 1.15, cz + 2.53, { rx: -0.15 }));
+  1371→    bench(w, cx + 3.4, cz - 2.2, -Math.PI / 2);
+  1372→    trashBin(w, cx - 3.6, cz - 2.4);
+  1373→    // لوحة خريطة المترو
+  1374→    w.push("dark", new THREE.PlaneGeometry(1.8, 1.2), mat4(cx - 4.75, 2.3, cz, { ry: -Math.PI / 2 }));
+  1375→    // باب المختبر الضخم (نحو الشمال)
+  1376→    const doorGroup = new THREE.Group();
+  1377→    const doorMesh = new THREE.Mesh(
+  1378→      new THREE.BoxGeometry(4.2, 3.4, 0.4),
+  1379→      new THREE.MeshStandardMaterial({ color: 0x3a3f42, roughness: 0.5, metalness: 0.7, emissive: 0x1a0505, emissiveIntensity: 0.6 }),
+  1380→    );
+  1381→    doorMesh.position.y = 1.7;
+  1382→    doorGroup.add(doorMesh);
+  1383→    doorGroup.position.set(cx, 0, cz - 3.2);
+  1384→    scene.add(doorGroup);
+  1385→    doorGroupRef = doorGroup;
+  1386→    ctx.colliders.push({ minX: cx - 2.1, maxX: cx + 2.1, minZ: cz - 3.5, maxZ: cz - 2.9 });
+  1387→    const doorLightL = new THREE.PointLight(0xc22a1e, 1.2, 8, 2);
+  1388→    doorLightL.position.set(cx - 2.6, 3.2, cz - 3.2);
+  1389→    scene.add(doorLightL);
+  1390→    ctx.flickerLights.push({ light: doorLightL, base: 1.2, speed: 2 });
+  1391→    ctx.interactables.push({ id: "lab_door", kind: "gate", x: cx, z: cz - 3.2, radius: 2.6, prompt: "بوابة المختبر — بطاقتا وصول", used: false });
+  1392→    pickupProp(ctx, "metro_ammo", "item", cx - 3.5, cz + 1, "التقاط ذخيرة مسدس", { item: "pistol_ammo", qty: 14 }, 0.14);
+  1393→    addFire(ctx, cx + 8, cz + 2, 1);
+  1394→    corpse(ctx, cx - 6, cz + 4);
+  1395→    ctx.buildings.push({ x: cx, z: cz, w: 12, d: 10, name: "مدخل المختبر (المترو)", poi: true });
+  1396→    ctx.spawns.push({ kind: "walker", x: cx - 8, z: cz + 6, wander: 6 });
+  1397→    ctx.spawns.push({ kind: "runner", x: cx + 10, z: cz - 6, wander: 7 });
+  1398→    ctx.triggers.push({ id: "trig_metro", x: cx, z: cz, radius: 10, once: true });
+  1399→  }
+  1400→
+  1401→  // ═══════════ الميناء الشمالي ═══════════
+  1402→  const gateX = 0, gateZ = -100;
+  1403→  {
+  1404→    const dock = new THREE.Mesh(new THREE.PlaneGeometry(200, 26), mats.concrete);
+  1405→    dock.rotation.x = -Math.PI / 2;
+  1406→    dock.position.set(0, 0.02, -108);
+  1407→    scene.add(dock);
+  1408→    const barrierGrp = new THREE.Group();
+  1409→    const b1 = new THREE.Mesh(new THREE.BoxGeometry(1, 3.4, 0.8), mats.metal);
+  1410→    b1.position.set(-5, 1.7, 0);
+  1411→    const b2 = b1.clone();
+  1412→    b2.position.x = 5;
+  1413→    const bar = new THREE.Mesh(new THREE.BoxGeometry(10.6, 1.4, 0.3), mats.metal);
+  1414→    bar.position.y = 2.4;
+  1415→    barrierGrp.add(b1, b2, bar);
+  1416→    barrierGrp.position.set(gateX, 0, gateZ);
+  1417→    scene.add(barrierGrp);
+  1418→    barrierRef = barrierGrp;
+  1419→    ctx.colliders.push({ minX: gateX - 6, maxX: gateX + 6, minZ: gateZ - 0.6, maxZ: gateZ + 0.6 });
+  1420→    addBox(ctx, "metal", gateX - 8, 0, gateZ + 3, 1.8, 1.4, 1.2);
+  1421→    ctx.interactables.push({ id: "gate_gen", kind: "generator", x: gateX - 8, z: gateZ + 4.2, radius: 2.2, prompt: "تشغيل المولد", used: false });
+  1422→    const boat = new THREE.Group();
+  1423→    const hull = new THREE.Mesh(new THREE.BoxGeometry(7, 1.4, 3), mats.metal);
+  1424→    hull.position.y = 0.5;
+  1425→    const cabin = new THREE.Mesh(new THREE.BoxGeometry(2.4, 1.6, 2.2), mats.metal);
+  1426→    cabin.position.set(-1.4, 1.9, 0);
+  1427→    boat.add(hull, cabin);
+  1428→    boat.position.set(gateX + 4, 0, -114);
+  1429→    scene.add(boat);
+  1430→    boatRef = boat;
+  1431→    const boatLight = new THREE.PointLight(0xe8f0d8, 0, 24, 1.6);
+  1432→    boatLight.position.set(gateX + 4, 4, -114);
+  1433→    scene.add(boatLight);
+  1434→    boatLightRef = boatLight;
+  1435→    ctx.interactables.push({ id: "extraction", kind: "exit", x: gateX + 4, z: -112, radius: 3.4, prompt: "الصعود إلى قارب الإخلاء", used: false });
+  1436→    // حاويات وصناديق ملونة
+  1437→    const contColors = ["carA", "carB", "greenMetal", "carC"];
+  1438→    for (let i = 0; i < 8; i++) {
+  1439→      const cxx = -30 + rnd() * 60;
+  1440→      const czz = -104 - rnd() * 8;
+  1441→      const cw = 2 + rnd() * 2;
+  1442→      const chh = 1.6 + rnd() * 1.8;
+  1443→      addBox(ctx, contColors[Math.floor(rnd() * contColors.length)], cxx, 0, czz, cw, chh, cw);
+  1444→      if (rnd() < 0.4) addBox(ctx, contColors[Math.floor(rnd() * contColors.length)], cxx + 0.2, chh, czz + 0.1, cw * 0.9, chh * 0.8, cw * 0.9, false);
+  1445→    }
+  1446→    // تحصينات عسكرية
+  1447→    sandbagWall(w, gateX - 9, gateZ - 1, 0.15, 3.6);
+  1448→    sandbagWall(w, gateX + 9.5, gateZ - 0.6, -0.1, 3.2);
+  1449→    barrier(w, gateX - 16, gateZ + 1, 0.1);
+  1450→    barrier(w, gateX + 17, gateZ + 1.2, -0.15);
+  1451→    car(w, 12, -106, 0.35, "truck", rnd());
+  1452→    pickupProp(ctx, "harbor_ammo", "item", gateX - 14, gateZ - 4, "التقاط خرطوش", { item: "shotgun_ammo", qty: 6 }, 0.14);
+  1453→    pickupProp(ctx, "harbor_med", "item", gateX + 16, gateZ - 2, "التقاط علبة إسعاف", { item: "medkit", qty: 1 }, 0.14);
+  1454→    emergencyLight(ctx, gateX, 4, gateZ - 6, 0x2fae4e);
+  1455→    coveredBody(w, gateX - 5, gateZ - 6, 1.2);
+  1456→    bloodDecal(ctx, gateX + 2, gateZ - 5, 2.2);
+  1457→    ctx.buildings.push({ x: gateX, z: gateZ - 8, w: 60, d: 16, name: "الميناء الشمالي", poi: true });
+  1458→    ctx.triggers.push({ id: "trig_harbor", x: gateX, z: gateZ, radius: 26, once: true });
+  1459→  }
+  1460→
+  1461→  // ═══════════ المختبر تحت الأرض (x=600) ═══════════
+  1462→  const LX = 600, LZ = 0;
+  1463→  let labBossGate = { mesh: null as unknown as THREE.Mesh, colliderId: "lab_arena_gate" };
+  1464→  let corePos = new THREE.Vector3(LX, 1, LZ - 26);
+  1465→  {
+  1466→    const cx = LX, cz = LZ;
+  1467→    roomFloor(ctx, cx, cz, 8, 46, "labFloor");
+  1468→    roomRoof(ctx, cx, cz, 8, 46, "labRoof");
+  1469→    wallWithGaps(ctx, "metal", cx - 4, cz - 23, cx + 4, cz - 23);
+  1470→    wallWithGaps(ctx, "metal", cx - 4, cz + 23, cx + 4, cz + 23, [{ at: 4, width: 1.6 }]);
+  1471→    wallWithGaps(ctx, "metal", cx - 4, cz - 23, cx - 4, cz + 23);
+  1472→    wallWithGaps(ctx, "metal", cx + 4, cz - 23, cx + 4, cz + 23);
+  1473→    for (let i = 0; i < 6; i++) {
+  1474→      const sz = cz + 18 - i * 6.4;
+  1475→      addBox(ctx, "labMetal", cx - 3.2, 0, sz, 0.9, 2.4, 1.4);
+  1476→      const g = new THREE.Mesh(new THREE.PlaneGeometry(0.7, 0.16), mats.greenLight);
+  1477→      g.position.set(cx - 2.72, 1.8, sz);
+  1478→      g.userData.noHit = true;
+  1479→      scene.add(g);
+  1480→      if (i % 2 === 0) {
+  1481→        const gl = new THREE.PointLight(0x2fae4e, 0.5, 4.5, 2);
+  1482→        gl.position.set(cx - 2.4, 1.9, sz);
+  1483→        scene.add(gl);
+  1484→        ctx.flickerLights.push({ light: gl, base: 0.5, speed: 4 + i });
+  1485→      }
+  1486→      const g2 = g.clone();
+  1487→      g2.position.x = cx + 2.72;
+  1488→      scene.add(g2);
+  1489→    }
+  1490→    wallPipes(w, cx + 3.6, 3.3, cz + 8, Math.PI / 2, 10);
+  1491→    cratesStack(w, cx - 2.5, cz + 12);
+  1492→    cratesStack(w, cx + 2.8, cz - 2);
+  1493→    bodyBag(w, cx + 2.5, cz - 21, 0.4);
+  1494→    // بوابة ساحة الحارس
+  1495→    const gateMesh = new THREE.Mesh(
+  1496→      new THREE.BoxGeometry(6.4, 3.8, 0.4),
+  1497→      new THREE.MeshStandardMaterial({ color: 0x2c3033, metalness: 0.7, roughness: 0.5 }),
+  1498→    );
+  1499→    gateMesh.position.set(cx, 1.9, cz - 8);
+  1500→    gateMesh.visible = false;
+  1501→    scene.add(gateMesh);
+  1502→    labBossGate.mesh = gateMesh;
+  1503→    // ساحة الحارس
+  1504→    roomFloor(ctx, cx, cz - 15, 18, 16, "labFloor");
+  1505→    addBox(ctx, "labMetal", cx - 8.8, 0, cz - 15, 0.7, 4.2, 16, true);
+  1506→    addBox(ctx, "labMetal", cx + 8.8, 0, cz - 15, 0.7, 4.2, 16, true);
+  1507→    addBox(ctx, "labMetal", cx - 8.4, 0, cz - 22.6, 17, 4.2, 0.7, true);
+  1508→    [[-4, -18], [4, -12], [-3, -11], [5, -19]].forEach(([ox, oz]) => {
+  1509→      addBox(ctx, "labMetal", cx + ox, 0, cz + oz, 1.1, 4.2, 1.1);
+  1510→    });
+  1511→    emergencyLight(ctx, cx, 3.6, cz - 15, 0xc22a1e);
+  1512→    // قاعة النواة
+  1513→    roomFloor(ctx, cx, cz - 30, 14, 12, "labFloor");
+  1514→    addBox(ctx, "labMetal", cx - 6.8, 0, cz - 30, 0.7, 4.6, 12, true);
+  1515→    addBox(ctx, "labMetal", cx + 6.8, 0, cz - 30, 0.7, 4.6, 12, true);
+  1516→    addBox(ctx, "labMetal", cx - 6.4, 0, cz - 35.6, 14, 4.6, 0.7, true);
+  1517→    const core = new THREE.Mesh(
+  1518→      new THREE.IcosahedronGeometry(1.1, 1),
+  1519→      new THREE.MeshStandardMaterial({ color: 0x1a0505, emissive: 0xff3020, emissiveIntensity: 1.6, roughness: 0.3 }),
+  1520→    );
+  1521→    core.position.set(cx, 1.7, cz - 31);
+  1522→    core.userData.noHit = true;
+  1523→    scene.add(core);
+  1524→    const coreLight = new THREE.PointLight(0xff3020, 3, 16, 1.6);
+  1525→    coreLight.position.set(cx, 2.2, cz - 31);
+  1526→    scene.add(coreLight);
+  1527→    ctx.flickerLights.push({ light: coreLight, base: 3, speed: 3 });
+  1528→    corePos = new THREE.Vector3(cx, 1, cz - 31);
+  1529→    const ring = new THREE.Mesh(new THREE.TorusGeometry(1.5, 0.08, 8, 32), mats.metal);
+  1530→    ring.position.set(cx, 1.7, cz - 31);
+  1531→    ring.userData.noHit = true;
+  1532→    scene.add(ring);
+  1533→    ctx.interactables.push({ id: "core", kind: "core", x: cx, z: cz - 31, radius: 2.6, prompt: "النواة — كيميرا", used: false });
+  1534→    noteProp(ctx, "lab_doc", "doc_6", cx - 2, cz + 20, 0.12);
+  1535→    pickupProp(ctx, "lab_med", "item", cx + 2, cz + 20, "التقاط علبة إسعاف", { item: "medkit", qty: 1 }, 0.14);
+  1536→    pickupProp(ctx, "lab_ammo", "item", cx - 2, cz - 19, "التقاط خرطوش", { item: "shotgun_ammo", qty: 8 }, 0.14);
+  1537→    pickupProp(ctx, "lab_bat", "item", cx + 2, cz - 19, "التقاط بطارية", { item: "battery", qty: 1 }, 0.14);
+  1538→    ctx.interactables.push({ id: "lab_exit", kind: "exit", x: cx, z: cz + 22, radius: 2.2, prompt: "الصعود إلى السطح", data: { labExit: true }, used: false });
+  1539→    ctx.buildings.push({ x: cx, z: cz - 15, w: 20, d: 46, name: "المختبر — تحت الأرض", poi: true });
+  1540→    ctx.spawns.push({ kind: "boss", x: cx, z: cz - 15, wander: 6 });
+  1541→  }
+  1542→
+  1543→  // ── دمج الهندسة الساكنة ──
+  1544→  const propTextures = makePropTextures();
+  1545→  const propMats = makePropMaterials(propTextures);
+  1546→  // لهب/دخان (مواد شفافة مضيئة)
+  1547→  propMats.fireCone = new THREE.MeshBasicMaterial({ color: 0xe86830, transparent: true, opacity: 0.82, depthWrite: false });
+  1548→  propMats.fireCore = new THREE.MeshBasicMaterial({ color: 0xffc060, transparent: true, opacity: 0.9, depthWrite: false });
+  1549→  propMats.smoke = new THREE.MeshStandardMaterial({ color: 0x141414, transparent: true, opacity: 0.35, roughness: 1 });
+  1550→  propMats.cork = new THREE.MeshStandardMaterial({ color: 0x6a4e30, roughness: 0.95 });
+  1551→  propMats.facadeTower = new THREE.MeshStandardMaterial({
+  1552→    map: t.facade, emissiveMap: t.facadeEmissive, emissive: new THREE.Color(0x8aa0b8),
+  1553→    emissiveIntensity: 0.55, color: new THREE.Color(0x9aa4ac), roughness: 0.6, metalness: 0.25,
+  1554→  });
+  1555→  propMats.facadeOld = new THREE.MeshStandardMaterial({
+  1556→    map: t.brick, color: new THREE.Color(0xcbb9a2), roughness: 0.95,
+  1557→  });
+  1558→
+  1559→  const bucketMats: Record<string, THREE.Material> = {
+  1560→    brick: mats.brick,
+  1561→    concrete: mats.concrete,
+  1562→    metal: mats.metal,
+  1563→    wood: mats.wood,
+  1564→    paper: mats.paper,
+  1565→    rubble: mats.rubble,
+  1566→    facade: mats.facade,
+  1567→    dark: mats.dark,
+  1568→    floorIn: new THREE.MeshStandardMaterial({ color: 0x2a2825, roughness: 0.9 }),
+  1569→    roof: mats.concrete,
+  1570→    labFloor: new THREE.MeshStandardMaterial({ color: 0x23282a, roughness: 0.6, metalness: 0.3 }),
+  1571→    labRoof: mats.metal,
+  1572→    labMetal: new THREE.MeshStandardMaterial({ color: 0x2e3438, roughness: 0.45, metalness: 0.7 }),
+  1573→    ...propMats,
+  1574→  };
+  1575→  mergePropBuckets(
+  1576→    scene,
+  1577→    ctx.staticGeos,
+  1578→    bucketMats,
+  1579→    new Set(["glassDark", "paint", "water", "lampGlow", "floorIn", "roof", "labFloor", "fireCone", "fireCore", "smoke"]),
+  1580→  );
+  1581→
+  1582→  return {
+  1583→    colliders: ctx.colliders,
+  1584→    dynamicColliders: new Map<string, Collider>(),
+  1585→    pois: ctx.buildings.filter((b) => b.poi).map((b) => ({ id: b.name!, x: b.x, z: b.z, name: b.name!, r: 16 })),
+  1586→    spawns: ctx.spawns,
+  1587→    interactables: ctx.interactables,
+  1588→    triggers: ctx.triggers,
+  1589→    buildings: ctx.buildings,
+  1590→    roads: roadXs
+  1591→      .flatMap((x) => [{ x, z: 0, w: 10, d: 240 }])
+  1592→      .concat(roadZs.map((z) => ({ x: 0, z, w: 240, d: 10 }))),
+  1593→    blockedRoads: ctx.blockedRoads,
+  1594→    fireLights: ctx.fireLights,
+  1595→    flickerLights: ctx.flickerLights,
+  1596→    labBossGate,
+  1597→    labDoor: { group: doorGroupRef!, open: false },
+  1598→    corePedestal: corePos,
+  1599→    gateBarrier: { group: barrierRef!, open: false },
+  1600→    boat: boatRef!,
+  1601→    boatLight: boatLightRef!,
+  1602→    clockHands: clockHandsRef,
+  1603→    pickups: ctx.pickups,
+  1604→    doors: ctx.doors,
+  1605→  };
+  1606→}
+  1607→
+  1608→// مرجع عرافات الساعة
+  1609→const clockHandsRef: THREE.Object3D[] = [];
+  1610→
+  1611→type CarVariantLike = "sedan" | "wreck" | "taxi" | "police" | "ambulance" | "van" | "truck";
+  1612→
+  1613→function debrisPile(ctx: BuildCtx, x: number, z: number, w2: number, d: number) {
+  1614→  const rnd2 = seededRandom(Math.floor((x * 31 + z * 17) | 0) || 7);
+  1615→  const rndLocal = (a: number, b: number) => a + rnd2() * (b - a);
+  1616→  for (let i = 0; i < Math.floor((w2 * d) / 6); i++) {
+  1617→    const bw = rndLocal(1.2, 3.6);
+  1618→    const bh = rndLocal(0.6, 2.4);
+  1619→    const bd = rndLocal(1.2, 3.4);
+  1620→    const m = new THREE.Matrix4().compose(
+  1621→      new THREE.Vector3(x + rndLocal(-w2 / 2.2, w2 / 2.2), bh / 2 + rndLocal(0, 0.8), z + rndLocal(-d / 2.2, d / 2.2)),
+  1622→      new THREE.Quaternion().setFromEuler(new THREE.Euler(rndLocal(-0.2, 0.2), rndLocal(0, Math.PI), rndLocal(-0.2, 0.2))),
+  1623→      new THREE.Vector3(bw, bh, bd),
+  1624→    );
+  1625→    pushStatic(ctx, "rubble", new THREE.BoxGeometry(1, 1, 1), m);
+  1626→  }
+  1627→  ctx.colliders.push({ minX: x - w2 / 2, maxX: x + w2 / 2, minZ: z - d / 2, maxZ: z + d / 2 });
+  1628→  ctx.blockedRoads.push({ x, z, w: w2 + 2, d: d + 2 });
+  1629→}
+  1630→
+  1631→function machineProp(ctx: BuildCtx, x: number, z: number, w2 = 2.4, h = 2.6, d = 1.8) {
+  1632→  const p = propCtxOf(ctx);
+  1633→  // آلة غسيل صناعية بيضاء بباب زجاجي دائري
+  1634→  p.push("white", new THREE.BoxGeometry(1, 1, 1), mat4(x, h / 2, z, { sx: w2, sy: h, sz: d }));
+  1635→  p.push("glassDark", new THREE.CylinderGeometry(Math.min(w2, d) * 0.3, Math.min(w2, d) * 0.3, 0.04, 14), mat4(x, h * 0.55, z + d / 2 + 0.01, { rx: Math.PI / 2 }));
+  1636→  p.push("plastic", new THREE.BoxGeometry(w2 * 0.5, 0.15, 0.06), mat4(x, h * 0.85, z + d / 2 + 0.02));
+  1637→  ctx.colliders.push({ minX: x - w2 / 2, maxX: x + w2 / 2, minZ: z - d / 2, maxZ: z + d / 2 });
+  1638→}
+  1639→
+  1640→export function zoneAt(x: number, z: number): string {
+  1641→  const pois: [number, number, string, number][] = [
+  1642→    [69, 69, "apartments", 16],
+  1643→    [23, 23, "gunshop", 12],
+  1644→    [69, -23, "police", 16],
+  1645→    [-23, -69, "tower", 14],
+  1646→    [-23, 23, "hospital", 20],
+  1647→    [-69, -23, "factory", 18],
+  1648→    [-69, 23, "warehouse", 16],
+  1649→    [69, 23, "gas", 14],
+  1650→    [23, -23, "metro", 12],
+  1651→    [-23, -23, "plaza", 16],
+  1652→    [600, -15, "lab", 40],
+  1653→    [0, -104, "harbor", 40],
+  1654→  ];
+  1655→  for (const [px, pz, id, r] of pois) {
+  1656→    if (Math.hypot(x - px, z - pz) < r) return ZONES[id] ?? id;
+  1657→  }
+  1658→  return ZONES.mainStreet;
+  1659→}
+  1660→

@@ -1,0 +1,1252 @@
+     1→     1→"use client";
+     2→     2→
+     3→     3→// ─────────────────────────────────────────────────────────────
+     4→     4→// توليد مدينة كيبريس — شوارع، مبانٍ، مبانٍ قابلة للدخول، مختبر، ميناء
+     5→     5→// يُنتج: مشهد + مصادمات + نقاط تفاعل + نقاط ظهور أعداء + بيانات الخريطة
+     6→     6→// ─────────────────────────────────────────────────────────────
+     7→     7→import * as THREE from "three";
+     8→     8→import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
+     9→     9→import { ZONES } from "./content";
+    10→    10→
+    11→    11→export interface Collider {
+    12→    12→  minX: number;
+    13→    13→  maxX: number;
+    14→    14→  minZ: number;
+    15→    15→  maxZ: number;
+    16→    16→}
+    17→    17→
+    18→    18→export interface Poi {
+    19→    19→  id: string;
+    20→    20→  x: number;
+    21→    21→  z: number;
+    22→    22→  name: string;
+    23→    23→  r: number;
+    24→    24→}
+    25→    25→
+    26→    26→export interface SpawnPoint {
+    27→    27→  kind: "walker" | "runner" | "brute" | "boss";
+    28→    28→  x: number;
+    29→    29→  z: number;
+    30→    30→  wander: number;
+    31→    31→  fakeCorpse?: boolean;
+    32→    32→}
+    33→    33→
+    34→    34→export type InteractKind =
+    35→    35→  | "item"
+    36→    36→  | "note"
+    37→    37→  | "door"
+    38→    38→  | "console"
+    39→    39→  | "npc"
+    40→    40→  | "generator"
+    41→    41→  | "core"
+    42→    42→  | "gate"
+    43→    43→  | "exit"
+    44→    44→  | "checkpoint";
+    45→    45→
+    46→    46→export interface Interactable {
+    47→    47→  id: string;
+    48→    48→  kind: InteractKind;
+    49→    49→  x: number;
+    50→    50→  z: number;
+    51→    51→  y?: number;
+    52→    52→  radius: number;
+    53→    53→  prompt: string;
+    54→    54→  data?: Record<string, unknown>;
+    55→    55→  used?: boolean;
+    56→    56→}
+    57→    57→
+    58→    58→export interface Trigger {
+    59→    59→  id: string;
+    60→    60→  x: number;
+    61→    61→  z: number;
+    62→    62→  radius: number;
+    63→    63→  once: boolean;
+    64→    64→  fired?: boolean;
+    65→    65→}
+    66→    66→
+    67→    67→export interface WorldData {
+    68→    68→  colliders: Collider[];
+    69→    69→  dynamicColliders: Map<string, Collider>;
+    70→    70→  pois: Poi[];
+    71→    71→  spawns: SpawnPoint[];
+    72→    72→  interactables: Interactable[];
+    73→    73→  triggers: Trigger[];
+    74→    74→  buildings: { x: number; z: number; w: number; d: number; name?: string; poi?: boolean }[];
+    75→    75→  roads: { x: number; z: number; w: number; d: number; blocked?: boolean }[];
+    76→    76→  blockedRoads: { x: number; z: number; w: number; d: number }[];
+    77→    77→  fireLights: { light: THREE.PointLight; base: number }[];
+    78→    78→  flickerLights: { light: THREE.PointLight; base: number; speed: number }[];
+    79→    79→  labBossGate: { mesh: THREE.Mesh; colliderId: string };
+    80→    80→  labDoor: { group: THREE.Group; open: boolean };
+    81→    81→  corePedestal: THREE.Vector3;
+    82→    82→  gateBarrier: { group: THREE.Group; open: boolean };
+    83→    83→  boat: THREE.Group;
+    84→    84→  boatLight: THREE.PointLight;
+    85→    85→  clockHands: THREE.Object3D[];
+    86→    86→}
+    87→    87→
+    88→    88→const WALL_H = 4.2;
+    89→    89→const T = 0.5; // wall thickness
+    90→    90→
+    91→    91→// refs assigned during buildWorld (returned in WorldData)
+    92→    92→let doorGroupRef: THREE.Group | null = null;
+    93→    93→let barrierRef: THREE.Group | null = null;
+    94→    94→let boatRef: THREE.Group | null = null;
+    95→    95→let boatLightRef: THREE.PointLight | null = null;
+    96→    96→
+    97→    97→// ── Canvas texture helpers ──
+    98→    98→function canvasTex(
+    99→    99→  w: number,
+   100→   100→  h: number,
+   101→   101→  draw: (ctx: CanvasRenderingContext2D) => void,
+   102→   102→  repeat = 1,
+   103→   103→): THREE.Texture {
+   104→   104→  const c = document.createElement("canvas");
+   105→   105→  c.width = w;
+   106→   106→  c.height = h;
+   107→   107→  const ctx = c.getContext("2d")!;
+   108→   108→  draw(ctx);
+   109→   109→  const tex = new THREE.CanvasTexture(c);
+   110→   110→  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+   111→   111→  tex.repeat.set(repeat, repeat);
+   112→   112→  tex.anisotropy = 4;
+   113→   113→  return tex;
+   114→   114→}
+   115→   115→
+   116→   116→function noiseFill(
+   117→   117→  ctx: CanvasRenderingContext2D,
+   118→   118→  w: number,
+   119→   119→  h: number,
+   120→   120→  base: string,
+   121→   121→  amt: number,
+   122→   122→  dark: string,
+   123→   123→) {
+   124→   124→  ctx.fillStyle = base;
+   125→   125→  ctx.fillRect(0, 0, w, h);
+   126→   126→  const img = ctx.getImageData(0, 0, w, h);
+   127→   127→  const d = img.data;
+   128→   128→  for (let i = 0; i < d.length; i += 4) {
+   129→   129→    const n = (Math.random() - 0.5) * amt;
+   130→   130→    d[i] = Math.max(0, Math.min(255, d[i] + n));
+   131→   131→    d[i + 1] = Math.max(0, Math.min(255, d[i + 1] + n));
+   132→   132→    d[i + 2] = Math.max(0, Math.min(255, d[i + 2] + n));
+   133→   133→  }
+   134→   134→  ctx.putImageData(img, 0, 0);
+   135→   135→  // stains
+   136→   136→  for (let i = 0; i < 14; i++) {
+   137→   137→    const x = Math.random() * w;
+   138→   138→    const y = Math.random() * h;
+   139→   139→    const r = 6 + Math.random() * 30;
+   140→   140→    const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+   141→   141→    g.addColorStop(0, dark);
+   142→   142→    g.addColorStop(1, "rgba(0,0,0,0)");
+   143→   143→    ctx.fillStyle = g;
+   144→   144→    ctx.fillRect(x - r, y - r, r * 2, r * 2);
+   145→   145→  }
+   146→   146→}
+   147→   147→
+   148→   148→export function makeTextures() {
+   149→   149→  const asphalt = canvasTex(256, 256, (ctx) => {
+   150→   150→    noiseFill(ctx, 256, 256, "#141416", 46, "rgba(0,0,0,0.55)");
+   151→   151→    ctx.strokeStyle = "rgba(0,0,0,0.5)";
+   152→   152→    for (let i = 0; i < 7; i++) {
+   153→   153→      ctx.beginPath();
+   154→   154→      let x = Math.random() * 256;
+   155→   155→      let y = Math.random() * 256;
+   156→   156→      ctx.moveTo(x, y);
+   157→   157→      for (let j = 0; j < 5; j++) {
+   158→   158→        x += (Math.random() - 0.5) * 90;
+   159→   159→        y += (Math.random() - 0.5) * 90;
+   160→   160→        ctx.lineTo(x, y);
+   161→   161→      }
+   162→   162→      ctx.stroke();
+   163→   163→    }
+   164→   164→  }, 6);
+   165→   165→
+   166→   166→  const concrete = canvasTex(256, 256, (ctx) => {
+   167→   167→    noiseFill(ctx, 256, 256, "#3a3a38", 30, "rgba(0,0,0,0.4)");
+   168→   168→    ctx.strokeStyle = "rgba(0,0,0,0.25)";
+   169→   169→    ctx.lineWidth = 2;
+   170→   170→    for (let y = 0; y < 256; y += 64) {
+   171→   171→      ctx.beginPath();
+   172→   172→      ctx.moveTo(0, y);
+   173→   173→      ctx.lineTo(256, y);
+   174→   174→      ctx.stroke();
+   175→   175→    }
+   176→   176→  }, 3);
+   177→   177→
+   178→   178→  const brick = canvasTex(256, 256, (ctx) => {
+   179→   179→    noiseFill(ctx, 256, 256, "#3b2f28", 26, "rgba(0,0,0,0.5)");
+   180→   180→    ctx.strokeStyle = "rgba(15,12,10,0.9)";
+   181→   181→    ctx.lineWidth = 2;
+   182→   182→    for (let y = 0; y < 256; y += 22) {
+   183→   183→      ctx.beginPath();
+   184→   184→      ctx.moveTo(0, y);
+   185→   185→      ctx.lineTo(256, y);
+   186→   186→      ctx.stroke();
+   187→   187→      const off = (y / 22) % 2 === 0 ? 0 : 24;
+   188→   188→      for (let x = off; x < 256; x += 48) {
+   189→   189→        ctx.beginPath();
+   190→   190→        ctx.moveTo(x, y);
+   191→   191→        ctx.lineTo(x, y + 22);
+   192→   192→        ctx.stroke();
+   193→   193→      }
+   194→   194→    }
+   195→   195→  }, 3);
+   196→   196→
+   197→   197→  // building facade: dark wall + window grid, a few lit windows (emissive)
+   198→   198→  const lit = new Set<number>();
+   199→   199→  for (let i = 0; i < 26; i++) lit.add(Math.floor(Math.random() * 64));
+   200→   200→  const facadeDraw = (ctx: CanvasRenderingContext2D) => {
+   201→   201→    noiseFill(ctx, 256, 256, "#232527", 20, "rgba(0,0,0,0.5)");
+   202→   202→    ctx.fillStyle = "#0c0d10";
+   203→   203→    for (let gy = 0; gy < 8; gy++) {
+   204→   204→      for (let gx = 0; gx < 8; gx++) {
+   205→   205→        const idx = gy * 8 + gx;
+   206→   206→        ctx.fillRect(8 + gx * 32, 10 + gy * 30, 20, 18);
+   207→   207→        if (lit.has(idx)) {
+   208→   208→          ctx.fillStyle = Math.random() > 0.5 ? "#c98a3a" : "#b0472f";
+   209→   209→          ctx.fillRect(8 + gx * 32, 10 + gy * 30, 20, 18);
+   210→   210→          ctx.fillStyle = "#0c0d10";
+   211→   211→        }
+   212→   212→      }
+   213→   213→    }
+   214→   214→  };
+   215→   215→  const facade = canvasTex(256, 256, facadeDraw, 2);
+   216→   216→  const facadeEmissive = canvasTex(256, 256, (ctx) => {
+   217→   217→    ctx.fillStyle = "#000";
+   218→   218→    ctx.fillRect(0, 0, 256, 256);
+   219→   219→    for (let gy = 0; gy < 8; gy++) {
+   220→   220→      for (let gx = 0; gx < 8; gx++) {
+   221→   221→        const idx = gy * 8 + gx;
+   222→   222→        if (lit.has(idx)) {
+   223→   223→          ctx.fillStyle = Math.random() > 0.5 ? "#c98a3a" : "#b0472f";
+   224→   224→          ctx.fillRect(8 + gx * 32, 10 + gy * 30, 20, 18);
+   225→   225→        }
+   226→   226→      }
+   227→   227→    }
+   228→   228→  }, 2);
+   229→   229→
+   230→   230→  const metal = canvasTex(256, 256, (ctx) => {
+   231→   231→    noiseFill(ctx, 256, 256, "#2c3033", 18, "rgba(0,0,0,0.4)");
+   232→   232→    ctx.strokeStyle = "rgba(120,130,135,0.12)";
+   233→   233→    for (let x = 0; x < 256; x += 16) {
+   234→   234→      ctx.beginPath();
+   235→   235→      ctx.moveTo(x, 0);
+   236→   236→      ctx.lineTo(x, 256);
+   237→   237→      ctx.stroke();
+   238→   238→    }
+   239→   239→  }, 2);
+   240→   240→
+   241→   241→  const blood = canvasTex(128, 128, (ctx) => {
+   242→   242→    ctx.clearRect(0, 0, 128, 128);
+   243→   243→    for (let i = 0; i < 5; i++) {
+   244→   244→      const x = 40 + Math.random() * 48;
+   245→   245→      const y = 40 + Math.random() * 48;
+   246→   246→      const r = 14 + Math.random() * 26;
+   247→   247→      const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+   248→   248→      g.addColorStop(0, "rgba(70,8,8,0.9)");
+   249→   249→      g.addColorStop(0.7, "rgba(45,6,6,0.55)");
+   250→   250→      g.addColorStop(1, "rgba(30,4,4,0)");
+   251→   251→      ctx.fillStyle = g;
+   252→   252→      ctx.beginPath();
+   253→   253→      ctx.arc(x, y, r, 0, Math.PI * 2);
+   254→   254→      ctx.fill();
+   255→   255→    }
+   256→   256→  });
+   257→   257→
+   258→   258→  return { asphalt, concrete, brick, facade, facadeEmissive, metal, blood };
+   259→   259→}
+   260→   260→
+   261→   261→export type Textures = ReturnType<typeof makeTextures>;
+   262→   262→
+   263→   263→// ── shared materials ──
+   264→   264→export function makeMats(t: Textures) {
+   265→   265→  return {
+   266→   266→    asphalt: new THREE.MeshStandardMaterial({ map: t.asphalt, roughness: 0.95 }),
+   267→   267→    concrete: new THREE.MeshStandardMaterial({ map: t.concrete, roughness: 0.92 }),
+   268→   268→    brick: new THREE.MeshStandardMaterial({ map: t.brick, roughness: 0.9 }),
+   269→   269→    facade: new THREE.MeshStandardMaterial({
+   270→   270→      map: t.facade,
+   271→   271→      emissiveMap: t.facadeEmissive,
+   272→   272→      emissive: new THREE.Color(0xffffff),
+   273→   273→      emissiveIntensity: 0.9,
+   274→   274→      roughness: 0.85,
+   275→   275→    }),
+   276→   276→    metal: new THREE.MeshStandardMaterial({ map: t.metal, roughness: 0.55, metalness: 0.6 }),
+   277→   277→    dark: new THREE.MeshStandardMaterial({ color: 0x1b1c1e, roughness: 0.9 }),
+   278→   278→    wood: new THREE.MeshStandardMaterial({ color: 0x4a3826, roughness: 0.85 }),
+   279→   279→    paper: new THREE.MeshStandardMaterial({ color: 0xd8cba8, roughness: 0.9 }),
+   280→   280→    rubble: new THREE.MeshStandardMaterial({ color: 0x2e2c29, roughness: 1 }),
+   281→   281→    blood: new THREE.MeshBasicMaterial({ map: t.blood, transparent: true, depthWrite: false }),
+   282→   282→    amberLight: new THREE.MeshStandardMaterial({
+   283→   283→      color: 0x221a08,
+   284→   284→      emissive: 0xd07a28,
+   285→   285→      emissiveIntensity: 2.2,
+   286→   286→    }),
+   287→   287→    redLight: new THREE.MeshStandardMaterial({
+   288→   288→      color: 0x220808,
+   289→   289→      emissive: 0xc22a1e,
+   290→   290→      emissiveIntensity: 2.4,
+   291→   291→    }),
+   292→   292→    greenLight: new THREE.MeshStandardMaterial({
+   293→   293→      color: 0x08220c,
+   294→   294→      emissive: 0x2fae4e,
+   295→   295→      emissiveIntensity: 2.2,
+   296→   296→    }),
+   297→   297→  };
+   298→   298→}
+   299→   299→
+   300→   300→export type Mats = ReturnType<typeof makeMats>;
+   301→   301→
+   302→   302→// ── Builder state ──
+   303→   303→interface BuildCtx {
+   304→   304→  scene: THREE.Scene;
+   305→   305→  mats: Mats;
+   306→   306→  colliders: Collider[];
+   307→   307→  buildings: WorldData["buildings"];
+   308→   308→  spawns: SpawnPoint[];
+   309→   309→  interactables: Interactable[];
+   310→   310→  triggers: Trigger[];
+   311→   311→  fireLights: WorldData["fireLights"];
+   312→   312→  flickerLights: WorldData["flickerLights"];
+   313→   313→  staticGeos: Map<string, THREE.BufferGeometry[]>;
+   314→   314→  blockedRoads: WorldData["blockedRoads"];
+   315→   315→}
+   316→   316→
+   317→   317→function pushStatic(ctx: BuildCtx, bucket: string, geo: THREE.BufferGeometry, matrix: THREE.Matrix4) {
+   318→   318→  const g = geo.clone();
+   319→   319→  g.applyMatrix4(matrix);
+   320→   320→  if (!ctx.staticGeos.has(bucket)) ctx.staticGeos.set(bucket, []);
+   321→   321→  ctx.staticGeos.get(bucket)!.push(g);
+   322→   322→}
+   323→   323→
+   324→   324→function addBox(
+   325→   325→  ctx: BuildCtx,
+   326→   326→  bucket: string,
+   327→   327→  x: number,
+   328→   328→  y: number,
+   329→   329→  z: number,
+   330→   330→  w: number,
+   331→   331→  h: number,
+   332→   332→  d: number,
+   333→   333→  solid = true,
+   334→   334→) {
+   335→   335→  const m = new THREE.Matrix4().compose(
+   336→   336→    new THREE.Vector3(x, y + h / 2, z),
+   337→   337→    new THREE.Quaternion(),
+   338→   338→    new THREE.Vector3(w, h, d),
+   339→   339→  );
+   340→   340→  pushStatic(ctx, bucket, new THREE.BoxGeometry(1, 1, 1), m);
+   341→   341→  if (solid) {
+   342→   342→    ctx.colliders.push({
+   343→   343→      minX: x - w / 2,
+   344→   344→      maxX: x + w / 2,
+   345→   345→      minZ: z - d / 2,
+   346→   346→      maxZ: z + d / 2,
+   347→   347→    });
+   348→   348→  }
+   349→   349→}
+   350→   350→
+   351→   351→/** جدار مع فتحات للأبواب: gaps = [{at, width}] مواقع على طول الجدار */
+   352→   352→function wallWithGaps(
+   353→   353→  ctx: BuildCtx,
+   354→   354→  bucket: string,
+   355→   355→  x1: number,
+   356→   356→  z1: number,
+   357→   357→  x2: number,
+   358→   358→  z2: number,
+   359→   359→  gaps: { at: number; width: number }[] = [],
+   360→   360→) {
+   361→   361→  const horiz = Math.abs(x2 - x1) > Math.abs(z2 - z1);
+   362→   362→  const len = horiz ? Math.abs(x2 - x1) : Math.abs(z2 - z1);
+   363→   363→  const cx = (x1 + x2) / 2;
+   364→   364→  const cz = (z1 + z2) / 2;
+   365→   365→  const segs: { s: number; e: number }[] = [];
+   366→   366→  let cur = 0;
+   367→   367→  const sorted = [...gaps].sort((a, b) => a.at - b.at);
+   368→   368→  for (const g of sorted) {
+   369→   369→    const s = g.at - g.width / 2;
+   370→   370→    if (s > cur) segs.push({ s: cur, e: s });
+   371→   371→    cur = g.at + g.width / 2;
+   372→   372→  }
+   373→   373→  if (cur < len) segs.push({ s: cur, e: len });
+   374→   374→
+   375→   375→  for (const seg of segs) {
+   376→   376→    const segLen = seg.e - seg.s;
+   377→   377→    if (segLen <= 0.05) continue;
+   378→   378→    const mid = (seg.s + seg.e) / 2;
+   379→   379→    if (horiz) {
+   380→   380→      const sx = x1 + (x2 > x1 ? mid : -mid);
+   381→   381→      addBox(ctx, bucket, sx, 0, cz, segLen, WALL_H, T);
+   382→   382→    } else {
+   383→   383→      const sz = z1 + (z2 > z1 ? mid : -mid);
+   384→   384→      addBox(ctx, bucket, cx, 0, sz, T, WALL_H, segLen);
+   385→   385→    }
+   386→   386→  }
+   387→   387→  // lintel above gaps
+   388→   388→  for (const g of sorted) {
+   389→   389→    const gapLen = g.width;
+   390→   390→    const mid = g.at;
+   391→   391→    if (horiz) {
+   392→   392→      const sx = x1 + (x2 > x1 ? mid : -mid);
+   393→   393→      addBox(ctx, bucket, sx, 2.6, cz, gapLen, WALL_H - 2.6, T, false);
+   394→   394→    } else {
+   395→   395→      const sz = z1 + (z2 > z1 ? mid : -mid);
+   396→   396→      addBox(ctx, bucket, cx, 2.6, sz, T, WALL_H - 2.6, gapLen, false);
+   397→   397→    }
+   398→   398→  }
+   399→   399→}
+   400→   400→
+   401→   401→function roomFloor(ctx: BuildCtx, x: number, z: number, w: number, d: number, bucket = "floorIn") {
+   402→   402→  addBox(ctx, bucket, x, 0.02, z, w, 0.06, d, false);
+   403→   403→}
+   404→   404→
+   405→   405→function roomRoof(ctx: BuildCtx, x: number, z: number, w: number, d: number, bucket = "roof") {
+   406→   406→  addBox(ctx, bucket, x, WALL_H, z, w, 0.35, d, false);
+   407→   407→}
+   408→   408→
+   409→   409→function addFlickerLight(
+   410→   410→  ctx: BuildCtx,
+   411→   411→  x: number,
+   412→   412→  y: number,
+   413→   413→  z: number,
+   414→   414→  color: number,
+   415→   415→  intensity: number,
+   416→   416→  dist: number,
+   417→   417→  speed = 9,
+   418→   418→) {
+   419→   419→  const l = new THREE.PointLight(color, intensity, dist, 1.6);
+   420→   420→  l.position.set(x, y, z);
+   421→   421→  ctx.scene.add(l);
+   422→   422→  ctx.flickerLights.push({ light: l, base: intensity, speed });
+   423→   423→  return l;
+   424→   424→}
+   425→   425→
+   426→   426→function addFire(ctx: BuildCtx, x: number, z: number, scale = 1) {
+   427→   427→  const l = new THREE.PointLight(0xd4562a, 3.4 * scale, 16 * scale, 1.7);
+   428→   428→  l.position.set(x, 1 + scale, z);
+   429→   429→  ctx.scene.add(l);
+   430→   430→  ctx.fireLights.push({ light: l, base: 3.4 * scale });
+   431→   431→  const fireMat = new THREE.MeshBasicMaterial({
+   432→   432→    color: 0xe86830,
+   433→   433→    transparent: true,
+   434→   434→    opacity: 0.85,
+   435→   435→  });
+   436→   436→  fireMat.userData = {};
+   437→   437→  const g1 = new THREE.PlaneGeometry(0.9 * scale, 1.5 * scale);
+   438→   438→  const p1 = new THREE.Mesh(g1, fireMat);
+   439→   439→  p1.position.set(x, 0.8 * scale, z);
+   440→   440→  p1.userData.noHit = true;
+   441→   441→  const p2 = p1.clone();
+   442→   442→  p2.rotation.y = Math.PI / 2;
+   443→   443→  p2.userData.noHit = true;
+   444→   444→  ctx.scene.add(p1, p2);
+   445→   445→  // burn mark
+   446→   446→  const decal = new THREE.Mesh(
+   447→   447→    new THREE.CircleGeometry(1.6 * scale, 12),
+   448→   448→    new THREE.MeshBasicMaterial({ color: 0x090909 }),
+   449→   449→  );
+   450→   450→  decal.rotation.x = -Math.PI / 2;
+   451→   451→  decal.position.set(x, 0.03, z);
+   452→   452→  ctx.scene.add(decal);
+   453→   453→}
+   454→   454→
+   455→   455→function bloodDecal(ctx: BuildCtx, x: number, z: number, s = 1.4) {
+   456→   456→  const m = new THREE.Mesh(new THREE.PlaneGeometry(s, s), ctx.mats.blood);
+   457→   457→  m.rotation.x = -Math.PI / 2;
+   458→   458→  m.rotation.z = Math.random() * Math.PI;
+   459→   459→  m.position.set(x, 0.035, z);
+   460→   460→  ctx.scene.add(m);
+   461→   461→}
+   462→   462→
+   463→   463→function corpse(ctx: BuildCtx, x: number, z: number) {
+   464→   464→  const g = new THREE.Group();
+   465→   465→  const mat = new THREE.MeshStandardMaterial({ color: 0x54524c, roughness: 0.95 });
+   466→   466→  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.22, 0.85, 3, 6), mat);
+   467→   467→  body.rotation.z = Math.PI / 2;
+   468→   468→  body.position.y = 0.24;
+   469→   469→  g.add(body);
+   470→   470→  g.position.set(x, 0, z);
+   471→   471→  g.rotation.y = Math.random() * Math.PI * 2;
+   472→   472→  ctx.scene.add(g);
+   473→   473→  bloodDecal(ctx, x, z, 1.8);
+   474→   474→}
+   475→   475→
+   476→   476→function wreckedCar(ctx: BuildCtx, x: number, z: number, rot = 0, burned = true) {
+   477→   477→  const color = burned ? 0x141414 : [0x4a3f33, 0x37413c, 0x45343a][Math.floor(Math.random() * 3)];
+   478→   478→  const bodyMat = new THREE.MeshStandardMaterial({ color, roughness: 0.7, metalness: 0.4 });
+   479→   479→  const grp = new THREE.Group();
+   480→   480→  const body = new THREE.Mesh(new THREE.BoxGeometry(4.2, 1.05, 1.9), bodyMat);
+   481→   481→  body.position.y = 0.75;
+   482→   482→  const cabin = new THREE.Mesh(new THREE.BoxGeometry(2.1, 0.75, 1.7), bodyMat);
+   483→   483→  cabin.position.set(-0.2, 1.6, 0);
+   484→   484→  const wheelG = new THREE.CylinderGeometry(0.34, 0.34, 0.24, 10);
+   485→   485→  wheelG.rotateX(Math.PI / 2);
+   486→   486→  const wheelM = new THREE.MeshStandardMaterial({ color: 0x0d0d0d, roughness: 0.9 });
+   487→   487→  [[-1.4, 0.95], [1.4, 0.95], [-1.4, -0.95], [1.4, -0.95]].forEach(([wx, wz]) => {
+   488→   488→    const wm = new THREE.Mesh(wheelG, wheelM);
+   489→   489→    wm.position.set(wx, 0.34, wz);
+   490→   490→    grp.add(wm);
+   491→   491→  });
+   492→   492→  grp.add(body, cabin);
+   493→   493→  grp.position.set(x, 0, z);
+   494→   494→  grp.rotation.y = rot;
+   495→   495→  ctx.scene.add(grp);
+   496→   496→  // collider approx (rotated → use expanded AABB)
+   497→   497→  const ext = Math.abs(Math.sin(rot)) * 2.1 + 2.1;
+   498→   498→  const extD = Math.abs(Math.cos(rot)) * 1.0 + 1.0;
+   499→   499→  ctx.colliders.push({
+   500→   500→    minX: x - ext,
+   501→   501→    maxX: x + ext,
+   502→   502→    minZ: z - extD,
+   503→   503→    maxZ: z + extD,
+   504→   504→  });
+   505→   505→  if (burned && Math.random() < 0.3) addFire(ctx, x + 1.4, z, 0.7);
+   506→   506→}
+   507→   507→
+   508→   508→function debrisPile(ctx: BuildCtx, x: number, z: number, w: number, d: number) {
+   509→   509→  const rnd = (a: number, b: number) => a + Math.random() * (b - a);
+   510→   510→  for (let i = 0; i < Math.floor((w * d) / 6); i++) {
+   511→   511→    const bw = rnd(1.2, 3.6);
+   512→   512→    const bh = rnd(0.6, 2.4);
+   513→   513→    const bd = rnd(1.2, 3.4);
+   514→   514→    const m = new THREE.Matrix4().compose(
+   515→   515→      new THREE.Vector3(
+   516→   516→        x + rnd(-w / 2.2, w / 2.2),
+   517→   517→        bh / 2 + rnd(0, 0.8),
+   518→   518→        z + rnd(-d / 2.2, d / 2.2),
+   519→   519→      ),
+   520→   520→      new THREE.Quaternion().setFromEuler(
+   521→   521→        new THREE.Euler(rnd(-0.2, 0.2), rnd(0, Math.PI), rnd(-0.2, 0.2)),
+   522→   522→      ),
+   523→   523→      new THREE.Vector3(bw, bh, bd),
+   524→   524→    );
+   525→   525→    pushStatic(ctx, "rubble", new THREE.BoxGeometry(1, 1, 1), m);
+   526→   526→  }
+   527→   527→  ctx.colliders.push({ minX: x - w / 2, maxX: x + w / 2, minZ: z - d / 2, maxZ: z + d / 2 });
+   528→   528→  ctx.blockedRoads.push({ x, z, w: w + 2, d: d + 2 });
+   529→   529→}
+   530→   530→
+   531→   531→function pickupProp(
+   532→   532→  ctx: BuildCtx,
+   533→   533→  id: string,
+   534→   534→  kind: InteractKind,
+   535→   535→  x: number,
+   536→   536→  z: number,
+   537→   537→  prompt: string,
+   538→   538→  data?: Record<string, unknown>,
+   539→   539→  color = 0xd07a28,
+   540→   540→) {
+   541→   541→  const mat = new THREE.MeshStandardMaterial({
+   542→   542→    color: 0x14110c,
+   543→   543→    emissive: color,
+   544→   544→    emissiveIntensity: 0.55,
+   545→   545→    roughness: 0.6,
+   546→   546→  });
+   547→   547→  const m = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.16, 0.34), mat);
+   548→   548→  m.position.set(x, 0.55, z);
+   549→   549→  m.userData.pickupId = id;
+   550→   550→  m.userData.noHit = false;
+   551→   551→  ctx.scene.add(m);
+   552→   552→  const glow = null; // emissive only — keep light budget low
+   553→   553→  void glow;
+   554→   554→  ctx.interactables.push({ id, kind, x, z, radius: 1.9, prompt, data, used: false });
+   555→   555→}
+   556→   556→
+   557→   557→function noteProp(ctx: BuildCtx, id: string, docId: string, x: number, z: number) {
+   558→   558→  const m = new THREE.Mesh(new THREE.PlaneGeometry(0.42, 0.56), ctx.mats.paper);
+   559→   559→  m.rotation.x = -Math.PI / 2 + 0.22;
+   560→   560→  m.rotation.z = Math.random() * 0.7;
+   561→   561→  m.position.set(x, 0.82, z);
+   562→   562→  m.userData.pickupId = id;
+   563→   563→  ctx.scene.add(m);
+   564→   564→  ctx.interactables.push({
+   565→   565→    id,
+   566→   566→    kind: "note",
+   567→   567→    x,
+   568→   568→    z,
+   569→   569→    radius: 1.9,
+   570→   570→    prompt: "قراءة الوثيقة",
+   571→   571→    data: { docId },
+   572→   572→    used: false,
+   573→   573→  });
+   574→   574→}
+   575→   575→
+   576→   576→function deskProp(ctx: BuildCtx, x: number, z: number, rot = 0) {
+   577→   577→  const m = new THREE.Matrix4().compose(
+   578→   578→    new THREE.Vector3(x, 0.4, z),
+   579→   579→    new THREE.Quaternion().setFromEuler(new THREE.Euler(0, rot, 0)),
+   580→   580→    new THREE.Vector3(1.7, 0.08, 0.9),
+   581→   581→  );
+   582→   582→  pushStatic(ctx, "wood", new THREE.BoxGeometry(1, 1, 1), m);
+   583→   583→  // legs
+   584→   584→  [[-0.75, -0.35], [0.75, -0.35], [-0.75, 0.35], [0.75, 0.35]].forEach(([lx, lz]) => {
+   585→   585→    const lm = new THREE.Matrix4().compose(
+   586→   586→      new THREE.Vector3(x + lx * Math.cos(rot) - lz * Math.sin(rot), 0.19, z + lx * Math.sin(rot) + lz * Math.cos(rot)),
+   587→   587→      new THREE.Quaternion(),
+   588→   588→      new THREE.Vector3(0.09, 0.38, 0.09),
+   589→   589→    );
+   590→   590→    pushStatic(ctx, "wood", new THREE.BoxGeometry(1, 1, 1), lm);
+   591→   591→  });
+   592→   592→  ctx.colliders.push({ minX: x - 0.9, maxX: x + 0.9, minZ: z - 0.55, maxZ: z + 0.55 });
+   593→   593→}
+   594→   594→
+   595→   595→function shelfProp(ctx: BuildCtx, x: number, z: number, rot = 0, len = 3) {
+   596→   596→  const c = Math.cos(rot);
+   597→   597→  const s = Math.sin(rot);
+   598→   598→  const put = (ox: number, oy: number, oz: number, w: number, h: number, d: number) => {
+   599→   599→    const m = new THREE.Matrix4().compose(
+   600→   600→      new THREE.Vector3(x + ox * c - oz * s, oy, z + ox * s + oz * c),
+   601→   601→      new THREE.Quaternion().setFromEuler(new THREE.Euler(0, rot, 0)),
+   602→   602→      new THREE.Vector3(w, h, d),
+   603→   603→    );
+   604→   604→    pushStatic(ctx, "metal", new THREE.BoxGeometry(1, 1, 1), m);
+   605→   605→  };
+   606→   606→  put(0, 1, 0, len, 2, 0.5);
+   607→   607→  put(0, 0.35, 0, len, 0.07, 0.5);
+   608→   608→  put(0, 1.05, 0, len, 0.07, 0.5);
+   609→   609→  put(0, 1.75, 0, len, 0.07, 0.5);
+   610→   610→  ctx.colliders.push({
+   611→   611→    minX: x - (Math.abs(c) * len + Math.abs(s) * 0.5) / 2,
+   612→   612→    maxX: x + (Math.abs(c) * len + Math.abs(s) * 0.5) / 2,
+   613→   613→    minZ: z - (Math.abs(s) * len + Math.abs(c) * 0.5) / 2,
+   614→   614→    maxZ: z + (Math.abs(s) * len + Math.abs(c) * 0.5) / 2,
+   615→   615→  });
+   616→   616→}
+   617→   617→
+   618→   618→function bedProp(ctx: BuildCtx, x: number, z: number, rot = 0) {
+   619→   619→  const m = new THREE.Matrix4().compose(
+   620→   620→    new THREE.Vector3(x, 0.45, z),
+   621→   621→    new THREE.Quaternion().setFromEuler(new THREE.Euler(0, rot, 0)),
+   622→   622→    new THREE.Vector3(2, 0.45, 0.95),
+   623→   623→  );
+   624→   624→  pushStatic(ctx, "metal", new THREE.BoxGeometry(1, 1, 1), m);
+   625→   625→  ctx.colliders.push({ minX: x - 1, maxX: x + 1, minZ: z - 0.55, maxZ: z + 0.55 });
+   626→   626→}
+   627→   627→
+   628→   628→function machineProp(ctx: BuildCtx, x: number, z: number, w = 2.4, h = 2.6, d = 1.8) {
+   629→   629→  addBox(ctx, "metal", x, 0, z, w, h, d);
+   630→   630→  addFlickerLight(ctx, x, h + 0.4, z, 0x2fae4e, 0.5, 5, 3);
+   631→   631→}
+   632→   632→
+   633→   633→function emergencyLight(ctx: BuildCtx, x: number, y: number, z: number, color: number) {
+   634→   634→  const l = new THREE.PointLight(color, 1.4, 12, 1.8);
+   635→   635→  l.position.set(x, y, z);
+   636→   636→  ctx.scene.add(l);
+   637→   637→  ctx.flickerLights.push({ light: l, base: 1.4, speed: 1.2 });
+   638→   638→  const m = new THREE.Mesh(new THREE.SphereGeometry(0.09, 8, 8), color === 0xc22a1e ? ctx.mats.redLight : ctx.mats.amberLight);
+   639→   639→  m.position.set(x, y, z);
+   640→   640→  ctx.scene.add(m);
+   641→   641→}
+   642→   642→
+   643→   643→// ═══════════════ المدينة ═══════════════
+   644→   644→export function buildWorld(scene: THREE.Scene): WorldData {
+   645→   645→  const t = makeTextures();
+   646→   646→  const mats = makeMats(t);
+   647→   647→  const ctx: BuildCtx = {
+   648→   648→    scene,
+   649→   649→    mats,
+   650→   650→    colliders: [],
+   651→   651→    buildings: [],
+   652→   652→    spawns: [],
+   653→   653→    interactables: [],
+   654→   654→    triggers: [],
+   655→   655→    fireLights: [],
+   656→   656→    flickerLights: [],
+   657→   657→    staticGeos: new Map(),
+   658→   658→    blockedRoads: [],
+   659→   659→  };
+   660→   660→
+   661→   661→  // ── الأرضية والطرق ──
+   662→   662→  const ground = new THREE.Mesh(new THREE.PlaneGeometry(340, 340), mats.asphalt);
+   663→   663→  ground.rotation.x = -Math.PI / 2;
+   664→   664→  scene.add(ground);
+   665→   665→
+   666→   666→  const roadXs = [-92, -46, 0, 46, 92];
+   667→   667→  const roadZs = [-92, -46, 0, 46, 92];
+   668→   668→  // asphalt overlay on roads (slightly lighter)
+   669→   669→  for (const x of roadXs) {
+   670→   670→    const r = new THREE.Mesh(new THREE.PlaneGeometry(10, 240), mats.asphalt);
+   671→   671→    r.rotation.x = -Math.PI / 2;
+   672→   672→    r.position.set(x, 0.01, 0);
+   673→   673→    scene.add(r);
+   674→   674→  }
+   675→   675→  for (const z of roadZs) {
+   676→   676→    const r = new THREE.Mesh(new THREE.PlaneGeometry(240, 10), mats.asphalt);
+   677→   677→    r.rotation.x = -Math.PI / 2;
+   678→   678→    r.position.set(0, 0.015, z);
+   679→   679→    scene.add(r);
+   680→   680→  }
+   681→   681→
+   682→   682→  // جدران حدود المدينة (أنقاض عالية)
+   683→   683→  const B = 118;
+   684→   684→  wallWithGaps(ctx, "rubble", -B, -B, B, -B);
+   685→   685→  wallWithGaps(ctx, "rubble", -B, B, B, B);
+   686→   686→  wallWithGaps(ctx, "rubble", -B, -B, -B, B);
+   687→   687→  wallWithGaps(ctx, "rubble", B, -B, B, B);
+   688→   688→
+   689→   689→  // ── مبانٍ خلفية (غير قابلة للدخول) حول المربعات ──
+   690→   690→  const blocks = [-69, -23, 23, 69];
+   691→   691→  const usedBlocks = new Set(["-23,23", "-69,-23", "-69,23", "69,23", "69,69", "23,23", "69,-23", "-23,-69", "23,-23"]);
+   692→   692→  for (const bx of blocks) {
+   693→   693→    for (const bz of blocks) {
+   694→   694→      if (usedBlocks.has(`${bx},${bz}`)) continue;
+   695→   695→      const w = 26 + Math.random() * 8;
+   696→   696→      const d = 26 + Math.random() * 8;
+   697→   697→      const h = 9 + Math.random() * 14;
+   698→   698→      const m = new THREE.Matrix4().compose(
+   699→   699→        new THREE.Vector3(bx + (Math.random() - 0.5) * 4, h / 2, bz + (Math.random() - 0.5) * 4),
+   700→   700→        new THREE.Quaternion(),
+   701→   701→        new THREE.Vector3(w, h, d),
+   702→   702→      );
+   703→   703→      pushStatic(ctx, "facade", new THREE.BoxGeometry(1, 1, 1), m);
+   704→   704→      ctx.buildings.push({ x: bx, z: bz, w, d });
+   705→   705→      ctx.colliders.push({
+   706→   706→        minX: bx - w / 2 - 1,
+   707→   707→        maxX: bx + w / 2 + 1,
+   708→   708→        minZ: bz - d / 2 - 1,
+   709→   709→        maxZ: bz + d / 2 + 1,
+   710→   710→      });
+   711→   711→    }
+   712→   712→  }
+   713→   713→  // facade material applied at merge time below
+   714→   714→
+   715→   715→  // ── الحطام الذي يسد الطرق ──
+   716→   716→  debrisPile(ctx, 46, 34, 9, 7);
+   717→   717→  debrisPile(ctx, -46, -34, 9, 7);
+   718→   718→  debrisPile(ctx, 0, 68, 9, 7);
+   719→   719→  debrisPile(ctx, -92, 58, 7, 9);
+   720→   720→  debrisPile(ctx, 92, -58, 7, 9);
+   721→   721→  debrisPile(ctx, 34, -92, 9, 7);
+   722→   722→  debrisPile(ctx, -34, 92, 9, 7);
+   723→   723→  debrisPile(ctx, 68, 0, 7, 9);
+   724→   724→
+   725→   725→  // ── سيارات محطمة في الشوارع ──
+   726→   726→  const cars: [number, number, number][] = [
+   727→   727→    [23, 40, 0.3], [-23, 40, -0.2], [12, 0, Math.PI / 2], [-12, -46, Math.PI / 2],
+   728→   728→    [55, -46, 0.1], [-55, 46, 0.4], [46, -12, Math.PI / 2 + 0.2], [-46, 12, Math.PI / 2],
+   729→   729→    [23, -40, 0], [-70, -46, 0.2], [70, 46, Math.PI / 2], [-12, 92, 0.1],
+   730→   730→    [90, 12, Math.PI / 2], [-90, -12, Math.PI / 2 + 0.3], [12, -90, 0.2], [-60, 90, 0],
+   731→   731→  ];
+   732→   732→  for (const [cx, cz, cr] of cars) wreckedCar(ctx, cx, cz, cr, Math.random() < 0.75);
+   733→   733→
+   734→   734→  // جثث
+   735→   735→  const corpseSpots: [number, number][] = [
+   736→   736→    [30, 30], [-30, -30], [50, 8], [-8, 50], [15, -55], [-55, 15], [80, -10], [-80, 10],
+   737→   737→    [26, 62], [-60, -60], [40, -26], [-26, 40],
+   738→   738→  ];
+   739→   739→  corpseSpots.forEach(([x, z]) => corpse(ctx, x, z));
+   740→   740→
+   741→   741→  // ═══════════ المباني القابلة للدخول ═══════════
+   742→   742→
+   743→   743→  // ── 1) شقة جون (البداية) في (69,69) ──
+   744→   744→  {
+   745→   745→    const cx = 69, cz = 69;
+   746→   746→    roomFloor(ctx, cx, cz, 16, 12);
+   747→   747→    roomRoof(ctx, cx, cz, 16, 12);
+   748→   748→    // جدران: فتحة باب على الجدار الشمالي (نحو z=46)
+   749→   749→    wallWithGaps(ctx, "brick", cx - 8, cz - 6, cx + 8, cz - 6, [{ at: 12, width: 1.6 }]);
+   750→   750→    wallWithGaps(ctx, "brick", cx - 8, cz + 6, cx + 8, cz + 6);
+   751→   751→    wallWithGaps(ctx, "brick", cx - 8, cz - 6, cx - 8, cz + 6);
+   752→   752→    wallWithGaps(ctx, "brick", cx + 8, cz - 6, cx + 8, cz + 6, [{ at: 3, width: 2.6 }]); // فتحة سقف منهارة على الجدار الشرقي
+   753→   753→    // فتحة سقف (ضوء قمر)
+   754→   754→    const holeLight = new THREE.SpotLight(0x8a93a8, 40, 20, 0.5, 0.6, 1.5);
+   755→   755→    holeLight.position.set(cx + 4, 9, cz);
+   756→   756→    holeLight.target.position.set(cx + 4, 0, cz);
+   757→   757→    scene.add(holeLight, holeLight.target);
+   758→   758→    bedProp(ctx, cx - 4, cz + 2, 0.2);
+   759→   759→    deskProp(ctx, cx + 2, cz + 3, Math.PI / 2);
+   760→   760→    noteProp(ctx, "apt_rec", "doc_1", cx + 2, cz + 3);
+   761→   761→    pickupProp(ctx, "apt_battery", "item", cx - 5.5, cz - 2, "التقاط بطارية", { item: "battery", qty: 1 });
+   762→   762→    pickupProp(ctx, "apt_band", "item", cx + 6, cz - 3, "التقاط ضمادة", { item: "bandage", qty: 1 });
+   763→   763→    // خزانة حفظ (نقطة تفتيش + صندوق)
+   764→   764→    addBox(ctx, "metal", cx - 6.5, 0, cz - 5, 1.4, 2.2, 0.7);
+   765→   765→    ctx.interactables.push({ id: "apt_safe", kind: "checkpoint", x: cx - 6.5, z: cz - 4.4, radius: 2, prompt: "خزانة الحفظ — حفظ التقدم", used: false });
+   766→   766→    addFlickerLight(ctx, cx, 3.6, cz, 0xd0a860, 1.1, 11, 7);
+   767→   767→    bloodDecal(ctx, cx + 3, cz - 1, 2);
+   768→   768→    corpse(ctx, cx + 4.5, cz + 1.5);
+   769→   769→    ctx.buildings.push({ x: cx, z: cz, w: 16, d: 12, name: "شقتك", poi: true });
+   770→   770→    ctx.spawns.push({ kind: "walker", x: cx - 2, z: cz - 12, wander: 6 });
+   771→   771→    ctx.spawns.push({ kind: "walker", x: cx + 14, z: cz - 14, wander: 8 });
+   772→   772→    ctx.triggers.push({ id: "trig_apartment_exit", x: cx, z: cz - 10, radius: 5, once: true });
+   773→   773→  }
+   774→   774→
+   775→   775→  // ── 2) متجر الأسلحة (23,23) ──
+   776→   776→  {
+   777→   777→    const cx = 23, cz = 23;
+   778→   778→    roomFloor(ctx, cx, cz, 14, 12);
+   779→   779→    roomRoof(ctx, cx, cz, 14, 12);
+   780→   780→    wallWithGaps(ctx, "brick", cx - 7, cz - 6, cx + 7, cz - 6, [{ at: 7, width: 1.7 }]); // باب شمالي
+   781→   781→    wallWithGaps(ctx, "brick", cx - 7, cz + 6, cx + 7, cz + 6);
+   782→   782→    wallWithGaps(ctx, "brick", cx - 7, cz - 6, cx - 7, cz + 6);
+   783→   783→    wallWithGaps(ctx, "brick", cx + 7, cz - 6, cx + 7, cz + 6);
+   784→   784→    deskProp(ctx, cx - 3, cz - 2);
+   785→   785→    shelfProp(ctx, cx + 4, cz + 3, 0, 5);
+   786→   786→    pickupProp(ctx, "gun_pistol", "item", cx - 3, cz - 2, "التقاط مسدس الخدمة", { weapon: "pistol" }, 0xd07a28);
+   787→   787→    pickupProp(ctx, "gun_ammo1", "item", cx - 1, cz - 4, "التقاط ذخيرة مسدس", { item: "pistol_ammo", qty: 24 });
+   788→   788→    pickupProp(ctx, "gun_shotgun", "item", cx + 4, cz + 3, "التقاط بندقية الصيد", { weapon: "shotgun" }, 0xd07a28);
+   789→   789→    pickupProp(ctx, "gun_shells", "item", cx + 5.5, cz + 1, "التقاط خرطوش", { item: "shotgun_ammo", qty: 8 });
+   790→   790→    addFlickerLight(ctx, cx, 3.6, cz, 0xd0a860, 1.2, 11, 11);
+   791→   791→    bloodDecal(ctx, cx - 2, cz + 2, 2.2);
+   792→   792→    ctx.buildings.push({ x: cx, z: cz, w: 14, d: 12, name: "متجر الأسلحة", poi: true });
+   793→   793→    ctx.spawns.push({ kind: "runner", x: cx + 2, z: cz + 2, wander: 3 });
+   794→   794→    ctx.triggers.push({ id: "trig_gunshop", x: cx, z: cz, radius: 9, once: true });
+   795→   795→  }
+   796→   796→
+   797→   797→  // ── 3) مركز الشرطة (69,-23) ──
+   798→   798→  {
+   799→   799→    const cx = 69, cz = -23;
+   800→   800→    roomFloor(ctx, cx, cz, 20, 16);
+   801→   801→    roomRoof(ctx, cx, cz, 20, 16);
+   802→   802→    wallWithGaps(ctx, "concrete", cx - 10, cz - 8, cx + 10, cz - 8, [{ at: 4, width: 1.8 }]);
+   803→   803→    wallWithGaps(ctx, "concrete", cx - 10, cz + 8, cx + 10, cz + 8);
+   804→   804→    wallWithGaps(ctx, "concrete", cx - 10, cz - 8, cx - 10, cz + 8);
+   805→   805→    wallWithGaps(ctx, "concrete", cx + 10, cz - 8, cx + 10, cz + 8);
+   806→   806→    // قسم داخلي: مكتب
+   807→   807→    wallWithGaps(ctx, "concrete", cx + 2, cz + 2, cx + 10, cz + 2, [{ at: 3, width: 1.5 }]);
+   808→   808→    deskProp(ctx, cx - 5, cz - 3, 0);
+   809→   809→    deskProp(ctx, cx + 5, cz - 3, Math.PI);
+   810→   810→    deskProp(ctx, cx + 6, cz + 5, Math.PI);
+   811→   811→    shelfProp(ctx, cx - 8, cz + 5, Math.PI / 2, 4);
+   812→   812→    pickupProp(ctx, "pol_key", "item", cx + 6, cz + 5, "التقاط مفتاح برج الإذاعة", { item: "key_tower", qty: 1 }, 0xd0b040);
+   813→   813→    noteProp(ctx, "pol_doc", "doc_4", cx - 5, cz - 3);
+   814→   814→    pickupProp(ctx, "pol_ammo", "item", cx + 5, cz - 3, "التقاط ذخيرة مسدس", { item: "pistol_ammo", qty: 24 });
+   815→   815→    pickupProp(ctx, "pol_med", "item", cx - 8, cz + 5, "التقاط علبة إسعاف", { item: "medkit", qty: 1 });
+   816→   816→    pickupProp(ctx, "pol_shells", "item", cx - 2, cz + 6, "التقاط خرطوش", { item: "shotgun_ammo", qty: 6 });
+   817→   817→    emergencyLight(ctx, cx, 3.6, cz - 4, 0xc22a1e);
+   818→   818→    addFlickerLight(ctx, cx - 4, 3.6, cz + 3, 0xd0a860, 1, 12, 13);
+   819→   819→    bloodDecal(ctx, cx, cz, 2.6);
+   820→   820→    corpse(ctx, cx - 3, cz + 4);
+   821→   821→    corpse(ctx, cx + 7, cz - 5);
+   822→   822→    ctx.buildings.push({ x: cx, z: cz, w: 20, d: 16, name: "مركز الشرطة", poi: true });
+   823→   823→    ctx.spawns.push({ kind: "walker", x: cx - 6, z: cz, wander: 5 });
+   824→   824→    ctx.spawns.push({ kind: "walker", x: cx + 3, z: cz - 5, wander: 5 });
+   825→   825→    ctx.spawns.push({ kind: "walker", x: cx + 14, z: cz + 12, wander: 8 });
+   826→   826→    ctx.triggers.push({ id: "trig_police", x: cx, z: cz, radius: 12, once: true });
+   827→   827→  }
+   828→   828→
+   829→   829→  // ── 4) برج الإذاعة (-23,-69) ──
+   830→   830→  {
+   831→   831→    const cx = -23, cz = -69;
+   832→   832→    roomFloor(ctx, cx, cz, 12, 10);
+   833→   833→    roomRoof(ctx, cx, cz, 12, 10);
+   834→   834→    wallWithGaps(ctx, "metal", cx - 6, cz - 5, cx + 6, cz - 5, [{ at: 3, width: 1.5 }]);
+   835→   835→    wallWithGaps(ctx, "metal", cx - 6, cz + 5, cx + 6, cz + 5);
+   836→   836→    wallWithGaps(ctx, "metal", cx - 6, cz - 5, cx - 6, cz + 5);
+   837→   837→    wallWithGaps(ctx, "metal", cx + 6, cz - 5, cx + 6, cz + 5);
+   838→   838→    // البرج نفسه
+   839→   839→    const tower = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 1.6, 34, 6, 1, true), mats.metal);
+   840→   840→    tower.position.set(cx, 17, cz + 8);
+   841→   841→    scene.add(tower);
+   842→   842→    tower.userData.noHit = true;
+   843→   843→    ctx.colliders.push({ minX: cx - 1.4, maxX: cx + 1.4, minZ: cz + 6.6, maxZ: cz + 9.4 });
+   844→   844→    const beacon = new THREE.Mesh(new THREE.SphereGeometry(0.3, 8, 8), mats.redLight);
+   845→   845→    beacon.position.set(cx, 34.4, cz + 8);
+   846→   846→    scene.add(beacon);
+   847→   847→    const beaconLight = new THREE.PointLight(0xc22a1e, 2, 20, 2);
+   848→   848→    beaconLight.position.set(cx, 34, cz + 8);
+   849→   849→    scene.add(beaconLight);
+   850→   850→    ctx.flickerLights.push({ light: beaconLight, base: 2, speed: 0.7 });
+   851→   851→    deskProp(ctx, cx - 2, cz - 3.4, 0);
+   852→   852→    // كونسول البث
+   853→   853→    addBox(ctx, "metal", cx + 2, 0, cz - 3.4, 1.6, 1.1, 0.7);
+   854→   854→    const screen = new THREE.Mesh(new THREE.PlaneGeometry(1.1, 0.6), mats.greenLight);
+   855→   855→    screen.position.set(cx + 2, 1.5, cz - 3.02);
+   856→   856→    scene.add(screen);
+   857→   857→    ctx.interactables.push({ id: "tower_console", kind: "console", x: cx + 2, z: cz - 2.6, radius: 2, prompt: "البث — نداء استغاثة", used: false });
+   858→   858→    addFlickerLight(ctx, cx, 3.6, cz, 0x6ac070, 0.9, 10, 5);
+   859→   859→    ctx.buildings.push({ x: cx, z: cz, w: 12, d: 10, name: "برج الإذاعة", poi: true });
+   860→   860→    ctx.spawns.push({ kind: "runner", x: cx + 2, z: cz + 2, wander: 4 });
+   861→   861→    ctx.spawns.push({ kind: "walker", x: cx - 10, z: cz + 10, wander: 8 });
+   862→   862→    ctx.triggers.push({ id: "trig_tower", x: cx, z: cz, radius: 10, once: true });
+   863→   863→  }
+   864→   864→
+   865→   865→  // ── 5) المستشفى المركزي (-23,23) — الأكبر ──
+   866→   866→  {
+   867→   867→    const cx = -23, cz = 23;
+   868→   868→    roomFloor(ctx, cx, cz, 28, 22);
+   869→   869→    roomRoof(ctx, cx, cz, 28, 22);
+   870→   870→    wallWithGaps(ctx, "concrete", cx - 14, cz - 11, cx + 14, cz - 11, [{ at: 14, width: 2 }]);
+   871→   871→    wallWithGaps(ctx, "concrete", cx - 14, cz + 11, cx + 14, cz + 11);
+   872→   872→    wallWithGaps(ctx, "concrete", cx - 14, cz - 11, cx - 14, cz + 11, [{ at: 11, width: 1.7 }]);
+   873→   873→    wallWithGaps(ctx, "concrete", cx + 14, cz - 11, cx + 14, cz + 11);
+   874→   874→    // ممر داخلي أفقي + غرف
+   875→   875→    wallWithGaps(ctx, "concrete", cx - 14, cz - 2, cx - 4, cz - 2, [{ at: 5, width: 1.6 }]);
+   876→   876→    wallWithGaps(ctx, "concrete", cx + 4, cz - 2, cx + 14, cz - 2, [{ at: 5, width: 1.6 }]);
+   877→   877→    wallWithGaps(ctx, "concrete", cx - 4, cz - 2, cx - 4, cz - 11); // جناح الجنوب الغربي
+   878→   878→    wallWithGaps(ctx, "concrete", cx + 4, cz - 2, cx + 4, cz - 11, [{ at: 4.5, width: 1.5 }]); // العيادة
+   879→   879→    // عيادة مدير المستشفى (غرفة معزولة داخل الجناح)
+   880→   880→    wallWithGaps(ctx, "concrete", cx - 12, cz + 3, cx - 4, cz + 3, [{ at: 4, width: 1.5 }]);
+   881→   881→    // سرير المستشفى
+   882→   882→    for (let i = 0; i < 4; i++) bedProp(ctx, cx - 10 + i * 2.6, cz + 7, 0);
+   883→   883→    for (let i = 0; i < 3; i++) bedProp(ctx, cx + 6 + i * 2.6, cz + 6, 0.1);
+   884→   884→    shelfProp(ctx, cx + 10, cz - 7, 0, 4);
+   885→   885→    deskProp(ctx, cx - 8, cz + 6.5, Math.PI);
+   886→   886→    machineProp(ctx, cx + 12, cz + 8, 2, 2.2, 1.4);
+   887→   887→    // غسيل الملابس (شرقاً) — سارة
+   888→   888→    wallWithGaps(ctx, "concrete", cx + 6, cz + 3, cx + 14, cz + 3);
+   889→   889→    machineProp(ctx, cx + 8, cz + 8.5, 1.8, 2, 1.6);
+   890→   890→    machineProp(ctx, cx + 11, cz + 8.5, 1.8, 2, 1.6);
+   891→   891→    // لووت
+   892→   892→    noteProp(ctx, "hos_doc3", "doc_3", cx + 10, cz - 7);
+   893→   893→    noteProp(ctx, "hos_doc5", "doc_5", cx - 8, cz + 6.5);
+   894→   894→    pickupProp(ctx, "hos_blue", "item", cx - 8, cz + 5.2, "التقاط بطاقة وصول زرقاء", { item: "keycard_blue", qty: 1 }, 0x4ea3c8);
+   895→   895→    pickupProp(ctx, "hos_med1", "item", cx - 12, cz - 8, "التقاط علبة إسعاف", { item: "medkit", qty: 1 });
+   896→   896→    pickupProp(ctx, "hos_med2", "item", cx + 10, cz - 7.5, "التقاط علبة إسعاف", { item: "medkit", qty: 1 });
+   897→   897→    pickupProp(ctx, "hos_bat", "item", cx + 2, cz + 8, "التقاط بطارية", { item: "battery", qty: 1 });
+   898→   898→    pickupProp(ctx, "hos_band", "item", cx - 5, cz - 6, "التقاط ضمادتين", { item: "bandage", qty: 2 });
+   899→   899→    emergencyLight(ctx, cx, 3.7, cz, 0xc22a1e);
+   900→   900→    emergencyLight(ctx, cx - 8, 3.6, cz + 6, 0xd0a860);
+   901→   901→    addFlickerLight(ctx, cx + 8, 3.6, cz - 6, 0xd0a860, 1.1, 13, 15);
+   902→   902→    // دماء وجثث كثيرة
+   903→   903→    for (let i = 0; i < 7; i++) bloodDecal(ctx, cx - 12 + Math.random() * 24, cz - 9 + Math.random() * 18, 2 + Math.random() * 2);
+   904→   904→    corpse(ctx, cx - 6, cz + 8);
+   905→   905→    corpse(ctx, cx + 3, cz - 6);
+   906→   906→    corpse(ctx, cx + 12, cz + 2);
+   907→   907→    ctx.buildings.push({ x: cx, z: cz, w: 28, d: 22, name: "المستشفى المركزي", poi: true });
+   908→   908→    // وحوش المستشفى + العملاق
+   909→   909→    ctx.spawns.push({ kind: "walker", x: cx - 8, z: cz - 5, wander: 5 });
+   910→   910→    ctx.spawns.push({ kind: "walker", x: cx + 5, z: cz - 8, wander: 5 });
+   911→   911→    ctx.spawns.push({ kind: "runner", x: cx + 10, z: cz + 5, wander: 6 });
+   912→   912→    ctx.spawns.push({ kind: "walker", x: cx + 8, z: cz + 8.5, wander: 3 });
+   913→   913→    ctx.spawns.push({ kind: "brute", x: cx, z: cz + 3, wander: 7 });
+   914→   914→    // سارة
+   915→   915→    ctx.interactables.push({ id: "npc_sara", kind: "npc", x: cx + 12.5, z: cz + 9, radius: 2.2, prompt: "التحدث مع ناجية", data: { survivor: "sara" }, used: false });
+   916→   916→    ctx.triggers.push({ id: "trig_hospital", x: cx, z: cz, radius: 14, once: true });
+   917→   917→  }
+   918→   918→
+   919→   919→  // ── 6) مصنع القطع الغربي (-69,-23) ──
+   920→   920→  {
+   921→   921→    const cx = -69, cz = -23;
+   922→   922→    roomFloor(ctx, cx, cz, 26, 18);
+   923→   923→    wallWithGaps(ctx, "metal", cx - 13, cz - 9, cx + 13, cz - 9, [{ at: 20, width: 2 }]); // مدخل شرقي
+   924→   924→    wallWithGaps(ctx, "metal", cx - 13, cz + 9, cx + 13, cz + 9);
+   925→   925→    wallWithGaps(ctx, "metal", cx - 13, cz - 9, cx - 13, cz + 9);
+   926→   926→    wallWithGaps(ctx, "metal", cx + 13, cz - 9, cx + 13, cz + 9);
+   927→   927→    // بدون سقف كامل — سقف جزئي
+   928→   928→    roomRoof(ctx, cx - 6, cz, 14, 18);
+   929→   929→    machineProp(ctx, cx - 8, cz - 4);
+   930→   930→    machineProp(ctx, cx - 2, cz + 3);
+   931→   931→    machineProp(ctx, cx + 5, cz - 3);
+   932→   932→    machineProp(ctx, cx + 1, cz - 6, 2, 3.2, 2);
+   933→   933→    // مكتب المشرفين (زاوية شمال شرق) — الرقيب
+   934→   934→    wallWithGaps(ctx, "concrete", cx + 6, cz - 9, cx + 6, cz - 2, [{ at: 2.5, width: 1.4 }]);
+   935→   935→    wallWithGaps(ctx, "concrete", cx + 6, cz - 2, cx + 13, cz - 2);
+   936→   936→    deskProp(ctx, cx + 10, cz - 6.5, Math.PI);
+   937→   937→    noteProp(ctx, "fac_doc", "doc_2", cx + 10, cz - 6.5);
+   938→   938→    pickupProp(ctx, "fac_red", "item", cx - 10, cz + 6, "التقاط بطاقة وصول حمراء", { item: "keycard_red", qty: 1 }, 0xc8402e);
+   939→   939→    pickupProp(ctx, "fac_ammo", "item", cx - 4, cz + 6, "التقاط ذخيرة مسدس", { item: "pistol_ammo", qty: 20 });
+   940→   940→    pickupProp(ctx, "fac_band", "item", cx + 5, cz + 6, "التقاط ضمادة", { item: "bandage", qty: 1 });
+   941→   941→    emergencyLight(ctx, cx - 8, 3.6, cz + 6, 0xc22a1e);
+   942→   942→    addFire(ctx, cx - 11, cz - 7, 0.9);
+   943→   943→    bloodDecal(ctx, cx + 2, cz - 1, 2.4);
+   944→   944→    corpse(ctx, cx - 3, cz + 1);
+   945→   945→    corpse(ctx, cx + 8, cz + 4);
+   946→   946→    ctx.buildings.push({ x: cx, z: cz, w: 26, d: 18, name: "المصنع الغربي", poi: true });
+   947→   947→    ctx.spawns.push({ kind: "walker", x: cx - 6, z: cz, wander: 6 });
+   948→   948→    ctx.spawns.push({ kind: "walker", x: cx + 3, z: cz + 5, wander: 6 });
+   949→   949→    ctx.spawns.push({ kind: "runner", x: cx - 10, z: cz - 5, wander: 6 });
+   950→   950→    ctx.spawns.push({ kind: "walker", x: cx + 10, z: cz - 5, wander: 3 });
+   951→   951→    ctx.interactables.push({ id: "npc_soldier", kind: "npc", x: cx + 10.5, z: cz - 7.5, radius: 2.2, prompt: "التحدث مع جندي جريح", data: { survivor: "soldier" }, used: false });
+   952→   952→    ctx.triggers.push({ id: "trig_factory", x: cx, z: cz, radius: 13, once: true });
+   953→   953→  }
+   954→   954→
+   955→   955→  // ── 7) المستودع الغربي (-69,23) ──
+   956→   956→  {
+   957→   957→    const cx = -69, cz = 23;
+   958→   958→    roomFloor(ctx, cx, cz, 22, 16);
+   959→   959→    roomRoof(ctx, cx, cz, 22, 16);
+   960→   960→    wallWithGaps(ctx, "metal", cx - 11, cz - 8, cx + 11, cz - 8, [{ at: 11, width: 2.2 }]);
+   961→   961→    wallWithGaps(ctx, "metal", cx - 11, cz + 8, cx + 11, cz + 8);
+   962→   962→    wallWithGaps(ctx, "metal", cx - 11, cz - 8, cx - 11, cz + 8);
+   963→   963→    wallWithGaps(ctx, "metal", cx + 11, cz - 8, cx + 11, cz + 8);
+   964→   964→    shelfProp(ctx, cx - 6, cz + 3, 0, 7);
+   965→   965→    shelfProp(ctx, cx + 2, cz + 3, 0, 7);
+   966→   966→    shelfProp(ctx, cx - 2, cz - 4, Math.PI / 2, 6);
+   967→   967→    pickupProp(ctx, "ware_food1", "item", cx - 6, cz + 3, "التقاط طعام معلب", { item: "food", qty: 2 });
+   968→   968→    pickupProp(ctx, "ware_food2", "item", cx + 2, cz + 3, "التقاط طعام معلب", { item: "food", qty: 1 });
+   969→   969→    pickupProp(ctx, "ware_ammo", "item", cx - 2, cz - 4, "التقاط ذخيرة مسدس", { item: "pistol_ammo", qty: 16 });
+   970→   970→    pickupProp(ctx, "ware_bat", "item", cx + 8, cz - 4, "التقاط بطاريتين", { item: "battery", qty: 2 });
+   971→   971→    addFlickerLight(ctx, cx, 3.6, cz, 0xd0a860, 1.1, 13, 8);
+   972→   972→    bloodDecal(ctx, cx + 4, cz - 2, 2);
+   973→   973→    corpse(ctx, cx + 5, cz - 3);
+   974→   974→    ctx.buildings.push({ x: cx, z: cz, w: 22, d: 16, name: "المستودع الغربي", poi: true });
+   975→   975→    ctx.spawns.push({ kind: "walker", x: cx - 5, z: cz - 1, wander: 6 });
+   976→   976→    ctx.spawns.push({ kind: "walker", x: cx + 6, z: cz + 2, wander: 6 });
+   977→   977→    ctx.spawns.push({ kind: "walker", x: cx + 8.5, z: cz + 6, wander: 2 });
+   978→   978→    // عادل في الغرفة الخلفية
+   979→   979→    ctx.interactables.push({ id: "npc_adel", kind: "npc", x: cx + 9, z: cz + 6, radius: 2.2, prompt: "التحدث مع حارس عجوز", data: { survivor: "adel" }, used: false });
+   980→   980→    ctx.triggers.push({ id: "trig_warehouse", x: cx, z: cz, radius: 12, once: true });
+   981→   981→  }
+   982→   982→
+   983→   983→  // ── 8) محطة الوقود (69,23) ──
+   984→   984→  {
+   985→   985→    const cx = 69, cz = 23;
+   986→   986→    // مظلة على أعمدة
+   987→   987→    addBox(ctx, "concrete", cx, 5.2, cz, 14, 0.4, 10, false);
+   988→   988→    [[-6, -4], [6, -4], [-6, 4], [6, 4]].forEach(([ox, oz]) => {
+   989→   989→      addBox(ctx, "metal", cx + ox, 0, cz + oz, 0.5, 5.2, 0.5);
+   990→   990→    });
+   991→   991→    // مضختان
+   992→   992→    addBox(ctx, "metal", cx - 3, 0, cz, 1.2, 1.5, 0.9);
+   993→   993→    addBox(ctx, "metal", cx + 3, 0, cz, 1.2, 1.5, 0.9);
+   994→   994→    // متجر صغير
+   995→   995→    roomFloor(ctx, cx, cz + 10, 10, 8);
+   996→   996→    roomRoof(ctx, cx, cz + 10, 10, 8);
+   997→   997→    wallWithGaps(ctx, "brick", cx - 5, cz + 6, cx + 5, cz + 6, [{ at: 5, width: 1.5 }]);
+   998→   998→    wallWithGaps(ctx, "brick", cx - 5, cz + 14, cx + 5, cz + 14);
+   999→   999→    wallWithGaps(ctx, "brick", cx - 5, cz + 6, cx - 5, cz + 14);
+  1000→  1000→    wallWithGaps(ctx, "brick", cx + 5, cz + 6, cx + 5, cz + 14);
+  1001→  1001→    shelfProp(ctx, cx - 2, cz + 12.5, 0, 5);
+  1002→  1002→    pickupProp(ctx, "gas_fuel", "item", cx + 2, cz + 12, "التقاط جالون وقود", { item: "fuel", qty: 1 }, 0xc8402e);
+  1003→  1003→    pickupProp(ctx, "gas_food", "item", cx - 3, cz + 12.5, "التقاط طعام معلب", { item: "food", qty: 1 });
+  1004→  1004→    pickupProp(ctx, "gas_band", "item", cx + 3.5, cz + 13, "التقاط ضمادة", { item: "bandage", qty: 1 });
+  1005→  1005→    addFire(ctx, cx - 5, cz - 2, 1.3);
+  1006→  1006→    addFlickerLight(ctx, cx + 3, 3.4, cz + 10, 0xd0a860, 1, 10, 6);
+  1007→  1007→    wreckedCar(ctx, cx + 1, cz - 6, 0.4, false);
+  1008→  1008→    bloodDecal(ctx, cx, cz + 2, 1.8);
+  1009→  1009→    ctx.buildings.push({ x: cx, z: cz, w: 14, d: 20, name: "محطة الوقود", poi: true });
+  1010→  1010→    ctx.spawns.push({ kind: "walker", x: cx - 4, z: cz - 4, wander: 5 });
+  1011→  1011→    ctx.spawns.push({ kind: "walker", x: cx + 2, z: cz + 13, wander: 2 });
+  1012→  1012→    ctx.triggers.push({ id: "trig_gas", x: cx, z: cz, radius: 10, once: true });
+  1013→  1013→  }
+  1014→  1014→
+  1015→  1015→  // ── 9) محطة المترو + بوابة المختبر (23,-23) ──
+  1016→  1016→  {
+  1017→  1017→    const cx = 23, cz = -23;
+  1018→  1018→    // هيكل المدخل
+  1019→  1019→    addBox(ctx, "concrete", cx, 0, cz, 10, 0.15, 8, false);
+  1020→  1020→    [[-4.4, -3.4], [4.4, -3.4], [-4.4, 3.4], [4.4, 3.4]].forEach(([ox, oz]) => {
+  1021→  1021→      addBox(ctx, "concrete", cx + ox, 0, cz + oz, 0.6, 4.6, 0.6);
+  1022→  1022→    });
+  1023→  1023→    addBox(ctx, "concrete", cx, 4.6, cz, 10.4, 0.5, 8.4, false);
+  1024→  1024→    // باب المختبر الضخم (نحو الشمال)
+  1025→  1025→    const doorGroup = new THREE.Group();
+  1026→  1026→    const doorMesh = new THREE.Mesh(
+  1027→  1027→      new THREE.BoxGeometry(4.2, 3.4, 0.4),
+  1028→  1028→      new THREE.MeshStandardMaterial({ color: 0x3a3f42, roughness: 0.5, metalness: 0.7, emissive: 0x1a0505, emissiveIntensity: 0.6 }),
+  1029→  1029→    );
+  1030→  1030→    doorMesh.position.y = 1.7;
+  1031→  1031→    doorGroup.add(doorMesh);
+  1032→  1032→    doorGroup.position.set(cx, 0, cz - 3.2);
+  1033→  1033→    scene.add(doorGroup);
+  1034→  1034→    doorGroupRef = doorGroup;
+  1035→  1035→    ctx.colliders.push({ minX: cx - 2.1, maxX: cx + 2.1, minZ: cz - 3.5, maxZ: cz - 2.9 });
+  1036→  1036→    const doorLightL = new THREE.PointLight(0xc22a1e, 1.2, 8, 2);
+  1037→  1037→    doorLightL.position.set(cx - 2.6, 3.2, cz - 3.2);
+  1038→  1038→    scene.add(doorLightL);
+  1039→  1039→    ctx.flickerLights.push({ light: doorLightL, base: 1.2, speed: 2 });
+  1040→  1040→    ctx.interactables.push({ id: "lab_door", kind: "gate", x: cx, z: cz - 3.2, radius: 2.6, prompt: "بوابة المختبر — بطاقتا وصول", used: false });
+  1041→  1041→    pickupProp(ctx, "metro_ammo", "item", cx - 3.5, cz + 1, "التقاط ذخيرة مسدس", { item: "pistol_ammo", qty: 14 });
+  1042→  1042→    addFire(ctx, cx + 8, cz + 2, 1);
+  1043→  1043→    corpse(ctx, cx - 6, cz + 4);
+  1044→  1044→    ctx.buildings.push({ x: cx, z: cz, w: 12, d: 10, name: "مدخل المختبر (المترو)", poi: true });
+  1045→  1045→    ctx.spawns.push({ kind: "walker", x: cx - 8, z: cz + 6, wander: 6 });
+  1046→  1046→    ctx.spawns.push({ kind: "runner", x: cx + 10, z: cz - 6, wander: 7 });
+  1047→  1047→    ctx.triggers.push({ id: "trig_metro", x: cx, z: cz, radius: 10, once: true });
+  1048→  1048→  }
+  1049→  1049→
+  1050→  1050→  // ═══════════ الميناء الشمالي (شريط خارج المدينة) ═══════════
+  1051→  1051→  const gateX = 0, gateZ = -100;
+  1052→  1052→  {
+  1053→  1053→    // أرضية الميناء
+  1054→  1054→    const dock = new THREE.Mesh(new THREE.PlaneGeometry(200, 26), mats.concrete);
+  1055→  1055→    dock.rotation.x = -Math.PI / 2;
+  1056→  1056→    dock.position.set(0, 0.02, -108);
+  1057→  1057→    scene.add(dock);
+  1058→  1058→    // بوابة الميناء
+  1059→  1059→    const barrier = new THREE.Group();
+  1060→  1060→    const b1 = new THREE.Mesh(new THREE.BoxGeometry(1, 3.4, 0.8), mats.metal);
+  1061→  1061→    b1.position.set(-5, 1.7, 0);
+  1062→  1062→    const b2 = b1.clone();
+  1063→  1063→    b2.position.x = 5;
+  1064→  1064→    const bar = new THREE.Mesh(new THREE.BoxGeometry(10.6, 1.4, 0.3), mats.metal);
+  1065→  1065→    bar.position.y = 2.4;
+  1066→  1066→    barrier.add(b1, b2, bar);
+  1067→  1067→    barrier.position.set(gateX, 0, gateZ);
+  1068→  1068→    scene.add(barrier);
+  1069→  1069→    barrierRef = barrier;
+  1070→  1070→    ctx.colliders.push({ minX: gateX - 6, maxX: gateX + 6, minZ: gateZ - 0.6, maxZ: gateZ + 0.6 });
+  1071→  1071→    // مولد
+  1072→  1072→    addBox(ctx, "metal", gateX - 8, 0, gateZ + 3, 1.8, 1.4, 1.2);
+  1073→  1073→    ctx.interactables.push({ id: "gate_gen", kind: "generator", x: gateX - 8, z: gateZ + 4.2, radius: 2.2, prompt: "تشغيل المولد", used: false });
+  1074→  1074→    // القارب
+  1075→  1075→    const boat = new THREE.Group();
+  1076→  1076→    const hull = new THREE.Mesh(new THREE.BoxGeometry(7, 1.4, 3), mats.metal);
+  1077→  1077→    hull.position.y = 0.5;
+  1078→  1078→    const cabin = new THREE.Mesh(new THREE.BoxGeometry(2.4, 1.6, 2.2), mats.metal);
+  1079→  1079→    cabin.position.set(-1.4, 1.9, 0);
+  1080→  1080→    boat.add(hull, cabin);
+  1081→  1081→    boat.position.set(gateX + 4, 0, -114);
+  1082→  1082→    scene.add(boat);
+  1083→  1083→    boatRef = boat;
+  1084→  1084→    const boatLight = new THREE.PointLight(0xe8f0d8, 0, 24, 1.6);
+  1085→  1085→    boatLight.position.set(gateX + 4, 4, -114);
+  1086→  1086→    scene.add(boatLight);
+  1087→  1087→    boatLightRef = boatLight;
+  1088→  1088→    ctx.interactables.push({ id: "extraction", kind: "exit", x: gateX + 4, z: -112, radius: 3.4, prompt: "الصعود إلى قارب الإخلاء", used: false });
+  1089→  1089→    // صناديق وحاويات
+  1090→  1090→    for (let i = 0; i < 6; i++) {
+  1091→  1091→      addBox(ctx, "metal", -30 + Math.random() * 60, 0, -104 - Math.random() * 8, 2 + Math.random() * 2, 1.6 + Math.random() * 1.6, 2 + Math.random() * 2);
+  1092→  1092→    }
+  1093→  1093→    pickupProp(ctx, "harbor_ammo", "item", gateX - 14, gateZ - 4, "التقاط خرطوش", { item: "shotgun_ammo", qty: 6 });
+  1094→  1094→    pickupProp(ctx, "harbor_med", "item", gateX + 16, gateZ - 2, "التقاط علبة إسعاف", { item: "medkit", qty: 1 });
+  1095→  1095→    emergencyLight(ctx, gateX, 4, gateZ - 6, 0x2fae4e);
+  1096→  1096→    corpse(ctx, gateX - 5, gateZ - 6);
+  1097→  1097→    bloodDecal(ctx, gateX + 2, gateZ - 5, 2.2);
+  1098→  1098→    ctx.buildings.push({ x: gateX, z: gateZ - 8, w: 60, d: 16, name: "الميناء الشمالي", poi: true });
+  1099→  1099→    ctx.triggers.push({ id: "trig_harbor", x: gateX, z: gateZ, radius: 26, once: true });
+  1100→  1100→  }
+  1101→  1101→
+  1102→  1102→  // ═══════════ المختبر تحت الأرض (منطقة بعيدة عند x=600) ═══════════
+  1103→  1103→  const LX = 600, LZ = 0;
+  1104→  1104→  let labBossGate = { mesh: null as unknown as THREE.Mesh, colliderId: "lab_arena_gate" };
+  1105→  1105→  let corePos = new THREE.Vector3(LX, 1, LZ - 26);
+  1106→  1106→  {
+  1107→  1107→    const cx = LX, cz = LZ;
+  1108→  1108→    roomFloor(ctx, cx, cz, 8, 46, "labFloor");
+  1109→  1109→    roomRoof(ctx, cx, cz, 8, 46, "labRoof");
+  1110→  1110→    wallWithGaps(ctx, "metal", cx - 4, cz - 23, cx + 4, cz - 23);
+  1111→  1111→    wallWithGaps(ctx, "metal", cx - 4, cz + 23, cx + 4, cz + 23, [{ at: 4, width: 1.6 }]);
+  1112→  1112→    wallWithGaps(ctx, "metal", cx - 4, cz - 23, cx - 4, cz + 23);
+  1113→  1113→    wallWithGaps(ctx, "metal", cx + 4, cz - 23, cx + 4, cz + 23);
+  1114→  1114→    // خوادم مضيئة على الجوانب
+  1115→  1115→    for (let i = 0; i < 6; i++) {
+  1116→  1116→      const sz = cz + 18 - i * 6.4;
+  1117→  1117→      addBox(ctx, "labMetal", cx - 3.2, 0, sz, 0.9, 2.4, 1.4);
+  1118→  1118→      const g = new THREE.Mesh(new THREE.PlaneGeometry(0.7, 0.16), mats.greenLight);
+  1119→  1119→      g.position.set(cx - 2.72, 1.8, sz);
+  1120→  1120→      scene.add(g);
+  1121→  1121→      if (i % 2 === 0) {
+  1122→  1122→        const gl = new THREE.PointLight(0x2fae4e, 0.5, 4.5, 2);
+  1123→  1123→        gl.position.set(cx - 2.4, 1.9, sz);
+  1124→  1124→        scene.add(gl);
+  1125→  1125→        ctx.flickerLights.push({ light: gl, base: 0.5, speed: 4 + i });
+  1126→  1126→      }
+  1127→  1127→      const g2 = g.clone();
+  1128→  1128→      g2.position.x = cx + 2.72;
+  1129→  1129→      scene.add(g2);
+  1130→  1130→    }
+  1131→  1131→    // بوابة ساحة الحارس (تُقفل عند الدخول)
+  1132→  1132→    const gateMesh = new THREE.Mesh(
+  1133→  1133→      new THREE.BoxGeometry(6.4, 3.8, 0.4),
+  1134→  1134→      new THREE.MeshStandardMaterial({ color: 0x2c3033, metalness: 0.7, roughness: 0.5 }),
+  1135→  1135→    );
+  1136→  1136→    gateMesh.position.set(cx, 1.9, cz - 8);
+  1137→  1137→    gateMesh.visible = false; // مفتوحة حتى يبدأ زعم المعركة
+  1138→  1138→    scene.add(gateMesh);
+  1139→  1139→    labBossGate.mesh = gateMesh;
+  1140→  1140→    // ساحة الحارس
+  1141→  1141→    roomFloor(ctx, cx, cz - 15, 18, 16, "labFloor");
+  1142→  1142→    addBox(ctx, "labMetal", cx - 8.8, 0, cz - 15, 0.7, 4.2, 16, true);
+  1143→  1143→    addBox(ctx, "labMetal", cx + 8.8, 0, cz - 15, 0.7, 4.2, 16, true);
+  1144→  1144→    addBox(ctx, "labMetal", cx - 8.4, 0, cz - 22.6, 17, 4.2, 0.7, true);
+  1145→  1145→    // أعمدة للتمويه
+  1146→  1146→    [[-4, -18], [4, -12], [-3, -11], [5, -19]].forEach(([ox, oz]) => {
+  1147→  1147→      addBox(ctx, "labMetal", cx + ox, 0, cz + oz, 1.1, 4.2, 1.1);
+  1148→  1148→    });
+  1149→  1149→    emergencyLight(ctx, cx, 3.6, cz - 15, 0xc22a1e);
+  1150→  1150→    // قاعة النواة
+  1151→  1151→    roomFloor(ctx, cx, cz - 30, 14, 12, "labFloor");
+  1152→  1152→    addBox(ctx, "labMetal", cx - 6.8, 0, cz - 30, 0.7, 4.6, 12, true);
+  1153→  1153→    addBox(ctx, "labMetal", cx + 6.8, 0, cz - 30, 0.7, 4.6, 12, true);
+  1154→  1154→    addBox(ctx, "labMetal", cx - 6.4, 0, cz - 35.6, 14, 4.6, 0.7, true);
+  1155→  1155→    // النواة
+  1156→  1156→    const core = new THREE.Mesh(
+  1157→  1157→      new THREE.IcosahedronGeometry(1.1, 1),
+  1158→  1158→      new THREE.MeshStandardMaterial({ color: 0x1a0505, emissive: 0xff3020, emissiveIntensity: 1.6, roughness: 0.3 }),
+  1159→  1159→    );
+  1160→  1160→    core.position.set(cx, 1.7, cz - 31);
+  1161→  1161→    scene.add(core);
+  1162→  1162→    const coreLight = new THREE.PointLight(0xff3020, 3, 16, 1.6);
+  1163→  1163→    coreLight.position.set(cx, 2.2, cz - 31);
+  1164→  1164→    scene.add(coreLight);
+  1165→  1165→    ctx.flickerLights.push({ light: coreLight, base: 3, speed: 3 });
+  1166→  1166→    corePos = new THREE.Vector3(cx, 1, cz - 31);
+  1167→  1167→    const ring = new THREE.Mesh(new THREE.TorusGeometry(1.5, 0.08, 8, 32), mats.metal);
+  1168→  1168→    ring.position.set(cx, 1.7, cz - 31);
+  1169→  1169→    scene.add(ring);
+  1170→  1170→    ctx.interactables.push({ id: "core", kind: "core", x: cx, z: cz - 31, radius: 2.6, prompt: "النواة — كيميرا", used: false });
+  1171→  1171→    // لووت المختبر
+  1172→  1172→    noteProp(ctx, "lab_doc", "doc_6", cx - 2, cz + 20);
+  1173→  1173→    pickupProp(ctx, "lab_med", "item", cx + 2, cz + 20, "التقاط علبة إسعاف", { item: "medkit", qty: 1 });
+  1174→  1174→    pickupProp(ctx, "lab_ammo", "item", cx - 2, cz - 19, "التقاط خرطوش", { item: "shotgun_ammo", qty: 8 });
+  1175→  1175→    pickupProp(ctx, "lab_bat", "item", cx + 2, cz - 19, "التقاط بطارية", { item: "battery", qty: 1 });
+  1176→  1176→    // زر الخروج من المختبر (عند المدخل)
+  1177→  1177→    ctx.interactables.push({ id: "lab_exit", kind: "exit", x: cx, z: cz + 22, radius: 2.2, prompt: "الصعود إلى السطح", data: { labExit: true }, used: false });
+  1178→  1178→    ctx.buildings.push({ x: cx, z: cz - 15, w: 20, d: 46, name: "المختبر — تحت الأرض", poi: true });
+  1179→  1179→    // زعيم المختبر — الحارس
+  1180→  1180→    ctx.spawns.push({ kind: "boss", x: cx, z: cz - 15, wander: 6 });
+  1181→  1181→  }
+  1182→  1182→
+  1183→  1183→  // ── دمج الهندسة الساكنة ──
+  1184→  1184→  const bucketMats: Record<string, THREE.Material> = {
+  1185→  1185→    brick: mats.brick,
+  1186→  1186→    concrete: mats.concrete,
+  1187→  1187→    metal: mats.metal,
+  1188→  1188→    wood: mats.wood,
+  1189→  1189→    rubble: mats.rubble,
+  1190→  1190→    facade: mats.facade,
+  1191→  1191→    floorIn: new THREE.MeshStandardMaterial({ color: 0x2a2825, roughness: 0.9 }),
+  1192→  1192→    roof: mats.concrete,
+  1193→  1193→    labFloor: new THREE.MeshStandardMaterial({ color: 0x23282a, roughness: 0.6, metalness: 0.3 }),
+  1194→  1194→    labRoof: mats.metal,
+  1195→  1195→    labMetal: new THREE.MeshStandardMaterial({ color: 0x2e3438, roughness: 0.45, metalness: 0.7 }),
+  1196→  1196→  };
+  1197→  1197→  for (const [bucket, geos] of ctx.staticGeos) {
+  1198→  1198→    if (geos.length === 0) continue;
+  1199→  1199→    const merged = mergeGeometries(geos, false);
+  1200→  1200→    if (!merged) continue;
+  1201→  1201→    const mat = bucketMats[bucket] ?? mats.concrete;
+  1202→  1202→    const mesh = new THREE.Mesh(merged, mat);
+  1203→  1203→    mesh.castShadow = bucket !== "floorIn" && bucket !== "roof" && bucket !== "labFloor";
+  1204→  1204→    mesh.receiveShadow = true;
+  1205→  1205→    scene.add(mesh);
+  1206→  1206→    geos.forEach((g) => g.dispose());
+  1207→  1207→  }
+  1208→  1208→
+  1209→  1209→  return {
+  1210→  1210→    colliders: ctx.colliders,
+  1211→  1211→    dynamicColliders: new Map<string, Collider>(),
+  1212→  1212→    pois: ctx.buildings.filter((b) => b.poi).map((b) => ({ id: b.name!, x: b.x, z: b.z, name: b.name!, r: 16 })),
+  1213→  1213→    spawns: ctx.spawns,
+  1214→  1214→    interactables: ctx.interactables,
+  1215→  1215→    triggers: ctx.triggers,
+  1216→  1216→    buildings: ctx.buildings,
+  1217→  1217→    roads: roadXs
+  1218→  1218→      .flatMap((x) => [{ x, z: 0, w: 10, d: 240 }])
+  1219→  1219→      .concat(roadZs.map((z) => ({ x: 0, z, w: 240, d: 10 }))),
+  1220→  1220→    blockedRoads: ctx.blockedRoads,
+  1221→  1221→    fireLights: ctx.fireLights,
+  1222→  1222→    flickerLights: ctx.flickerLights,
+  1223→  1223→    labBossGate,
+  1224→  1224→    labDoor: { group: doorGroupRef!, open: false },
+  1225→  1225→    corePedestal: corePos,
+  1226→  1226→    gateBarrier: { group: barrierRef!, open: false },
+  1227→  1227→    boat: boatRef!,
+  1228→  1228→    boatLight: boatLightRef!,
+  1229→  1229→    clockHands: [],
+  1230→  1230→  };
+  1231→  1231→}
+  1232→  1232→
+  1233→  1233→export function zoneAt(x: number, z: number): string {
+  1234→  1234→  const pois: [number, number, string, number][] = [
+  1235→  1235→    [69, 69, "apartments", 16],
+  1236→  1236→    [23, 23, "gunshop", 12],
+  1237→  1237→    [69, -23, "police", 16],
+  1238→  1238→    [-23, -69, "tower", 14],
+  1239→  1239→    [-23, 23, "hospital", 20],
+  1240→  1240→    [-69, -23, "factory", 18],
+  1241→  1241→    [-69, 23, "warehouse", 16],
+  1242→  1242→    [69, 23, "gas", 14],
+  1243→  1243→    [23, -23, "metro", 12],
+  1244→  1244→    [600, -15, "lab", 40],
+  1245→  1245→    [0, -104, "harbor", 40],
+  1246→  1246→  ];
+  1247→  1247→  for (const [px, pz, id, r] of pois) {
+  1248→  1248→    if (Math.hypot(x - px, z - pz) < r) return ZONES[id] ?? id;
+  1249→  1249→  }
+  1250→  1250→  return ZONES.mainStreet;
+  1251→  1251→}
+  1252→  1252→
