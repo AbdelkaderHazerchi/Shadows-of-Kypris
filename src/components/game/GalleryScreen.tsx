@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Lock, Undo2, Unlock } from "lucide-react";
-import { ENDINGS, ENDING_BY_ID } from "@/lib/game/content";
+import { getContent } from "@/lib/game/content";
 import { useGame } from "@/lib/game/state";
 import { getUnlockedEndings } from "@/lib/game/save";
 import { formatClock } from "./utils";
@@ -31,11 +31,14 @@ function parseRuns(data: unknown): EndingRunRecord[] {
   return [];
 }
 
-/** سجل النهايات — ما فُتح يُعرض، وما بقي يستعير الغموض */
 export default function GalleryScreen() {
+  const lang = useGame((s) => s.lang);
   const setScreen = useGame((s) => s.setScreen);
   const [unlocked, setUnlocked] = useState<string[]>([]);
   const [runs, setRuns] = useState<EndingRunRecord[] | null>(null);
+
+  const c = getContent(lang);
+  const ui = c.ui.gallery;
 
   useEffect(() => {
     const t = setTimeout(() => setUnlocked(getUnlockedEndings()), 0);
@@ -56,15 +59,16 @@ export default function GalleryScreen() {
 
       <div className="relative z-10 mx-auto max-w-3xl px-6 py-10">
         <h2 className="text-center font-title text-4xl font-bold text-stone-100">
-          سجل <span className="text-red-800">النهايات</span>
+          {ui.titlePrefix}
+          <span className="text-red-800">{ui.titleHighlight}</span>
         </h2>
         <p className="mt-2 text-center text-xs text-stone-500">
-          ستة مصائر محتملة لمدينة واحدة — كم منها ستكشف؟
+          {ui.subtitle}
         </p>
 
-        {/* شبكة النهايات */}
+        {/* Endings Grid */}
         <div className="mt-8 grid gap-3 sm:grid-cols-2">
-          {ENDINGS.map((e) => {
+          {c.endings.map((e) => {
             const isOpen = unlocked.includes(e.id);
             return (
               <div
@@ -79,7 +83,7 @@ export default function GalleryScreen() {
                       e.title
                     ) : (
                       <span className="blur-sm select-none" aria-hidden>
-                        ؟؟؟
+                        ???
                       </span>
                     )}
                   </span>
@@ -90,40 +94,40 @@ export default function GalleryScreen() {
                   )}
                 </div>
                 <p className="mt-2 text-xs leading-5 text-stone-500">
-                  {isOpen ? e.subtitle : "اكتشفها باللعب"}
+                  {isOpen ? e.subtitle : ui.discoverByPlaying}
                 </p>
               </div>
             );
           })}
         </div>
 
-        {/* سجل الجولات */}
+        {/* Run History */}
         {runs && runs.length > 0 && (
           <div className="kypris-panel mt-8 rounded p-5">
             <h3 className="mb-3 font-ui text-sm font-bold text-amber-600">
-              جولات هذا السيرفر:{" "}
+              {ui.serverRuns}{" "}
               <span dir="ltr" className="font-mono text-stone-300">
                 {runs.length}
               </span>
             </h3>
             <div className="kypris-scroll overflow-x-auto">
-              <table className="w-full text-right text-xs">
+              <table className="w-full text-start text-xs">
                 <thead>
                   <tr className="border-b border-stone-800 text-stone-500">
-                    <th className="px-2 py-2 font-medium">النهاية</th>
-                    <th className="px-2 py-2 font-medium">الزمن</th>
-                    <th className="px-2 py-2 font-medium">القتلى</th>
-                    <th className="px-2 py-2 font-medium">التاريخ</th>
+                    <th className="px-2 py-2 font-medium">{ui.colEnding}</th>
+                    <th className="px-2 py-2 font-medium">{ui.colTime}</th>
+                    <th className="px-2 py-2 font-medium">{ui.colKills}</th>
+                    <th className="px-2 py-2 font-medium">{ui.colDate}</th>
                   </tr>
                 </thead>
                 <tbody>
                   {recent.map((r, i) => {
-                    const def = ENDING_BY_ID[r.ending];
+                    const def = c.endingById[r.ending];
                     const known = Boolean(def) && unlocked.includes(r.ending);
                     return (
                       <tr key={i} className="border-b border-stone-900 text-stone-400">
                         <td className={`px-2 py-2 ${known ? TONE_TEXT[def.tone] : "text-stone-600"}`}>
-                          {known ? def.title : "نهاية مجهولة"}
+                          {known ? def.title : ui.unknownEnding}
                         </td>
                         <td dir="ltr" className="px-2 py-2 text-left font-mono">
                           {formatClock(r.playSeconds)}
@@ -132,7 +136,7 @@ export default function GalleryScreen() {
                           {r.kills}
                         </td>
                         <td dir="ltr" className="px-2 py-2 text-left font-mono text-stone-600">
-                          {new Date(r.createdAt).toLocaleString("ar")}
+                          {new Date(r.createdAt).toLocaleString(lang === "ar" ? "ar" : "en-US")}
                         </td>
                       </tr>
                     );
@@ -149,7 +153,7 @@ export default function GalleryScreen() {
             className="kypris-btn flex items-center gap-2 px-8 py-2.5 font-ui text-stone-200"
           >
             <Undo2 className="h-4 w-4" strokeWidth={1.5} />
-            رجوع
+            {ui.backBtn}
           </button>
         </div>
       </div>

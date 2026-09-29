@@ -6,9 +6,9 @@ import "@fontsource-variable/cairo";
 import { Toaster } from "@/components/ui/toaster";
 
 export const metadata: Metadata = {
-  title: "ظلال كيبريس — لعبة رعب نفسي",
+  title: "Shadows of Kypris — Psychological Survival Horror",
   description:
-    "لعبة رعب نفسي بمنظور الشخص الأول: جون، عالم فاقد للذاكرة، يكتشف أن تجاربه العلمية دمرت مدينته. اهرب، انجُ، واكشف الحقيقة.",
+    "A first-person psychological survival horror game: John, an amnesiac scientist, discovers his experiments destroyed his city. Escape, survive, and uncover the truth.",
   icons: {
     icon: "https://z-cdn.chatglm.cn/z-ai/static/logo.svg",
   },
@@ -20,7 +20,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="ar" dir="rtl" suppressHydrationWarning>
+    <html lang="en" dir="ltr" suppressHydrationWarning>
       <body className="antialiased bg-black text-foreground">
         {children}
         <Toaster />

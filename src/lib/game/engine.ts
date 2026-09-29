@@ -17,9 +17,18 @@ import { EnemyManager, collideCircle, type Enemy } from "./enemies";
 import { buildWorld, zoneAt, type Collider, type WorldData, type Interactable } from "./world";
 import { clearCheckpoint, loadCheckpoint, saveCheckpoint, unlockEnding } from "./save";
 import { useGame } from "./state";
-import { AI_REACTIONS, ITEMS, MESSAGES, OBJECTIVE_BY_ID, SURVIVOR_BY_ID, WEAPONS } from "./content";
+import {
+  AI_REACTIONS,
+  ITEMS,
+  MESSAGES,
+  OBJECTIVE_BY_ID,
+  SURVIVOR_BY_ID,
+  WEAPONS,
+  ZONES,
+  translateInteractPrompt,
+} from "./content";
 import { setSurvivorPose, type DoorDef } from "./props";
-import type { EndingId, EnemyKind, MapSnapshot, WeaponId } from "./types";
+import type { EndingId, EnemyKind, Lang, MapSnapshot, WeaponId } from "./types";
 
 // ── grain/vignette shader ──
 const HorrorShader = {
@@ -135,6 +144,7 @@ export class GameEngine {
   private swayVY = 0;
   private sprintDip = 0;
   private lastHudStamina = 100;
+  private lastSyncedLang: Lang | null = null;
 
   // flashlight
   private flashlight!: THREE.SpotLight;
@@ -644,7 +654,7 @@ export class GameEngine {
     continueGame: () => {
       const save = loadCheckpoint();
       if (!save) {
-        useGame.getState().showHint("لا يوجد حفظ متاح");
+        useGame.getState().showHint(MESSAGES.noSaveAvailable);
         return;
       }
       this.pendingSave = save;
@@ -782,7 +792,7 @@ export class GameEngine {
     audio.startAmbient(s.flags.labEntered ? "lab" : "city");
     if (this.extractionReady) audio.setHeli(true);
     this.lockPointer();
-    st.showHint("اضغط على الشاشة للتقاط مؤشر الفأرة إن لم يُقفل");
+    st.showHint(MESSAGES.pointerLockHint);
   }
 
   /** إعادة تهيئة العالم والأعداء والتفاعلات بالكامل لبدء جولة جديدة أو استعادة حفظ بعد الموت */
@@ -1151,19 +1161,19 @@ export class GameEngine {
         x: e.group.position.x + (Math.random() - 0.5) * 1.4,
         z: e.group.position.z + (Math.random() - 0.5) * 1.4,
         radius: 1.8,
-        prompt: "التقاط الغنيمة",
+        prompt: MESSAGES.lootDropPrompt,
         data: { item, qty },
         used: false,
       });
     }
     if (e.kind === "brute" && Math.hypot(e.group.position.x + 23, e.group.position.z - 23) < 26) {
       st.setFlag("bruteHospitalKilled", true);
-      st.toastMsg("سقط المتحول العملاق… المستشفى تتنفس من جديد");
+      st.toastMsg(MESSAGES.bruteHospitalKilled);
     }
     if (e.kind === "boss") {
       st.setFlag("bossKilled", true);
       this.openBossGate();
-      st.toastMsg("«الحارس» سقط — الطريق إلى النواة مفتوح");
+      st.toastMsg(MESSAGES.bossKilled);
       audio.play("stinger_discover");
     }
   }
@@ -1263,7 +1273,7 @@ export class GameEngine {
         // خزانة أسلحة الشرطة — قبل أي منطق التقاط عام
         if (it.data?.locker) {
           if (st.flags.lockerOpened) {
-            st.showHint("فتحت هذه الخزانة سابقاً");
+            st.showHint(MESSAGES.lockerAlreadyOpened);
             return;
           }
           if (!st.hasItem("key_locker")) {
@@ -1287,15 +1297,15 @@ export class GameEngine {
         const qty = (it.data?.qty as number) ?? 1;
         if (it.data?.weapon) {
           st.giveWeapon(it.data.weapon as "pistol" | "shotgun");
-          st.toastMsg(`التقطت: ${WEAPONS[it.data.weapon as "pistol" | "shotgun"].name}`);
+          st.toastMsg(MESSAGES.pickedUp(WEAPONS[it.data.weapon as "pistol" | "shotgun"].name));
           audio.play("pickup");
           it.used = true;
           this.hidePickup(it.id);
           if (st.objectiveId === "obj_wake" || st.objectiveId === "obj_weapon") {
             st.setObjective("obj_police");
-            st.showHint("حصلتَ على سلاح ناري… تذكّر ما ورد في يومياتك حول التوجه شرق الساحة نحو المقر الأمني");
+            st.showHint(MESSAGES.gotFirearmHint);
           } else {
-            st.showHint("اضغط 2/3 لتبديل الأسلحة — 1 للعُقلة");
+            st.showHint(MESSAGES.switchWeaponHint);
           }
           return;
         }
@@ -1305,7 +1315,7 @@ export class GameEngine {
           return;
         }
         const { ITEMS: IT } = { ITEMS };
-        st.toastMsg(`التقطت: ${IT[item as keyof typeof IT]?.name ?? item}${qty > 1 ? ` ×${qty}` : ""}`);
+        st.toastMsg(MESSAGES.pickedUp(IT[item as keyof typeof IT]?.name ?? item, qty));
         audio.play("pickup");
         it.used = true;
         this.hidePickup(it.id);
@@ -1326,7 +1336,7 @@ export class GameEngine {
         break;
       }
       case "checkpoint": {
-        this.doCheckpoint("خزانة");
+        this.doCheckpoint(MESSAGES.cpSafe);
         break;
       }
       case "door": {
@@ -1388,16 +1398,16 @@ export class GameEngine {
       if (st.objectiveId === "obj_wake") {
         st.setObjective("obj_weapon");
       }
-      st.showHint("يومياتك أوضحت خطتك: أمّن سلاحاً نارياً من متجر العتاد جنوب الساحة قبل التوغل في المدينة");
+      st.showHint(MESSAGES.doc1Hint);
     } else if (docId === "doc_4") {
       const hasKey = st.flags.hasTowerKey || st.hasItem("key_tower");
       if (hasKey) {
         if (st.objectiveId === "obj_police" || st.objectiveId === "obj_weapon" || st.objectiveId === "obj_wake") {
           st.setObjective("obj_radio");
         }
-        st.showHint("البرقية ومفتاح البث بحوزتك… اتجه إلى محطة الإذاعة في التل الشمالي الشرقي");
+        st.showHint(MESSAGES.doc4WithKeyHint);
       } else {
-        st.showHint("البرقية تشير إلى حفظ مفتاح غرفة البث النحاسي على الطاولة في هذا المكتب");
+        st.showHint(MESSAGES.doc4NoKeyHint);
       }
     } else if (docId === "doc_2" || docId === "doc_3" || docId === "doc_5") {
       if (st.flags.radioDone && st.objectiveId === "obj_survive") {
@@ -1405,7 +1415,7 @@ export class GameEngine {
         st.setObjective(both ? "obj_lab" : "obj_cards");
       }
     } else if (docId === "doc_6") {
-      st.showHint("استعدتَ الحقيقة كاملة وكود الإيقاف النهائي… واجه «كيميرا» في قاعة النواة");
+      st.showHint(MESSAGES.doc6Hint);
     }
   }
 
@@ -1417,23 +1427,19 @@ export class GameEngine {
         if (st.objectiveId === "obj_police" || st.objectiveId === "obj_weapon" || st.objectiveId === "obj_wake") {
           st.setObjective("obj_radio");
         }
-        st.showHint("مفتاح غرفة البث بحوزتك… اتجه إلى محطة الإذاعة في التل الشمالي الشرقي");
+        st.showHint(MESSAGES.keyTowerWithDocHint);
       } else {
-        st.showHint("التقطتَ مفتاح البث النحاسي… اقرأ البرقية العسكرية على المكتب لفهم خطة الطوارئ");
+        st.showHint(MESSAGES.keyTowerNoDocHint);
       }
     } else if (pickedItem === "keycard_blue" || pickedItem === "keycard_red") {
       const blue = st.hasItem("keycard_blue");
       const red = st.hasItem("keycard_red");
       if (blue && red) {
         st.setObjective("obj_lab");
-        st.showHint("اكتملت شريحتا التصريح المزدوجتان — يمكنك الآن فتح البوابة الفولاذية لمجمع كيبريس");
+        st.showHint(MESSAGES.bothKeycardsHint);
       } else if (st.objectiveId === "obj_survive") {
         st.setObjective("obj_cards");
-        st.showHint(
-          blue
-            ? "حصلتَ على الشريحة الطبية الزرقاء… بقيت الشريحة الصناعية الحمراء المذكورة في السجلات"
-            : "حصلتَ على الشريحة الصناعية الحمراء… بقيت الشريحة الطبية الزرقاء المذكورة في السجلات",
-        );
+        st.showHint(blue ? MESSAGES.blueKeycardOnlyHint : MESSAGES.redKeycardOnlyHint);
       }
     }
   }
@@ -1455,7 +1461,7 @@ export class GameEngine {
     if (!d) return;
     const st = useGame.getState();
     if (d.def.locked) {
-      st.toastMsg("الباب مقفل… لا يرد.");
+      st.toastMsg(MESSAGES.doorLockedGeneric);
       audio.play("door_locked");
       return;
     }
@@ -1463,7 +1469,7 @@ export class GameEngine {
     if (!d.open) {
       // 1) لا يغادر الشقة قبل قراءة تسجيله الشخصي على المكتب (doc_1)
       if (id === "door_apt" && !st.docsRead.includes("doc_1")) {
-        st.toastMsg("لا يمكنني الخروج إلى المجهول بلا ذاكرة… عليّ تفحّص مكتبي في الغرفة الداخلية أولاً.");
+        st.toastMsg(MESSAGES.doorAptNeedDoc);
         audio.play("door_locked");
         return;
       }
@@ -1478,19 +1484,19 @@ export class GameEngine {
           id === "door_gas") &&
         !st.flags.hasWeapon
       ) {
-        st.toastMsg("أصوات زئير وحركة بالداخل… المجازفة بالدخول أعزل انتحار، أحتاج سلاحاً نارياً أولاً.");
+        st.toastMsg(MESSAGES.doorNeedWeapon);
         audio.play("door_locked");
         return;
       }
       // 3) باب محطة الإذاعة يتطلب مفتاح البرج النحاسي وقراءة البرقية العسكرية
       if (id === "door_tower") {
         if (!st.flags.hasTowerKey && !st.hasItem("key_tower")) {
-          st.toastMsg("باب محطة البث مقفل — يتطلب المفتاح النحاسي من غرفة العمليات الأمنية.");
+          st.toastMsg(MESSAGES.doorTowerNeedKey);
           audio.play("door_locked");
           return;
         }
         if (!st.docsRead.includes("doc_4")) {
-          st.toastMsg("معي المفتاح، لكن عليّ قراءة البرقية العسكرية في مركز الشرطة لمعرفة تردد البث.");
+          st.toastMsg(MESSAGES.doorTowerNeedDoc);
           audio.play("door_locked");
           return;
         }
@@ -1500,7 +1506,7 @@ export class GameEngine {
         (id === "door_hospital" || id === "door_hospital_west" || id === "door_factory") &&
         !st.flags.radioDone
       ) {
-        st.toastMsg("أبواب المنشأة موصدة بنظام إغلاق الطوارئ… يجب بث نداء الاستغاثة أولاً لإعادة تغذيتها.");
+        st.toastMsg(MESSAGES.doorFacilityLockdown);
         audio.play("door_locked");
         return;
       }
@@ -1622,7 +1628,7 @@ export class GameEngine {
   private useTowerConsole(it: Interactable) {
     const st = useGame.getState();
     if (st.flags.radioDone) {
-      st.showHint("البث انتهى. لا شيء آخر في هذه القناة.");
+      st.showHint(MESSAGES.radioAlreadyDone);
       return;
     }
     if (!st.flags.hasTowerKey && !st.hasItem("key_tower")) {
@@ -1631,7 +1637,7 @@ export class GameEngine {
       return;
     }
     it.used = true;
-    st.toastMsg("…يُبث نداء الاستغاثة…");
+    st.toastMsg(MESSAGES.radioBroadcasting);
     audio.play("radio_static", { volume: 0.8 });
     this.playRadioChain();
   }
@@ -1644,9 +1650,9 @@ export class GameEngine {
       st.setFlag("radioDone", true);
       const bothCards = st.hasItem("keycard_blue") && st.hasItem("keycard_red");
       st.setObjective(bothCards ? "obj_lab" : "obj_survive");
-      st.toastMsg("بُثّت الإشارة وعادت طاقة الطوارئ للمنشآت الموصدة في المدينة");
+      st.toastMsg(MESSAGES.radioRestoredPower);
       audio.play("stinger_discover", { volume: 0.7 });
-      this.doCheckpoint("بعد البث");
+      this.doCheckpoint(MESSAGES.cpAfterRadio);
       return;
     }
     audio.play("radio_static", { volume: 0.4 });
@@ -1687,7 +1693,7 @@ export class GameEngine {
     // تم إنقاذه سابقاً
     if (f[savedFlag] || f[deliveredFlag]) {
       it.used = true;
-      st.showHint("لقد ساعدتهم سابقاً — أتمنى لك حظاً… اذهب");
+      st.showHint(MESSAGES.survivorAlreadyHelped);
       return;
     }
 
@@ -1732,14 +1738,14 @@ export class GameEngine {
         }
       }
 
-      st.toastMsg(`${s.name}: شكراً لك! سأتوجه الآن إلى قارب الإخلاء في ميناء بلاك ووتر.`);
+      st.toastMsg(MESSAGES.survivorThankYou(s.name));
       st.showHint(MESSAGES.savedSurvivor(s.name));
       const f2 = useGame.getState().flags;
       const n = (f2.saraSaved ? 1 : 0) + (f2.adelSaved ? 1 : 0) + (f2.soldierSaved ? 1 : 0);
-      st.setHud({ optionalObjective: `الناجون الذين أنقذتهم: ${n}/3` });
+      st.setHud({ optionalObjective: MESSAGES.survivorsSavedHud(n) });
       audio.play("pickup");
       audio.play("radio_beep", { volume: 0.5 });
-      this.doCheckpoint(`مهمة ${sid}`);
+      this.doCheckpoint(MESSAGES.cpQuest(sid));
       return;
     }
     st.toastMsg(MESSAGES.questItemMissing(s.name, quest.qty));
@@ -1749,16 +1755,16 @@ export class GameEngine {
   private useGenerator(it: Interactable) {
     const st = useGame.getState();
     if (st.flags.generatorFixed) {
-      st.showHint("المولد يعمل.");
+      st.showHint(MESSAGES.generatorRunning);
       return;
     }
     if (!st.flags.radioDone) {
-      st.toastMsg("بوابة الرصيف معطلة… لا يوجد إخلاء دون بث نداء الاستغاثة أولاً.");
+      st.toastMsg(MESSAGES.generatorNeedRadio);
       audio.play("door_locked");
       return;
     }
     if (!st.flags.metAI) {
-      st.toastMsg("القفل المركزي للرصيف مرتبط بنواة مجمع كيبريس… عليك حسم الأمر في المختبر أولاً.");
+      st.toastMsg(MESSAGES.generatorNeedLab);
       audio.play("door_locked");
       return;
     }
@@ -1776,7 +1782,7 @@ export class GameEngine {
     useGame.getState().setHud({ waveTimer: 120 });
     this.waveN = 0;
     this.waveSpawnT = 4;
-    this.doCheckpoint("البوابة");
+    this.doCheckpoint(MESSAGES.cpGate);
   }
 
   private openGateBarrier() {
@@ -1797,21 +1803,18 @@ export class GameEngine {
   private useLabDoor(it: Interactable) {
     const st = useGame.getState();
     if (st.flags.labEntered) {
-      st.showHint("البوابة مفتوحة.");
+      st.showHint(MESSAGES.labGateAlreadyOpen);
       return;
     }
     if (!st.flags.radioDone) {
-      st.toastMsg("البوابة الفولاذية مفصولة عن التيار… يجب تفعيل شبكة الطوارئ عبر محطة البث أولاً.");
+      st.toastMsg(MESSAGES.labGateNeedRadio);
       audio.play("door_locked");
       return;
     }
     const blue = st.hasItem("keycard_blue");
     const red = st.hasItem("keycard_red");
     if (!blue || !red) {
-      const missing: string[] = [];
-      if (!blue) missing.push("الشريحة الطبية الزرقاء");
-      if (!red) missing.push("الشريحة الصناعية الحمراء");
-      st.toastMsg(`${MESSAGES.labDoorNeed} — ينقص: ${missing.join(" و ")}`);
+      st.toastMsg(MESSAGES.labGateMissingCards(blue, red));
       audio.play("door_locked");
       if (st.objectiveId === "obj_survive") st.setObjective("obj_cards");
       return;
@@ -1822,7 +1825,7 @@ export class GameEngine {
     this.world!.labDoor.group.position.y = -3.5;
     this.removeLabDoorCollider();
     audio.play("door_open", { volume: 1 });
-    st.toastMsg("البوابة تنفتح على صوت حديدي ميت… سلالم تنزل نحو العتمة");
+    st.toastMsg(MESSAGES.labGateOpening);
     st.setObjective("obj_core");
     this.enterLab();
   }
@@ -1848,9 +1851,9 @@ export class GameEngine {
     this.vel.set(0, 0, 0);
     audio.startAmbient("lab");
     const st = useGame.getState();
-    st.setHud({ zone: "المختبر — تحت الأرض" });
+    st.setHud({ zone: ZONES.lab });
     audio.play("stinger_danger", { volume: 0.8 });
-    this.doCheckpoint("مدخل المختبر");
+    this.doCheckpoint(MESSAGES.cpLabEntry);
   }
 
   private exitLab() {
@@ -1862,19 +1865,19 @@ export class GameEngine {
     this.vel.set(0, 0, 0);
     audio.startAmbient(useGame.getState().flags.coreDestroyed ? "city" : "city");
     useGame.getState().setHud({ zone: "" });
-    useGame.getState().showHint("عدتَ إلى سطح مجمع كيبريس. الهواء… أحمر.");
+    useGame.getState().showHint(MESSAGES.exitLabHint);
   }
 
   private useCore(it: Interactable) {
     const st = useGame.getState();
     if (st.flags.metAI) return;
     if (!st.flags.bossKilled) {
-      st.toastMsg("«الحارس» لا يزال يحمي القاعة! اقضِ عليه أولاً قبل الاقتراب من النواة.");
+      st.toastMsg(MESSAGES.coreBossAlive);
       audio.play("door_locked");
       return;
     }
     if (!st.docsRead.includes("doc_6")) {
-      st.toastMsg("ثمة ملف شخصي باسمك في ممر المختبر الخلفي… اقرأ رسالتك الأخيرة أولاً لاستعادة كود الإيقاف.");
+      st.toastMsg(MESSAGES.coreNeedDoc6);
       audio.play("door_locked");
       return;
     }
@@ -1907,19 +1910,19 @@ export class GameEngine {
       audio.setHeli(true);
       st.toastMsg(MESSAGES.coreSignal);
       audio.startAmbient("city");
-      this.doCheckpoint("بعد النواة");
+      this.doCheckpoint(MESSAGES.cpAfterCore);
     } else if (choice === "deal") {
       st.setFlag("dealAccepted", true);
       st.setObjective("obj_escape");
       this.openGateBarrier();
       this.extractionReady = true;
       audio.setHeli(true);
-      st.toastMsg("البوابة فُتحت من تلقاء نفسها… لا تلمس هذا الصمت");
+      st.toastMsg(MESSAGES.dealGateOpened);
       audio.startAmbient("harbor");
-      this.doCheckpoint("الصفقة");
+      this.doCheckpoint(MESSAGES.cpDeal);
     } else {
       st.setObjective("obj_gate");
-      st.showHint("تركتَ النواة خلفك… عليك فتح بوابة الرصيف النهري بالمولد للهرب.");
+      st.showHint(MESSAGES.leaveCoreHint);
     }
     this.lockPointer();
   }
@@ -1927,7 +1930,7 @@ export class GameEngine {
   private tryExtract() {
     const st = useGame.getState();
     if (!this.extractionReady) {
-      st.showHint("انتظر! الفريق لم يصل بعد — واصل الصمود");
+      st.showHint(MESSAGES.extractNotReady);
       audio.play("door_locked");
       return;
     }
@@ -2147,7 +2150,7 @@ export class GameEngine {
       const t = st.hud.escapeTimer - dt;
       if (t <= 0) {
         st.setHud({ escapeTimer: -1 });
-        st.toastMsg("وصل الانفجار…");
+        st.toastMsg(MESSAGES.explosionReached);
         this.finish("ending_death");
         return;
       }
@@ -2318,6 +2321,15 @@ export class GameEngine {
 
   private updateWorldFx(dt: number) {
     if (!this.world) return;
+    const stLang = useGame.getState().lang;
+    if (this.lastSyncedLang !== stLang) {
+      this.lastSyncedLang = stLang;
+      this.scene.traverse((obj) => {
+        if (typeof obj.userData?.updateSignLang === "function") {
+          obj.userData.updateSignLang(stLang);
+        }
+      });
+    }
     const t = performance.now() / 1000;
     const px = this.pos.x;
     const py = this.pos.y;
@@ -2548,7 +2560,7 @@ export class GameEngine {
     }
     const it = this.findInteract();
     this.currentInteract = it;
-    st.setPrompt(it ? `E — ${it.prompt}` : "");
+    st.setPrompt(it ? `E — ${translateInteractPrompt(it, st.lang)}` : "");
   }
 
   private onTrigger(id: string) {
@@ -2557,7 +2569,7 @@ export class GameEngine {
       case "trig_apartment_exit":
         st.setFlag("exitedApartment", true);
         if (st.objectiveId === "obj_wake") st.setObjective("obj_weapon");
-        st.showHint("الشارع يغرق في الضباب… انتبه للصوت، فالرصاص يجذب المتجولين");
+        st.showHint(MESSAGES.trigApartmentExitHint);
         break;
       case "trig_gunshop":
         this.poiFound.add("متجر الأسلحة");
@@ -2565,7 +2577,7 @@ export class GameEngine {
       case "trig_police":
         this.poiFound.add("مركز الشرطة");
         if (!st.docsRead.includes("doc_4")) {
-          st.showHint("المقر الأمني… لعلّ غرفة العمليات تحتفظ بآخر البرقيات الرسمية");
+          st.showHint(MESSAGES.trigPoliceHint);
         }
         break;
       case "trig_tower":
@@ -2590,12 +2602,12 @@ export class GameEngine {
       case "trig_metro":
         this.poiFound.add("مجمع كيبريس — المختبر");
         this.poiFound.add("lab");
-        if (st.flags.radioDone) st.showHint("سور مجمع كيبريس… البوابة الفولاذية محمية بنظام تصريح مزدوج");
+        if (st.flags.radioDone) st.showHint(MESSAGES.trigMetroHint);
         break;
       case "trig_harbor":
         this.poiFound.add("ميناء بلاك ووتر");
         if (st.flags.metAI && !st.flags.generatorFixed && !st.flags.coreDestroyed && !st.flags.dealAccepted) {
-          st.showHint("بوابة الرصيف مغلقة — المولد الكهربائي بجانبها يحتاج وقود ديزل");
+          st.showHint(MESSAGES.trigHarborHint);
         }
         break;
     }
@@ -2624,7 +2636,7 @@ export class GameEngine {
     st.setFlag("waveDone", true);
     this.extractionReady = true;
     audio.setHeli(true);
-    st.toastMsg("وصل الفريق! اركض إلى القارب الآن!");
+    st.toastMsg(MESSAGES.waveDoneToast);
     audio.play("radio_beep");
     this.world!.boatLight.intensity = 3.2;
     this.enemies!.killAllInRadius(this.pos.x, this.pos.z, 6);

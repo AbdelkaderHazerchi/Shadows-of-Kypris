@@ -515,33 +515,58 @@ export function sandbagWall(w: PropCtx, x: number, z: number, ry = 0, len = 3.4)
   p.hit(0, 0, len, 0.9);
 }
 
-/** لافتة متجر عربية — لوحة مضيئة باسم محل */
+const SIGN_TRANSLATIONS: Record<string, { en: string; ar: string }> = {
+  "صيدلية النور": { en: "AL-NOOR PHARMACY", ar: "صيدلية النور" },
+  "بقالة الأمانة": { en: "TRUST GROCERY", ar: "بقالة الأمانة" },
+  "مكتبة الأمل": { en: "HOPE BOOKSTORE", ar: "مكتبة الأمل" },
+  "مقهى الشرق": { en: "EASTERN CAFE", ar: "مقهى الشرق" },
+  "مصورات المدينة": { en: "CITY PHOTO STUDIO", ar: "مصورات المدينة" },
+  "حلاق الشارع": { en: "STREET BARBER", ar: "حلاق الشارع" },
+  "متجر الأسلحة والعتاد — ARMS & AMMO": { en: "ARMS & AMMO", ar: "متجر الأسلحة والعتاد" },
+  "مركز شرطة شادو هافن — POLICE": { en: "SHADOWHAVEN POLICE", ar: "مركز شرطة شادو هافن" },
+  "مستشفى شادو هافن المركزي — GENERAL HOSPITAL": { en: "GENERAL HOSPITAL", ar: "مستشفى شادو هافن المركزي" },
+  "مجمع كيبريس للأبحاث الحيوية — KYPRIS CORP": { en: "KYPRIS BIO-RESEARCH", ar: "مجمع كيبريس للأبحاث الحيوية" },
+  "المختبر المركزي تحت الأرض — القطاع B4": { en: "UNDERGROUND LAB — SECTOR B4", ar: "المختبر المركزي — القطاع B4" },
+};
+
+/** لافتة متجر/منشأة مضيئة — تدعم الإنجليزية والعربية ديناميكياً */
 export function shopSign(x: number, y: number, z: number, ry: number, text: string, bg = "#1c1410", fg = "#d8a850"): THREE.Mesh {
   const c = document.createElement("canvas");
   c.width = 256; c.height = 64;
   const ctx = c.getContext("2d")!;
-  ctx.fillStyle = bg;
-  ctx.fillRect(0, 0, 256, 64);
-  ctx.strokeStyle = fg;
-  ctx.lineWidth = 3;
-  ctx.strokeRect(4, 4, 248, 56);
-  ctx.fillStyle = fg;
-  ctx.font = "bold 30px Cairo, Arial";
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.fillText(text, 128, 34);
-  // وميض التكسر
-  if (Math.random() < 0.4) {
-    ctx.fillStyle = "rgba(0,0,0,0.85)";
-    ctx.fillRect(Math.random() * 200, 0, 30 + Math.random() * 40, 64);
-  }
   const tex = new THREE.CanvasTexture(c);
+  const pair = SIGN_TRANSLATIONS[text] ?? { en: text, ar: text };
+  const hasCrack = Math.random() < 0.4;
+  const crackX = Math.random() * 200;
+  const crackW = 30 + Math.random() * 40;
+
+  const drawSign = (lang: "en" | "ar") => {
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, 256, 64);
+    ctx.strokeStyle = fg;
+    ctx.lineWidth = 3;
+    ctx.strokeRect(4, 4, 248, 56);
+    ctx.fillStyle = fg;
+    const label = pair[lang] ?? text;
+    ctx.font = lang === "en" ? "bold 22px Cairo, Arial" : "bold 26px Cairo, Arial";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(label, 128, 34);
+    if (hasCrack) {
+      ctx.fillStyle = "rgba(0,0,0,0.85)";
+      ctx.fillRect(crackX, 0, crackW, 64);
+    }
+    tex.needsUpdate = true;
+  };
+
+  drawSign("en");
   const m = new THREE.Mesh(
     new THREE.PlaneGeometry(2.4, 0.6),
     new THREE.MeshStandardMaterial({ map: tex, emissive: 0xffffff, emissiveMap: tex, emissiveIntensity: 0.55, roughness: 0.8 }),
   );
   m.position.set(x, y, z);
   m.rotation.y = ry;
+  m.userData.updateSignLang = drawSign;
   return m;
 }
 

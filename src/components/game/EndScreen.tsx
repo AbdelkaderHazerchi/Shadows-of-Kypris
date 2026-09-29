@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Play, RotateCcw, Undo2 } from "lucide-react";
-import { ENDING_BY_ID } from "@/lib/game/content";
+import { getContent } from "@/lib/game/content";
 import { useGame } from "@/lib/game/state";
 import { getEngine } from "@/lib/game/engineRef";
 import { unlockEnding, getUnlockedEndings, loadCheckpoint } from "@/lib/game/save";
@@ -16,8 +16,8 @@ const TONE_GLOW: Record<string, string> = {
   grim: "rgba(41,37,36,0.7)",
 };
 
-/** شاشة النهاية — سرد الخاتمة + إحصاءات الجولة */
 export default function EndScreen() {
+  const lang = useGame((g) => g.lang);
   const endingId = useGame((g) => g.endingId);
   const hasSave = useGame((g) => g.hasSave);
   const stats = useGame((g) => g.stats);
@@ -29,15 +29,16 @@ export default function EndScreen() {
   const [unlockedCount, setUnlockedCount] = useState(0);
   const reportedRef = useRef(false);
 
+  const c = getContent(lang);
+  const ui = c.ui.ending;
+
   useEffect(() => {
     if (!endingId || reportedRef.current) return;
     reportedRef.current = true;
 
-    // فتح النهاية محلياً
     unlockEnding(endingId);
     const t = setTimeout(() => setUnlockedCount(getUnlockedEndings().length), 0);
 
-    // تسجيل الجولة على الخادم (أهمِل أي خطأ بصمت)
     const g = useGame.getState();
     const survivorsAtMount =
       (g.flags.saraSaved ? 1 : 0) + (g.flags.adelSaved ? 1 : 0) + (g.flags.soldierSaved ? 1 : 0);
@@ -79,29 +80,29 @@ export default function EndScreen() {
           }}
           className="kypris-btn px-8 py-3 font-ui text-stone-200"
         >
-          القائمة الرئيسية
+          {ui.mainMenu}
         </button>
       </div>
     );
   }
 
-  const ending = ENDING_BY_ID[endingId];
+  const ending = c.endingById[endingId];
 
   const paragraphs = ending.body.split("\n\n");
   const titleColor = ending.tone === "truth" ? "text-amber-100" : "text-red-800";
 
   const statCells: { label: string; value: string }[] = [
-    { label: "الوقت", value: formatClock(stats.playSeconds) },
-    { label: "القتلى", value: String(stats.kills) },
-    { label: "إصابات الرأس", value: String(stats.headshots) },
-    { label: "الوثائق", value: `${docs}/6` },
-    { label: "الناجون", value: `${survivors}/3` },
-    { label: "الضرر المتلقي", value: String(Math.round(stats.damageTaken)) },
+    { label: ui.time, value: formatClock(stats.playSeconds) },
+    { label: ui.kills, value: String(stats.kills) },
+    { label: ui.headshots, value: String(stats.headshots) },
+    { label: ui.documents, value: `${docs}/6` },
+    { label: ui.survivors, value: `${survivors}/3` },
+    { label: ui.damageTaken, value: String(Math.round(stats.damageTaken)) },
   ];
 
   return (
     <div className="fixed inset-0 z-40 overflow-y-auto bg-black">
-      {/* توهج حسب نبرة النهاية */}
+      {/* Tone glow */}
       <div
         className="pointer-events-none absolute left-1/2 top-[-10%] h-[70vh] w-[120vw] -translate-x-1/2 rounded-full"
         style={{ background: `radial-gradient(ellipse at center, ${TONE_GLOW[ending.tone] ?? TONE_GLOW.dark} 0%, transparent 65%)` }}
@@ -110,7 +111,7 @@ export default function EndScreen() {
       <div className="kypris-filmgrain pointer-events-none fixed inset-0" />
 
       <div className="relative z-10 mx-auto flex min-h-full max-w-3xl flex-col items-center justify-center px-6 py-14 text-center">
-        <p className="kypris-creep font-ui text-xs tracking-[0.35em] text-stone-600">النهاية</p>
+        <p className="kypris-creep font-ui text-xs tracking-[0.35em] text-stone-600">{ui.headerLabel}</p>
         <h1
           className={`kypris-bloodtext kypris-creep mt-3 font-title text-6xl font-bold leading-tight ${titleColor}`}
           style={{ animationDelay: "150ms" }}
@@ -121,12 +122,12 @@ export default function EndScreen() {
           {ending.subtitle}
         </p>
 
-        {/* جسد السرد */}
-        <div className="mt-8 max-w-2xl space-y-4 text-right">
+        {/* Narrative Body */}
+        <div className="mt-8 max-w-2xl space-y-4 text-start">
           {paragraphs.map((p, i) => (
             <p
               key={i}
-              className="kypris-creep whitespace-pre-line text-right font-title text-lg leading-8 text-stone-300"
+              className="kypris-creep whitespace-pre-line text-start font-title text-lg leading-8 text-stone-300"
               style={{ animationDelay: `${500 + i * 260}ms` }}
             >
               {p}
@@ -134,8 +135,8 @@ export default function EndScreen() {
           ))}
         </div>
 
-        {/* الإحصاءات */}
-        <div className="mt-10 grid w-full max-w-2xl grid-cols-2 gap-3 md:grid-cols-4">
+        {/* Stats */}
+        <div className="mt-10 grid w-full max-w-2xl grid-cols-2 gap-3 md:grid-cols-3">
           {statCells.map((s, i) => (
             <div
               key={s.label}
@@ -150,7 +151,7 @@ export default function EndScreen() {
           ))}
         </div>
 
-        {/* الأزرار */}
+        {/* Buttons */}
         <div className="mt-10 flex flex-wrap items-center justify-center gap-4">
           <button
             onClick={() => {
@@ -164,7 +165,7 @@ export default function EndScreen() {
             className="kypris-btn flex items-center gap-2 px-6 py-3 font-ui text-stone-200"
           >
             <Undo2 className="h-4 w-4" strokeWidth={1.5} />
-            القائمة الرئيسية
+            {ui.mainMenu}
           </button>
 
           {(hasSave || Boolean(loadCheckpoint())) && (
@@ -175,7 +176,7 @@ export default function EndScreen() {
               className="kypris-btn flex items-center gap-2 border-amber-700/70 bg-amber-950/40 px-7 py-3 font-ui text-amber-200"
             >
               <Play className="h-4 w-4" strokeWidth={1.5} />
-              العودة من آخر نقطة حفظ
+              {ui.loadLastCheckpoint}
             </button>
           )}
 
@@ -193,24 +194,24 @@ export default function EndScreen() {
             className="kypris-btn flex items-center gap-2 px-7 py-3 font-ui text-red-300"
           >
             <RotateCcw className="h-4 w-4" strokeWidth={1.5} />
-            إعادة المحاولة من البداية
+            {ui.retryFromStart}
           </button>
         </div>
 
         <div className="mt-6 space-y-1 text-[11px] text-stone-600">
           <p>
-            النهايات المفتوحة:{" "}
+            {ui.unlockedEndings}{" "}
             <span dir="ltr" className="font-mono text-amber-800">
               {unlockedCount}/6
             </span>
           </p>
           {totalRuns !== null && (
             <p>
-              لعبة رقم{" "}
+              {ui.runNumberPrefix}
               <span dir="ltr" className="font-mono">
                 {totalRuns}
-              </span>{" "}
-              في هذا السيرفر
+              </span>
+              {ui.runNumberSuffix}
             </p>
           )}
         </div>

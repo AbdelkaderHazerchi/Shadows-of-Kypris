@@ -60,7 +60,7 @@ export function unlockEnding(id: string): string[] {
   return list;
 }
 
-export function loadSettings(): { master: number; music: number; sfx: number; hints: boolean } | null {
+export function loadSettings(): { master: number; music: number; sfx: number; hints: boolean; lang?: "en" | "ar" } | null {
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
     return raw ? JSON.parse(raw) : null;
@@ -69,7 +69,7 @@ export function loadSettings(): { master: number; music: number; sfx: number; hi
   }
 }
 
-export function saveSettings(s: { master: number; music: number; sfx: number; hints: boolean }) {
+export function saveSettings(s: { master: number; music: number; sfx: number; hints: boolean; lang?: "en" | "ar" }) {
   try {
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
   } catch {

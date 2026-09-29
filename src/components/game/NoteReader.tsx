@@ -2,21 +2,23 @@
 
 import { useEffect } from "react";
 import { FileText, X } from "lucide-react";
-import { DOC_BY_ID } from "@/lib/game/content";
+import { getContent } from "@/lib/game/content";
 import { useGame } from "@/lib/game/state";
 import { getEngine } from "@/lib/game/engineRef";
 import { audio } from "@/lib/game/audio";
 
-/** قارئ الوثائق — ورقة قديمة تُعرض فوق المشهد */
 export default function NoteReader() {
+  const lang = useGame((g) => g.lang);
   const noteId = useGame((g) => g.noteId);
+
+  const c = getContent(lang);
 
   useEffect(() => {
     if (noteId) audio.play("paper");
   }, [noteId]);
 
   if (!noteId) return null;
-  const doc = DOC_BY_ID[noteId];
+  const doc = c.docById[noteId];
   if (!doc) return null;
 
   const close = () => {
@@ -37,14 +39,14 @@ export default function NoteReader() {
           <p className="whitespace-pre-line font-title text-lg leading-8">{doc.body}</p>
         </div>
 
-        <div className="mt-8 flex items-center justify-between border-t border-black/15 pt-4">
-          <p className="text-[11px] opacity-70">اقرأ ما بين السطور لتستنتج خطوتك التالية — جميع الوثائق تفتح النهاية الحقيقية</p>
+        <div className="mt-8 flex items-center justify-between gap-4 border-t border-black/15 pt-4">
+          <p className="text-[11px] opacity-70">{c.ui.note.footerHint}</p>
           <button
             onClick={close}
-            className="flex items-center gap-2 rounded bg-stone-800 px-4 py-2 font-ui text-sm text-stone-100 transition-colors hover:bg-stone-700"
+            className="flex shrink-0 items-center gap-2 rounded bg-stone-800 px-4 py-2 font-ui text-sm text-stone-100 transition-colors hover:bg-stone-700"
           >
             <X className="h-3.5 w-3.5" strokeWidth={1.5} />
-            إغلاق (E / Esc)
+            {c.ui.note.closeBtn}
           </button>
         </div>
       </div>

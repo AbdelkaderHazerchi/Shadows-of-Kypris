@@ -1,6 +1,8 @@
 // ─────────────────────────────────────────────────────────────
-// ظلال كيبريس — Shared types for the whole game
+// Shadows of Kypris / ظلال كيبريس — Shared types for the whole game
 // ─────────────────────────────────────────────────────────────
+
+export type Lang = "en" | "ar";
 
 export type Screen =
   | "menu"

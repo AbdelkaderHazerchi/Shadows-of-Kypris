@@ -1144,19 +1144,26 @@ export function buildWorld(scene: THREE.Scene): WorldData {
     w.push("metal", new THREE.CylinderGeometry(0.14, 0.18, 6, 8), mat4(13.5, 3, 57));
     w.push("metal", new THREE.CylinderGeometry(0.14, 0.18, 6, 8), mat4(19.5, 3, 57));
     w.push("dark", new THREE.BoxGeometry(7.2, 3.4, 0.25), mat4(16.5, 5.6, 57));
-    const bbTex = canvasTex(256, 128, (c) => {
-      c.fillStyle = "#171310";
-      c.fillRect(0, 0, 256, 128);
-      c.fillStyle = "#7a1a12";
-      c.font = "bold 34px Cairo, Arial";
-      c.textAlign = "center";
-      c.fillText("كيبريس", 128, 52);
-      c.fillStyle = "#8a7a4a";
-      c.font = "22px Cairo, Arial";
-      c.fillText("مستقبلٌ آمن… وعدٌ صادق", 128, 92);
-      c.fillStyle = "rgba(0,0,0,0.5)";
-      c.fillRect(20 + Math.random() * 100, 0, 40, 128);
-    });
+    const bbCanvas = document.createElement("canvas");
+    bbCanvas.width = 256;
+    bbCanvas.height = 128;
+    const bbCtx = bbCanvas.getContext("2d")!;
+    const bbTex = new THREE.CanvasTexture(bbCanvas);
+    const drawBb = (lang: "en" | "ar") => {
+      bbCtx.fillStyle = "#171310";
+      bbCtx.fillRect(0, 0, 256, 128);
+      bbCtx.fillStyle = "#7a1a12";
+      bbCtx.font = lang === "en" ? "bold 28px Cairo, Arial" : "bold 34px Cairo, Arial";
+      bbCtx.textAlign = "center";
+      bbCtx.fillText(lang === "en" ? "KYPRIS CORP" : "كيبريس", 128, 52);
+      bbCtx.fillStyle = "#8a7a4a";
+      bbCtx.font = lang === "en" ? "16px Cairo, Arial" : "22px Cairo, Arial";
+      bbCtx.fillText(lang === "en" ? "A Safer Tomorrow… A Promise Kept" : "مستقبلٌ آمن… وعدٌ صادق", 128, 92);
+      bbCtx.fillStyle = "rgba(0,0,0,0.5)";
+      bbCtx.fillRect(60, 0, 40, 128);
+      bbTex.needsUpdate = true;
+    };
+    drawBb("en");
     const bb = new THREE.Mesh(
       new THREE.PlaneGeometry(6.8, 3.1),
       new THREE.MeshStandardMaterial({ map: bbTex, roughness: 0.8, emissive: 0x333333, emissiveIntensity: 0.25 }),
@@ -1164,6 +1171,7 @@ export function buildWorld(scene: THREE.Scene): WorldData {
     bb.position.set(16.5, 5.6, 56.85);
     bb.rotation.y = Math.PI;
     bb.userData.noHit = true;
+    bb.userData.updateSignLang = drawBb;
     scene.add(bb);
   }
 

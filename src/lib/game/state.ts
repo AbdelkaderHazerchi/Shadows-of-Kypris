@@ -9,11 +9,12 @@ import type {
   HudState,
   InvSlot,
   ItemId,
+  Lang,
   SaveData,
   Screen,
   WeaponId,
 } from "./types";
-import { ITEMS, INVENTORY_SLOTS, WEAPONS, OBJECTIVE_BY_ID } from "./content";
+import { ITEMS, INVENTORY_SLOTS, WEAPONS, OBJECTIVE_BY_ID, getContent, setCurrentLang } from "./content";
 
 let uidCounter = 0;
 const nextUid = () => `u${Date.now().toString(36)}${(uidCounter++).toString(36)}`;
@@ -92,12 +93,14 @@ export interface GameStore {
   objectiveId: string;
   checkpoint: string;
   ambient: AmbientProfile;
-  settings: { master: number; music: number; sfx: number; hints: boolean };
+  lang: Lang;
+  settings: { master: number; music: number; sfx: number; hints: boolean; lang?: Lang };
   hasSave: boolean;
   toast: { text: string; at: number } | null;
   noteId: ItemId | null;
   aiChoiceOpen: boolean;
 
+  setLang: (l: Lang) => void;
   setScreen: (s: Screen) => void;
   setHud: (p: Partial<HudState>) => void;
   setPrompt: (p: string) => void;
@@ -156,12 +159,31 @@ export const useGame = create<GameStore>((set, get) => ({
   objectiveId: "obj_wake",
   checkpoint: "",
   ambient: "menu",
-  settings: { master: 0.8, music: 0.7, sfx: 0.9, hints: true },
+  lang: "en",
+  settings: { master: 0.8, music: 0.7, sfx: 0.9, hints: true, lang: "en" },
   hasSave: false,
   toast: null,
   noteId: null,
   aiChoiceOpen: false,
 
+  setLang: (l) => {
+    setCurrentLang(l);
+    const b = getContent(l);
+    set((g) => {
+      const def = b.objectiveById[g.objectiveId];
+      return {
+        lang: l,
+        settings: { ...g.settings, lang: l },
+        hud: {
+          ...g.hud,
+          objective: g.hud.objective ? (def?.text ?? g.hud.objective) : "",
+          optionalObjective: g.hud.optionalObjective ? (def?.optional ?? g.hud.optionalObjective) : "",
+          zone: "",
+          prompt: "",
+        },
+      };
+    });
+  },
   setScreen: (s) => set((g) => ({ screen: s, prevScreen: g.screen })),
   setHud: (p) => set((g) => ({ hud: { ...g.hud, ...p } })),
   setPrompt: (p) => set((g) => (g.hud.prompt === p ? g : { hud: { ...g.hud, prompt: p } })),

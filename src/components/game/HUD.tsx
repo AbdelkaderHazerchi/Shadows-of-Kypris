@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Battery, Crosshair, Flashlight, Package, Radio } from "lucide-react";
+import { getContent } from "@/lib/game/content";
 import { useGame } from "@/lib/game/state";
 import { formatClock } from "./utils";
 
@@ -85,6 +86,10 @@ export default function HUD() {
     };
   }, [zone]);
 
+  const lang = useGame((g) => g.lang);
+  const c = getContent(lang);
+  const ui = c.ui.hud;
+
   const now = Date.now();
   const hintVisible = hint.length > 0 && now - hintAt < 4500;
   const toastVisible = toast !== null && now - toast.at < 4000;
@@ -92,23 +97,27 @@ export default function HUD() {
   const lowHp = hp < 30;
 
   const weaponName =
-    equipped === "pistol" ? "مسدس خدمة 9مم" : equipped === "shotgun" ? "بندقية صيد 12" : null;
+    equipped === "pistol"
+      ? c.weapons.pistol.name
+      : equipped === "shotgun"
+        ? c.weapons.shotgun.name
+        : null;
   const mag = equipped === "shotgun" ? shotgunMag : equipped === "pistol" ? pistolMag : 0;
   const reserve = equipped === "shotgun" ? shotgunAmmo : equipped === "pistol" ? pistolAmmo : 0;
 
   return (
     <div className="pointer-events-none fixed inset-0 z-30 select-none font-ui">
-      {/* ── المؤشر ── */}
+      {/* ── Crosshair ── */}
       <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
         <div className="relative flex h-[18px] w-[18px] items-center justify-center rounded-full border border-stone-300/60">
           <div className="absolute h-[2px] w-[2px] rounded-full bg-stone-300/90" />
         </div>
       </div>
 
-      {/* ── الهدف (أعلى اليمين) ── */}
+      {/* ── Objective (top right) ── */}
       {(objective || optionalObjective) && (
         <div className="kypris-panel absolute right-4 top-4 max-w-xs px-4 py-3">
-          <p className="text-xs tracking-wider text-amber-500">الهدف</p>
+          <p className="text-xs tracking-wider text-amber-500">{ui.objective}</p>
           <p className="mt-1 text-sm leading-6 text-stone-200">{objective}</p>
           {optionalObjective && (
             <p className="mt-1 text-xs leading-5 text-stone-400">{optionalObjective}</p>
@@ -116,7 +125,7 @@ export default function HUD() {
         </div>
       )}
 
-      {/* ── عدّاد الوثائق (أعلى اليسار) ── */}
+      {/* ── Document counter (top left) ── */}
       <div className="absolute left-4 top-4 flex items-center gap-1.5 text-stone-500">
         <Package className="h-3.5 w-3.5" strokeWidth={1.5} />
         <span dir="ltr" className="font-mono text-xs">
@@ -124,14 +133,14 @@ export default function HUD() {
         </span>
       </div>
 
-      {/* ── المؤقتات (أعلى المنتصف) ── */}
+      {/* ── Timers (top center) ── */}
       <div className="absolute left-1/2 top-4 flex -translate-x-1/2 flex-col items-center gap-1">
         {escapeTimer >= 0 && (
           <div className="flex flex-col items-center">
             <span dir="ltr" className="kypris-pulse font-mono text-3xl font-bold text-red-400">
               {formatClock(escapeTimer)}
             </span>
-            <span className="text-xs text-red-300/80">قبل الانفجار</span>
+            <span className="text-xs text-red-300/80">{ui.beforeExplosion}</span>
           </div>
         )}
         {waveTimer >= 0 && (
@@ -139,12 +148,12 @@ export default function HUD() {
             <span dir="ltr" className="font-mono text-xl font-bold text-amber-400">
               {formatClock(waveTimer)}
             </span>
-            <span className="text-xs text-amber-200/70">وصول الفريق</span>
+            <span className="text-xs text-amber-200/70">{ui.teamArrival}</span>
           </div>
         )}
       </div>
 
-      {/* ── لافتة المنطقة ── */}
+      {/* ── Zone banner ── */}
       {zoneView && (
         <div
           className={`absolute left-1/2 top-20 -translate-x-1/2 transition-opacity duration-700 ${
@@ -155,7 +164,7 @@ export default function HUD() {
         </div>
       )}
 
-      {/* ── التوست (وسط أعلى) ── */}
+      {/* ── Toast (upper center) ── */}
       {toastVisible && toast && (
         <div className="absolute left-1/2 top-[22%] w-full -translate-x-1/2 px-6 text-center">
           <p className="kypris-creep inline-block bg-black/45 px-4 py-1 font-title text-2xl text-amber-200">
@@ -164,7 +173,7 @@ export default function HUD() {
         </div>
       )}
 
-      {/* ── سطر التفاعل (تحت المؤشر) ── */}
+      {/* ── Interaction prompt (below crosshair) ── */}
       {prompt.length > 0 && (
         <div className="absolute left-1/2 top-[56%] -translate-x-1/2">
           <p className="rounded border border-amber-900/40 bg-black/60 px-3 py-1 text-sm text-stone-100">
@@ -173,16 +182,16 @@ export default function HUD() {
         </div>
       )}
 
-      {/* ── التلميح (أسفل المنتصف) ── */}
+      {/* ── Hint (bottom center) ── */}
       {hintVisible && (
         <div className="absolute bottom-24 left-1/2 -translate-x-1/2">
           <div className="kypris-panel px-4 py-2 text-sm text-amber-200">{hint}</div>
         </div>
       )}
 
-      {/* ── الحالة الحيوية (أسفل اليسار) ── */}
+      {/* ── Vitals (bottom left) ── */}
       <div className="absolute bottom-5 left-5 flex flex-col gap-2">
-        {/* الصحة */}
+        {/* Health */}
         <div className="flex items-center gap-2">
           <Bar
             w="w-56"
@@ -194,11 +203,11 @@ export default function HUD() {
             {Math.round(hp)}/{maxHp}
           </span>
         </div>
-        {/* اللياقة */}
+        {/* Stamina */}
         <div className={`transition-opacity duration-300 ${stamina >= 99 ? "opacity-0" : "opacity-100"}`}>
           <Bar w="w-40" h="h-1.5" pct={stamina} className="bg-amber-600" />
         </div>
-        {/* الكشّاف والبطارية */}
+        {/* Flashlight & Battery */}
         <div className={`flex items-center gap-2 transition-opacity duration-300 ${flashlightOn ? "opacity-100" : "opacity-40"}`}>
           <Flashlight
             className={`h-3.5 w-3.5 ${battery < 20 && flashlightOn ? "text-red-500" : "text-stone-400"}`}
@@ -215,7 +224,7 @@ export default function HUD() {
             strokeWidth={1.5}
           />
         </div>
-        {/* راديو الاستشعار الميداني بأسلوب سايلنت هيل */}
+        {/* Silent Hill style proximity radio */}
         {threat > 0.08 && (
           <div className="mt-0.5 flex items-center gap-2 text-xs text-red-400/90">
             <Radio className="kypris-pulse h-3.5 w-3.5 text-red-500" strokeWidth={1.6} />
@@ -233,16 +242,16 @@ export default function HUD() {
               ))}
             </div>
             <span className="font-mono text-[10px] tracking-wider text-red-300/80">
-              تشويش راديو قريب
+              {ui.radioStaticNear}
             </span>
           </div>
         )}
       </div>
 
-      {/* ── السلاح (أسفل اليمين) ── */}
+      {/* ── Weapon (bottom right) ── */}
       <div className="absolute bottom-5 right-5 text-left">
         {reloading ? (
-          <p className="kypris-pulse font-ui text-lg text-amber-400">إعادة التلقيم…</p>
+          <p className="kypris-pulse font-ui text-lg text-amber-400">{ui.reloading}</p>
         ) : weaponName ? (
           <div className="flex flex-col items-end">
             <span className="text-xs text-stone-400">{weaponName}</span>
@@ -257,12 +266,12 @@ export default function HUD() {
                 <span dir="ltr" className="rounded border border-amber-700/60 px-1.5 font-mono font-bold">
                   R
                 </span>
-                أعد التلقيم
+                {ui.reloadPrompt}
               </span>
             )}
           </div>
         ) : equipped === "crowbar" ? (
-          <span className="font-ui text-lg text-stone-300">عُقلة</span>
+          <span className="font-ui text-lg text-stone-300">{ui.crowbarShort}</span>
         ) : null}
       </div>
 

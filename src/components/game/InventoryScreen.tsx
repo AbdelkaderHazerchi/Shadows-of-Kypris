@@ -2,21 +2,14 @@
 
 import { useEffect, useState } from "react";
 import { Boxes, Crosshair, FileText, Heart, Key, Plus, Shell, X } from "lucide-react";
-import { ITEMS } from "@/lib/game/content";
+import { getContent } from "@/lib/game/content";
 import { useGame } from "@/lib/game/state";
 import { audio } from "@/lib/game/audio";
 import { getEngine } from "@/lib/game/engineRef";
-import type { InvSlot, ItemId, WeaponId } from "@/lib/game/types";
+import type { InvSlot, ItemId, Lang, WeaponId } from "@/lib/game/types";
 
-const KIND_LABEL: Record<string, string> = {
-  consumable: "مستهلك",
-  key: "مفتاح",
-  doc: "وثيقة",
-  material: "مادة",
-};
-
-function ItemIcon({ item, className }: { item: ItemId; className?: string }) {
-  const kind = ITEMS[item]?.kind;
+function ItemIcon({ item, lang, className }: { item: ItemId; lang: Lang; className?: string }) {
+  const kind = getContent(lang).items[item]?.kind;
   if (item === "food") return <Heart className={className} strokeWidth={1.5} />;
   if (kind === "consumable") return <Plus className={className} strokeWidth={1.5} />;
   if (kind === "key") return <Key className={className} strokeWidth={1.5} />;
@@ -29,14 +22,17 @@ function WeaponCard({
   name,
   owned,
   equipped,
+  lang,
   onPick,
 }: {
   id: WeaponId;
   name: string;
   owned: boolean;
   equipped: boolean;
+  lang: Lang;
   onPick: () => void;
 }) {
+  const ui = getContent(lang).ui.inventory;
   return (
     <button
       disabled={!owned}
@@ -47,19 +43,19 @@ function WeaponCard({
     >
       {equipped && (
         <span className="absolute -top-2 right-2 rounded-sm border border-amber-500 bg-black px-1.5 text-[10px] text-amber-400">
-          مجهّز
+          {ui.equipped}
         </span>
       )}
       <span className="font-ui text-sm font-bold">{name}</span>
       <span className="text-[10px] text-stone-500">
-        {id === "crowbar" ? "قتال ردود الأفعال" : id === "pistol" ? "12 طلقة" : "7 خرطوش"}
+        {id === "crowbar" ? ui.meleeDesc : id === "pistol" ? ui.pistolDesc : ui.shotgunDesc}
       </span>
     </button>
   );
 }
 
-/** شاشة الحقيبة — إدارة الموارد والأسلحة */
 export default function InventoryScreen() {
+  const lang = useGame((g) => g.lang);
   const inventory = useGame((g) => g.inventory);
   const hudAmmoPistol = useGame((g) => g.hud.pistolAmmo);
   const hudAmmoShotgun = useGame((g) => g.hud.shotgunAmmo);
@@ -67,9 +63,17 @@ export default function InventoryScreen() {
   const weapons = useGame((g) => g.weapons);
   const [selected, setSelected] = useState<number | null>(null);
 
+  const c = getContent(lang);
+  const ui = c.ui.inventory;
+  const kindLabel: Record<string, string> = {
+    consumable: ui.kindConsumable,
+    key: ui.kindKey,
+    doc: ui.kindDoc,
+    material: ui.kindMaterial,
+  };
+
   const close = () => useGame.getState().setScreen("playing");
 
-  // Tab / Escape للإغلاق
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Tab" || e.key === "Escape") {
@@ -83,7 +87,7 @@ export default function InventoryScreen() {
 
   const used = inventory.filter(Boolean).length;
   const slot: InvSlot | null = selected !== null ? (inventory[selected] ?? null) : null;
-  const def = slot ? ITEMS[slot.item] : null;
+  const def = slot ? c.items[slot.item] : null;
 
   const onUse = () => {
     if (!slot || !def || def.kind !== "consumable") return;
@@ -115,10 +119,10 @@ export default function InventoryScreen() {
   return (
     <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/85 p-4 backdrop-blur-sm">
       <div className="kypris-panel kypris-scroll max-h-[86vh] w-[min(920px,94vw)] overflow-y-auto rounded p-6">
-        {/* الترويسة */}
+        {/* Header */}
         <div className="mb-5 flex items-center justify-between border-b border-stone-800 pb-3">
           <h2 className="font-title text-2xl font-bold text-stone-100">
-            الحقيبة — <span className="text-amber-700">إدارة الموارد</span>
+            {ui.title} — <span className="text-amber-700">{ui.subtitle}</span>
           </h2>
           <div className="flex items-center gap-4">
             <span dir="ltr" className="font-mono text-xs text-stone-500">
@@ -127,32 +131,32 @@ export default function InventoryScreen() {
             <button
               onClick={close}
               className="kypris-btn rounded p-1.5 text-stone-400 hover:text-stone-100"
-              aria-label="إغلاق"
+              aria-label={ui.closeAria}
             >
               <X className="h-4 w-4" strokeWidth={1.5} />
             </button>
           </div>
         </div>
 
-        {/* شريط الذخيرة الاحتياطية */}
+        {/* Reserve Ammo Bar */}
         <div className="mb-5 grid grid-cols-2 gap-3">
           <div className="flex items-center gap-3 border border-stone-800 bg-black/40 px-4 py-2.5">
             <Crosshair className="h-4 w-4 text-stone-500" strokeWidth={1.5} />
-            <span className="text-xs text-stone-400">ذخيرة المسدس</span>
-            <span dir="ltr" className="mr-auto font-mono text-lg font-bold text-stone-200">
+            <span className="text-xs text-stone-400">{ui.pistolAmmo}</span>
+            <span dir="ltr" className="ms-auto font-mono text-lg font-bold text-stone-200">
               {hudAmmoPistol}
             </span>
           </div>
           <div className="flex items-center gap-3 border border-stone-800 bg-black/40 px-4 py-2.5">
             <Shell className="h-4 w-4 text-stone-500" strokeWidth={1.5} />
-            <span className="text-xs text-stone-400">خرطوش البندقية</span>
-            <span dir="ltr" className="mr-auto font-mono text-lg font-bold text-stone-200">
+            <span className="text-xs text-stone-400">{ui.shotgunAmmo}</span>
+            <span dir="ltr" className="ms-auto font-mono text-lg font-bold text-stone-200">
               {hudAmmoShotgun}
             </span>
           </div>
         </div>
 
-        {/* شبكة الخانات */}
+        {/* Inventory Grid */}
         <div className="mb-5 grid grid-cols-3 gap-3 md:grid-cols-5">
           {inventory.map((s, i) => (
             <button
@@ -166,9 +170,9 @@ export default function InventoryScreen() {
             >
               {s ? (
                 <>
-                  <ItemIcon item={s.item} className="h-6 w-6 text-stone-300" />
+                  <ItemIcon item={s.item} lang={lang} className="h-6 w-6 text-stone-300" />
                   <span className="line-clamp-1 text-center text-[11px] leading-4 text-stone-400">
-                    {ITEMS[s.item]?.name}
+                    {c.items[s.item]?.name}
                   </span>
                   {s.qty > 1 && (
                     <span
@@ -186,7 +190,7 @@ export default function InventoryScreen() {
           ))}
         </div>
 
-        {/* لوحة التفاصيل */}
+        {/* Details Panel */}
         <div className="mb-5 min-h-[92px] border border-stone-800/80 bg-black/40 p-4">
           {slot && def ? (
             <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
@@ -194,11 +198,13 @@ export default function InventoryScreen() {
                 <div className="flex items-center gap-2">
                   <p className="font-title text-lg font-bold text-stone-100">{def.name}</p>
                   <span className="rounded-sm border border-stone-700 px-1.5 py-0.5 text-[10px] text-stone-400">
-                    {KIND_LABEL[def.kind]}
+                    {kindLabel[def.kind]}
                   </span>
                 </div>
                 <p className="mt-1 max-w-xl text-xs leading-6 text-stone-400">{def.desc}</p>
-                <p className="mt-1 text-[10px] text-stone-600">الوزن: {def.weight}</p>
+                <p className="mt-1 text-[10px] text-stone-600">
+                  {ui.weightLabel} {def.weight}
+                </p>
               </div>
               <div className="flex shrink-0 items-center gap-2">
                 {def.kind === "consumable" && (
@@ -206,7 +212,7 @@ export default function InventoryScreen() {
                     onClick={onUse}
                     className="kypris-btn px-4 py-2 font-ui text-sm text-emerald-400"
                   >
-                    استخدام
+                    {ui.useBtn}
                   </button>
                 )}
                 {def.kind === "doc" && (
@@ -214,43 +220,46 @@ export default function InventoryScreen() {
                     onClick={onRead}
                     className="kypris-btn px-4 py-2 font-ui text-sm text-amber-300"
                   >
-                    قراءة
+                    {ui.readBtn}
                   </button>
                 )}
                 <button
                   onClick={onDrop}
                   className="kypris-btn px-4 py-2 font-ui text-sm text-red-400"
                 >
-                  إفلات
+                  {ui.dropBtn}
                 </button>
               </div>
             </div>
           ) : (
-            <p className="text-xs text-stone-600">اختر خانة لعرض تفاصيلها…</p>
+            <p className="text-xs text-stone-600">{ui.selectSlotHint}</p>
           )}
         </div>
 
-        {/* الأسلحة */}
+        {/* Weapons */}
         <div className="mb-3 grid grid-cols-3 gap-3">
           <WeaponCard
             id="crowbar"
-            name="العُقلة"
+            name={ui.crowbarCard}
             owned
             equipped={equipped === "crowbar"}
+            lang={lang}
             onPick={() => pickWeapon("crowbar")}
           />
           <WeaponCard
             id="pistol"
-            name={weapons.pistol ? "المسدس" : "المسدس — غير مقتنى"}
+            name={weapons.pistol ? ui.pistolCard : ui.pistolUnowned}
             owned={weapons.pistol}
             equipped={equipped === "pistol"}
+            lang={lang}
             onPick={() => pickWeapon("pistol")}
           />
           <WeaponCard
             id="shotgun"
-            name={weapons.shotgun ? "البندقية" : "البندقية — غير مقتناة"}
+            name={weapons.shotgun ? ui.shotgunCard : ui.shotgunUnowned}
             owned={weapons.shotgun}
             equipped={equipped === "shotgun"}
+            lang={lang}
             onPick={() => pickWeapon("shotgun")}
           />
         </div>
@@ -259,7 +268,7 @@ export default function InventoryScreen() {
           <span dir="ltr" className="font-mono">
             Tab
           </span>{" "}
-          للإغلاق
+          {ui.tabToClose}
         </p>
       </div>
     </div>

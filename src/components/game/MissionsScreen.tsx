@@ -12,11 +12,11 @@ import {
 } from "lucide-react";
 import { useGame } from "@/lib/game/state";
 import { getEngine } from "@/lib/game/engineRef";
-import { ITEMS, OBJECTIVES, SURVIVORS } from "@/lib/game/content";
-import type { ItemId } from "@/lib/game/types";
+import { getContent } from "@/lib/game/content";
+import type { ItemId, Lang } from "@/lib/game/types";
 
-/** سجل المهام — الهدف الرئيسي + المهام الجانبية + الوثائق */
 export default function MissionsScreen() {
+  const lang = useGame((g) => g.lang);
   const objectiveId = useGame((g) => g.objectiveId);
   const flags = useGame((g) => g.flags);
   const docsRead = useGame((g) => g.docsRead);
@@ -24,7 +24,9 @@ export default function MissionsScreen() {
   const hasLockerKey = useGame((g) => g.hasItem("key_locker"));
   const setScreen = useGame((s) => s.setScreen);
 
-  // إغلاق بلوحة المفاتيح (J / Esc)
+  const c = getContent(lang);
+  const ui = c.ui.missions;
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.code === "KeyJ" || e.code === "Escape") {
@@ -37,9 +39,9 @@ export default function MissionsScreen() {
     return () => window.removeEventListener("keydown", onKey);
   }, [setScreen]);
 
-  const currentIdx = OBJECTIVES.findIndex((o) => o.id === objectiveId);
+  const currentIdx = c.objectives.findIndex((o) => o.id === objectiveId);
 
-  const survivors = SURVIVORS.map((s) => {
+  const survivors = c.survivors.map((s) => {
     const met =
       (s.id === "sara" && flags.metSara) ||
       (s.id === "adel" && flags.metAdel) ||
@@ -55,11 +57,11 @@ export default function MissionsScreen() {
   return (
     <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/80 backdrop-blur-sm">
       <div className="kypris-panel flex max-h-[88vh] w-[min(640px,94vw)] flex-col rounded p-6">
-        {/* الرأس */}
+        {/* Header */}
         <div className="flex items-center justify-between border-b border-stone-800/80 pb-4">
           <h2 className="flex items-center gap-3 font-title text-2xl font-bold text-stone-100">
             <ScrollText className="h-6 w-6 text-amber-700" strokeWidth={1.5} />
-            سجل المهام
+            {ui.title}
           </h2>
           <button
             onClick={() => {
@@ -68,19 +70,19 @@ export default function MissionsScreen() {
             }}
             className="kypris-btn px-4 py-1.5 font-ui text-sm text-stone-300"
           >
-            رجوع (J)
+            {ui.backBtn}
           </button>
         </div>
 
-        <div className="kypris-scroll mt-4 flex-1 space-y-6 overflow-y-auto pl-1" style={{ maxHeight: "62vh" }}>
-          {/* الهدف الرئيسي */}
+        <div className="kypris-scroll mt-4 flex-1 space-y-6 overflow-y-auto px-1" style={{ maxHeight: "62vh" }}>
+          {/* Main Storyline */}
           <section>
             <h3 className="mb-3 flex items-center gap-2 font-ui text-sm font-bold tracking-wide text-amber-600">
               <ListChecks className="h-4 w-4" strokeWidth={1.75} />
-              الخط الرئيسي
+              {ui.mainStoryline}
             </h3>
             <ol className="space-y-2">
-              {OBJECTIVES.map((o, i) => {
+              {c.objectives.map((o, i) => {
                 const done = currentIdx > i;
                 const current = currentIdx === i;
                 const future = currentIdx < 0 || i > currentIdx;
@@ -105,7 +107,7 @@ export default function MissionsScreen() {
                     )}
                     <div className="min-w-0">
                       <p className={`font-ui text-sm leading-6 ${current ? "font-bold text-amber-100" : "text-stone-300"}`}>
-                        {future && !current ? "هدف لاحق… اكشفه باللعب" : o.text}
+                        {future && !current ? ui.futureObjective : o.text}
                       </p>
                       {current && o.optional && (
                         <p className="mt-0.5 font-ui text-[11px] text-stone-500">{o.optional}</p>
@@ -117,11 +119,11 @@ export default function MissionsScreen() {
             </ol>
           </section>
 
-          {/* مهام الناجين */}
+          {/* Survivor Missions */}
           <section>
             <h3 className="mb-3 flex items-center gap-2 font-ui text-sm font-bold tracking-wide text-amber-600">
               <UserRound className="h-4 w-4" strokeWidth={1.75} />
-              مهام الناجين
+              {ui.survivorMissions}
             </h3>
             <div className="space-y-2">
               {survivors.map(({ def: s, met, saved, have }) => (
@@ -137,35 +139,35 @@ export default function MissionsScreen() {
                 >
                   <div className="flex items-center justify-between gap-2">
                     <p className="font-ui text-sm font-bold text-stone-200">
-                      {met || saved ? s.name : "ناجٍ محاصر — لم يُكتشف بعد"}
+                      {met || saved ? s.name : ui.unknownSurvivor}
                     </p>
                     {saved ? (
                       <span className="flex items-center gap-1 font-ui text-[11px] text-emerald-500">
                         <BadgeCheck className="h-3.5 w-3.5" strokeWidth={2} />
-                        اكتملت
+                        {ui.completed}
                       </span>
                     ) : met ? (
                       <span className="font-ui text-[11px] text-amber-500">{s.place}</span>
                     ) : (
-                      <span className="font-ui text-[11px] text-stone-600">مجهول الموقع</span>
+                      <span className="font-ui text-[11px] text-stone-600">{ui.unknownLocation}</span>
                     )}
                   </div>
                   {met && !saved && s.quest && (
                     <p className="mt-1 font-ui text-xs leading-5 text-stone-400">
-                      يطلب:{" "}
+                      {ui.requestsLabel}{" "}
                       <span className="text-stone-200">
-                        {ITEMS[s.quest.item].name} ×{s.quest.qty}
+                        {c.items[s.quest.item].name} ×{s.quest.qty}
                       </span>{" "}
-                      — لديك{" "}
+                      — {ui.youHaveLabel}{" "}
                       <span dir="ltr" className={`font-mono ${have >= s.quest.qty ? "text-emerald-500" : "text-amber-500"}`}>
                         {have}/{s.quest.qty}
                       </span>
-                      <span className="text-stone-600"> — عد إليه وسلّم ما طلب</span>
+                      <span className="text-stone-600"> {ui.deliverHint}</span>
                     </p>
                   )}
                   {!met && !saved && (
                     <p className="mt-1 font-ui text-xs text-stone-500">
-                      استكشف منشآت المدينة للعثور على ناجين قد يحتاجون لمساعدتك…
+                      {ui.exploreSurvivorsHint}
                     </p>
                   )}
                 </div>
@@ -173,29 +175,29 @@ export default function MissionsScreen() {
             </div>
           </section>
 
-          {/* مهام ثابتة */}
+          {/* City Missions */}
           <section>
             <h3 className="mb-3 flex items-center gap-2 font-ui text-sm font-bold tracking-wide text-amber-600">
               <KeyRound className="h-4 w-4" strokeWidth={1.75} />
-              مهام المدينة
+              {ui.cityMissions}
             </h3>
             <div className="space-y-2">
-              <LockerMission hasKey={hasLockerKey} opened={flags.lockerOpened} />
+              <LockerMission hasKey={hasLockerKey} opened={flags.lockerOpened} lang={lang} />
             </div>
           </section>
 
-          {/* الوثائق */}
+          {/* Truth Evidence */}
           <section>
             <h3 className="mb-3 flex items-center gap-2 font-ui text-sm font-bold tracking-wide text-amber-600">
               <FileText className="h-4 w-4" strokeWidth={1.75} />
-              أدلة الحقيقة
+              {ui.truthEvidence}
             </h3>
             <p className="rounded border border-stone-800/50 bg-black/15 px-3 py-2.5 font-ui text-xs leading-6 text-stone-400">
-              جمعتَ{" "}
+              {ui.docsCollectedPrefix}{" "}
               <span dir="ltr" className="font-mono text-amber-500">
                 {docsRead.length}/6
               </span>{" "}
-              من وثائق كيبريس — الوثائق الست كاملة تفتح النهاية الحقيقية.
+              {ui.docsCollectedSuffix}
             </p>
           </section>
         </div>
@@ -204,8 +206,8 @@ export default function MissionsScreen() {
   );
 }
 
-/** مهمة خزانة الأسلحة — مكوّن داخلي */
-function LockerMission({ hasKey, opened }: { hasKey: boolean; opened: boolean }) {
+function LockerMission({ hasKey, opened, lang }: { hasKey: boolean; opened: boolean; lang: Lang }) {
+  const ui = getContent(lang).ui.missions;
   return (
     <div
       className={`rounded border px-3 py-2.5 ${
@@ -213,25 +215,18 @@ function LockerMission({ hasKey, opened }: { hasKey: boolean; opened: boolean })
       }`}
     >
       <div className="flex items-center justify-between gap-2">
-        <p className="font-ui text-sm font-bold text-stone-200">الترسانة المفقودة — مركز الشرطة</p>
+        <p className="font-ui text-sm font-bold text-stone-200">{ui.lockerTitle}</p>
         {opened ? (
           <span className="flex items-center gap-1 font-ui text-[11px] text-emerald-500">
             <BadgeCheck className="h-3.5 w-3.5" strokeWidth={2} />
-            اكتملت
+            {ui.completed}
           </span>
         ) : (
-          <span className="font-ui text-[11px] text-amber-500">جارية</span>
+          <span className="font-ui text-[11px] text-amber-500">{ui.inProgress}</span>
         )}
       </div>
       <p className="mt-1 font-ui text-xs leading-5 text-stone-400">
-        {opened ? (
-          "فتحتَ الخزانة وخذ ما فيها. كانت ذخيرة وحدةٍ لم تصل قط."
-        ) : (
-          <>
-            الخطوة {hasKey ? "2" : "1"}:{" "}
-            {hasKey ? "عد إلى خزانة الأسلحة في غرفة الأدلة وافتحها" : "ابحث عن مفتاح خزانة الأسلحة في مكاتب التحقيقات"}
-          </>
-        )}
+        {opened ? ui.lockerDoneDesc : hasKey ? ui.lockerStep2 : ui.lockerStep1}
       </p>
     </div>
   );
