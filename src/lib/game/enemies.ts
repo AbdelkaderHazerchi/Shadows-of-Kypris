@@ -13,9 +13,20 @@ import type { Collider, SpawnPoint } from "./world";
 import type { EnemyKind } from "./types";
 import { audio } from "./audio";
 
-// ── فيزياء مشتركة: دائرة ضد AABB ──
-export function collideCircle(p: { x: number; z: number }, r: number, colliders: Collider[]) {
+// ── فيزياء مشتركة: دائرة ضد AABB (مع مراعاة الارتفاع الرأسي للطوابق) ──
+export function collideCircle(
+  p: { x: number; z: number },
+  r: number,
+  colliders: Collider[],
+  minY = 0,
+  maxY = 1.75,
+) {
   for (const c of colliders) {
+    if (c.minY !== undefined || c.maxY !== undefined) {
+      const cMinY = c.minY ?? 0;
+      const cMaxY = c.maxY ?? 4.2;
+      if (maxY <= cMinY + 0.08 || minY >= cMaxY - 0.18) continue;
+    }
     const cx = Math.max(c.minX, Math.min(p.x, c.maxX));
     const cz = Math.max(c.minZ, Math.min(p.z, c.maxZ));
     const dx = p.x - cx;
@@ -49,6 +60,7 @@ export function segmentBlocked(
   x2: number,
   z2: number,
   colliders: Collider[],
+  y = 1.0,
 ): boolean {
   const steps = Math.min(60, Math.max(4, Math.floor(Math.hypot(x2 - x1, z2 - z1) / 1.2)));
   for (let i = 1; i <= steps; i++) {
@@ -56,6 +68,11 @@ export function segmentBlocked(
     const x = x1 + (x2 - x1) * t;
     const z = z1 + (z2 - z1) * t;
     for (const c of colliders) {
+      if (c.minY !== undefined || c.maxY !== undefined) {
+        const cMinY = c.minY ?? 0;
+        const cMaxY = c.maxY ?? 4.2;
+        if (y < cMinY || y > cMaxY) continue;
+      }
       if (x > c.minX - 0.1 && x < c.maxX + 0.1 && z > c.minZ - 0.1 && z < c.maxZ + 0.1) {
         return true;
       }
@@ -726,14 +743,11 @@ export class Enemy {
       coatRMesh.castShadow = true;
       coatR.add(coatRMesh);
       torso.add(coatR);
-      // نواة صدر متوهجة + ضوء
+      // نواة صدر متوهجة
       const core = new THREE.Mesh(cylGeo(0.09, 0.09, 0.05, 12), coreMat);
       core.rotation.x = Math.PI / 2;
       core.position.set(0, 0.34, chestD / 2 + 0.02);
       torso.add(core);
-      coreLight = new THREE.PointLight(0xff5518, 1.2, 6);
-      coreLight.position.set(0, 0.34, chestD / 2 + 0.18);
-      torso.add(coreLight);
       // كتفيان مدرّعتان
       const plateGeo = boxGeo(0.28, 0.07, 0.3);
       const plateL = new THREE.Mesh(plateGeo, metalMat);
@@ -1309,14 +1323,16 @@ export class Enemy {
       return;
     }
 
-    // خط رؤية بتكرار متدرج
+    // خط رؤية بتكرار متدرج (مع مراعاة فرق الطابق الرأسي)
+    const playerFloorY = Math.max(0, player.y - 1.66);
+    const sameFloor = Math.abs(playerFloorY - g.position.y) < 2.2;
     this.losT -= dt;
     if (this.losT <= 0) {
       this.losT = 0.24 + Math.random() * 0.12;
-      if (dist < this.def.sightRange) {
+      if (sameFloor && dist < this.def.sightRange) {
         const ex = g.position.x;
         const ez = g.position.z;
-        this.canSee = !segmentBlocked(ex, ez, px, pz, colliders);
+        this.canSee = !segmentBlocked(ex, ez, px, pz, colliders, g.position.y + 1.0);
       } else {
         this.canSee = false;
       }
@@ -1450,7 +1466,7 @@ export class Enemy {
           r.torso.rotation.x = r.torsoBaseX + (1 - t) * 0.35;
         }
         if (this.attackCd <= 0) {
-          if (dist < attackR * 1.45) {
+          if (sameFloor && dist < attackR * 1.45) {
             hooks.damagePlayer(this.def.damage, g.position.x, g.position.z);
           }
           this.attackCd = this.def.attackCooldown;
@@ -1618,6 +1634,7 @@ export class EnemyManager {
     let boss = false;
     for (const e of this.enemies) {
       if (e.state === "dead") continue;
+      if (!e.group.visible && e.state === "idle" && e.wanderT > 9000) continue;
       const d = Math.hypot(e.group.position.x - x, e.group.position.z - z);
       if (d < best) {
         best = d;
@@ -1665,14 +1682,18 @@ export class EnemyManager {
         sfx("roar", { volume: 0.9 });
       }
 
-      // إخفاء البعيد وتخطي تحديثه (الجثث الميتة تبقى مرئية حتى تُزال)
-      if (d > 80 && e.state !== "dead") {
+      // إخفاء البعيد خلف الضباب وتخطي تحديثه (الجثث الميتة تبقى مرئية حتى تُزال)
+      if (d > 54 && e.state !== "dead") {
         e.group.visible = false;
+        if (e.fakeCorpseProp) e.fakeCorpseProp.visible = false;
         continue;
       }
 
-      // جثة نائمة — تبقى مخفية بلا تحديث
-      if (!e.group.visible && e.state === "idle" && e.wanderT > 9000) continue;
+      // جثة نائمة — تبقى مخفية بلا تحديث (ويظهر مجسّم الجثة ضمن مدى الضباب فقط)
+      if (!e.group.visible && e.state === "idle" && e.wanderT > 9000) {
+        if (e.fakeCorpseProp) e.fakeCorpseProp.visible = d <= 54;
+        continue;
+      }
 
       e.group.visible = true;
       e.update(dt, player, colliders, this.hooks, this.enemies, canAct);

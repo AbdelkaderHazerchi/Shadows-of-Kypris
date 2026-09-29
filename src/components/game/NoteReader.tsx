@@ -4,6 +4,7 @@ import { useEffect } from "react";
 import { FileText, X } from "lucide-react";
 import { DOC_BY_ID } from "@/lib/game/content";
 import { useGame } from "@/lib/game/state";
+import { getEngine } from "@/lib/game/engineRef";
 import { audio } from "@/lib/game/audio";
 
 /** قارئ الوثائق — ورقة قديمة تُعرض فوق المشهد */
@@ -21,6 +22,7 @@ export default function NoteReader() {
   const close = () => {
     useGame.getState().setNote(null);
     useGame.getState().setScreen("playing");
+    getEngine()?.resume();
   };
 
   return (
@@ -36,13 +38,13 @@ export default function NoteReader() {
         </div>
 
         <div className="mt-8 flex items-center justify-between border-t border-black/15 pt-4">
-          <p className="text-[10px] opacity-60">ملاحظة: الوثائق تفتح نهايات خفية</p>
+          <p className="text-[11px] opacity-70">اقرأ ما بين السطور لتستنتج خطوتك التالية — جميع الوثائق تفتح النهاية الحقيقية</p>
           <button
             onClick={close}
             className="flex items-center gap-2 rounded bg-stone-800 px-4 py-2 font-ui text-sm text-stone-100 transition-colors hover:bg-stone-700"
           >
             <X className="h-3.5 w-3.5" strokeWidth={1.5} />
-            إغلاق
+            إغلاق (E / Esc)
           </button>
         </div>
       </div>

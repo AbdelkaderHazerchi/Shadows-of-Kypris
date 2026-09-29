@@ -18,7 +18,7 @@ import { buildWorld, zoneAt, type Collider, type WorldData, type Interactable } 
 import { clearCheckpoint, loadCheckpoint, saveCheckpoint, unlockEnding } from "./save";
 import { useGame } from "./state";
 import { AI_REACTIONS, ITEMS, MESSAGES, OBJECTIVE_BY_ID, SURVIVOR_BY_ID, WEAPONS } from "./content";
-import type { DoorDef } from "./props";
+import { setSurvivorPose, type DoorDef } from "./props";
 import type { EndingId, EnemyKind, MapSnapshot, WeaponId } from "./types";
 
 // ── grain/vignette shader ──
@@ -108,7 +108,11 @@ export class GameEngine {
 
   // player
   private pos = new THREE.Vector3(69, EYE_H, 70);
+  private floorY = 0;
   private vel = new THREE.Vector3();
+  private lastCullX = -99999;
+  private lastCullZ = -99999;
+  private lightPool: THREE.PointLight[] = [];
   private yaw = 0;
   private pitch = 0;
   private keys = new Set<string>();
@@ -130,6 +134,7 @@ export class GameEngine {
   private swayVX = 0;
   private swayVY = 0;
   private sprintDip = 0;
+  private lastHudStamina = 100;
 
   // flashlight
   private flashlight!: THREE.SpotLight;
@@ -185,38 +190,44 @@ export class GameEngine {
       antialias: true,
       powerPreference: "high-performance",
     });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
     this.renderer.setSize(w(), h(), false);
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.3;
+    this.renderer.toneMappingExposure = 1.05;
 
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x05070a);
-    this.scene.fog = new THREE.FogExp2(0x0a0a0d, 0.014);
+    this.scene.background = new THREE.Color(0x090c10);
+    // ضباب كثيف بأسلوب سايلنت هيل يحجب ما بعد 48 متراً ويخلق رهبة بصرية
+    this.scene.fog = new THREE.Fog(0x090c10, 10, 48);
 
-    this.camera = new THREE.PerspectiveCamera(72, w() / h(), 0.08, 260);
+    this.camera = new THREE.PerspectiveCamera(72, w() / h(), 0.08, 54);
     this.scene.add(this.camera);
 
-    // إضاءة أساسية — ليل مقروء بلمسة قمر باردة (RE3 night)
-    const hemi = new THREE.HemisphereLight(0x35404c, 0x12100d, 0.62);
+    // إضاءة أساسية — ليل ضبابي بارد متوازن دون بهتان
+    const hemi = new THREE.HemisphereLight(0x3a4654, 0x141210, 0.58);
     this.scene.add(hemi);
-    const moon = new THREE.DirectionalLight(0x8a93a8, 0.42);
+    const moon = new THREE.DirectionalLight(0x7c889e, 0.36);
     moon.position.set(-60, 90, -80);
     this.scene.add(moon);
 
-    // كشاف
-    this.flashlight = new THREE.SpotLight(0xfff0d0, 0, 38, 0.62, 0.5, 1.35);
-    this.flashlight.castShadow = true;
-    this.flashlight.shadow.mapSize.set(1024, 1024);
-    this.flashlight.shadow.camera.near = 0.2;
-    this.flashlight.shadow.camera.far = 36;
-    this.flashlight.shadow.bias = -0.003;
-    this.flashlight.position.set(0.18, -0.14, 0);
+    // حوض إضاءة نقطية ثابت العدد (لمنع إعادة ترجمة الشيدر والتقطيع أثناء المشي)
+    for (let i = 0; i < 6; i++) {
+      const pl = new THREE.PointLight(0xffffff, 0, 14, 1.7);
+      pl.position.set(0, -100, 0);
+      pl.userData.alwaysVisible = true;
+      this.scene.add(pl);
+      this.lightPool.push(pl);
+    }
+
+    // كشاف يدوي واقعي بأسلوب سايلنت هيل (دون تشوهات ظلال الجدران أو بياض مفرط)
+    this.flashlight = new THREE.SpotLight(0xffe6ba, 0, 30, 0.68, 0.82, 1.55);
+    this.flashlight.castShadow = false;
+    this.flashlight.position.set(0.16, -0.14, 0);
     this.camera.add(this.flashlight);
     this.flashTarget = new THREE.Object3D();
-    this.flashTarget.position.set(0, -0.06, -6);
+    this.flashTarget.position.set(0, -0.04, -6);
     this.camera.add(this.flashTarget);
     this.flashlight.target = this.flashTarget;
 
@@ -282,7 +293,12 @@ export class GameEngine {
     // post-processing
     this.composer = new EffectComposer(this.renderer);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
-    const bloom = new UnrealBloomPass(new THREE.Vector2(w(), h()), 0.32, 0.75, 0.82);
+    const bloom = new UnrealBloomPass(
+      new THREE.Vector2(Math.max(1, Math.floor(w() / 2)), Math.max(1, Math.floor(h() / 2))),
+      0.3,
+      0.7,
+      0.84,
+    );
     this.composer.addPass(bloom);
     this.composer.addPass(new OutputPass());
     this.horrorPass = new ShaderPass(HorrorShader);
@@ -533,6 +549,10 @@ export class GameEngine {
     } else if (st.screen === "missions" && (e.code === "KeyJ" || e.code === "Escape")) {
       st.setScreen("playing");
       this.lockPointer();
+    } else if (st.screen === "note" && (e.code === "Escape" || e.code === "KeyE")) {
+      st.setNote(null);
+      st.setScreen("playing");
+      this.lockPointer();
     }
   };
   private onKeyUp = (e: KeyboardEvent) => this.keys.delete(e.code);
@@ -540,13 +560,17 @@ export class GameEngine {
     if (document.pointerLockElement !== this.canvas) return;
     const st = useGame.getState();
     if (st.screen !== "playing") return;
-    const s = 0.0022;
+    if (Math.abs(e.movementX) > 350 || Math.abs(e.movementY) > 350) return;
+    const s = 0.0026;
     this.yaw -= e.movementX * s;
-    this.pitch -= e.movementY * s;
-    this.pitch = Math.max(-1.35, Math.min(1.35, this.pitch));
-    // انجراف السلاح (تأخّر لاهث)
-    this.swayVX = Math.max(-0.06, Math.min(0.06, this.swayVX - e.movementX * 0.00045));
-    this.swayVY = Math.max(-0.06, Math.min(0.06, this.swayVY - e.movementY * 0.0004));
+    this.pitch = Math.max(-1.35, Math.min(1.35, this.pitch - e.movementY * s));
+    // تحديث زاوية الكاميرا فوراً بدون أي تأخير
+    this.camera.rotation.order = "YXZ";
+    this.camera.rotation.y = this.yaw;
+    this.camera.rotation.x = this.pitch;
+    // انجراف خفيف للسلاح فقط
+    this.swayVX = Math.max(-0.045, Math.min(0.045, this.swayVX - e.movementX * 0.00035));
+    this.swayVY = Math.max(-0.045, Math.min(0.045, this.swayVY - e.movementY * 0.0003));
   };
   private onMouseDown = (e: MouseEvent) => {
     if (e.button !== 0) return;
@@ -587,7 +611,19 @@ export class GameEngine {
 
   private lockPointer() {
     if (document.pointerLockElement !== this.canvas) {
-      this.canvas.requestPointerLock?.();
+      try {
+        const req = this.canvas.requestPointerLock as unknown as (opts?: {
+          unadjustedMovement?: boolean;
+        }) => Promise<void> | undefined;
+        const res = req?.call(this.canvas, { unadjustedMovement: true });
+        if (res && typeof res.catch === "function") {
+          res.catch(() => {
+            this.canvas.requestPointerLock?.();
+          });
+        }
+      } catch {
+        this.canvas.requestPointerLock?.();
+      }
     }
   }
 
@@ -649,30 +685,9 @@ export class GameEngine {
     reload: () => this.startReload(),
     getMapSnapshot: (): MapSnapshot | null => {
       if (!this.world) return null;
-      const st = useGame.getState();
       const discovered = (name: string) => this.poiFound.has(name);
+      // لا نضع علامات أهداف مباشرة على الخريطة حتى يعتمد اللاعب على قراءة الوثائق والاستنتاج الذكي
       const markers: MapSnapshot["markers"] = [];
-      const objPos: Record<string, [number, number]> = {
-        obj_wake: [-23, -59],
-        obj_weapon: [-23, 23],
-        obj_radio: [69, -69],
-        obj_survive: [0, 100],
-        obj_cards: !st.hasItem("keycard_blue") ? [69, 23] : [-69, 69],
-        obj_lab: [-46, -69],
-        obj_core: [-69, -69],
-        obj_escape: [0, 100],
-        obj_gate: [-8, 103],
-        obj_wave: [0, 104],
-      };
-      const op = objPos[st.objectiveId];
-      if (op) markers.push({ x: op[0], z: op[1], kind: "objective" });
-      if (st.flags.radioDone || st.flags.coreDestroyed || st.flags.dealAccepted) {
-        markers.push({ x: 0, z: 104, kind: "extraction", label: "الإخلاء" });
-        if (!st.flags.saraSaved) markers.push({ x: 81.5, z: 32, kind: "survivor", label: "سارة" });
-        if (!st.flags.adelSaved) markers.push({ x: -60, z: 29, kind: "survivor", label: "عادل" });
-        if (!st.flags.soldierSaved) markers.push({ x: -58.5, z: 61.5, kind: "survivor", label: "الرقيب" });
-      }
-      if (this.poiFound.has("lab")) markers.push({ x: -69, z: -69, kind: "lab", label: "المختبر" });
       return {
         buildings: this.world.buildings.map((b) => ({
           ...b,
@@ -713,47 +728,11 @@ export class GameEngine {
           this.hitMeshesCache = null;
         },
       });
-      this.enemies.spawnFromPoints(this.world.spawns);
-      // جثث مزيفة في الشوارع تنهض عند الاقتراب — عبر EnemyManager.addFakeCorpse إن توفرت
-      const fakeSpots: [number, number][] = [
-        [30, 30],
-        [-30, -30],
-        [-55, 15],
-        [40, -26],
-      ];
-      const mgr = this.enemies as unknown as {
-        addFakeCorpse?: (x: number, z: number, k: EnemyKind) => Enemy;
-      };
-      if (typeof mgr.addFakeCorpse === "function") {
-        for (const [fx, fz] of fakeSpots) mgr.addFakeCorpse(fx, fz, "runner");
-      } else {
-        // احتياطي: المسار القديم
-        for (const [fx, fz] of fakeSpots) {
-          const e = this.enemies.addAt(fx, fz, "runner");
-          e.group.visible = false;
-          e.wanderT = 9999;
-          e.state = "idle";
-          e.targetX = fx;
-          e.targetZ = fz;
-        }
-      }
-      this.hitMeshesCache = null;
+      this.prewarmGpu();
     }
 
-    // تسجيل مصادمات الأبواب المغلقة + ارتساء مواقع الالتقاط (contract 5-b)
-    for (const d of this.doorList()) {
-      if (d.def.group.userData.baseRy === undefined) {
-        d.def.group.userData.baseRy = d.def.group.rotation.y;
-      }
-      if (d.open || d.def.open) this.world!.dynamicColliders.delete(`door_${d.id}`);
-      else this.world!.dynamicColliders.set(`door_${d.id}`, d.collider);
-    }
-    for (const p of this.pickupList()) {
-      if (p.obj.userData.baseY === undefined) {
-        p.obj.userData.baseY = p.obj.position.y;
-        p.obj.userData.phase = Math.random() * Math.PI * 2;
-      }
-    }
+    // إعادة ضبط العالم والأعداء والوثائق والأبواب بالكامل عند بدء رحلة جديدة أو استئناف حفظ بعد الموت
+    this.resetWorldState();
 
     // موضع البداية أو نقطة الحفظ
     if (this.lastLoadedPos) {
@@ -763,6 +742,11 @@ export class GameEngine {
       this.pos.set(-23, EYE_H, -70);
       this.yaw = Math.PI; // نحو الباب الجنوبي
     }
+    this.floorY = 0;
+    this.resolveVerticalHeight(this.pos.x, this.pos.z, 1);
+    this.pos.y = this.floorY + EYE_H;
+    this.lastCullX = -99999;
+    this.lastCullZ = -99999;
     this.pitch = 0;
     this.vel.set(0, 0, 0);
 
@@ -784,6 +768,8 @@ export class GameEngine {
       this.removeLabDoorCollider();
     }
     if (s.flags.bossKilled) this.openBossGate();
+    if (!s.hud.equipped) s.equip("crowbar");
+    this.lastHudStamina = s.hud.stamina;
     this.poiFound.add("شقتك");
 
     // أهداف واجهة
@@ -797,6 +783,169 @@ export class GameEngine {
     if (this.extractionReady) audio.setHeli(true);
     this.lockPointer();
     st.showHint("اضغط على الشاشة للتقاط مؤشر الفأرة إن لم يُقفل");
+  }
+
+  /** إعادة تهيئة العالم والأعداء والتفاعلات بالكامل لبدء جولة جديدة أو استعادة حفظ بعد الموت */
+  private resetWorldState() {
+    if (!this.world || !this.enemies) return;
+    const s = useGame.getState();
+
+    // 1) إزالة الغنائم المؤقتة الساقطة من الأعداء في الجولة السابقة
+    for (let i = this.world.interactables.length - 1; i >= 0; i--) {
+      if (this.world.interactables[i].id.startsWith("drop_")) {
+        this.world.interactables.splice(i, 1);
+      }
+    }
+
+    // 2) إعادة تفعيل جميع العناصر القابلة للتفاعل ومزامنتها مع حالة الحفظ الحالية
+    for (const it of this.world.interactables) {
+      if (it.kind === "note") {
+        // الوثائق والتسجيلات الصوتية تبقى قابلة للفتح والقراءة دائماً
+        it.used = false;
+      } else if (it.kind === "item") {
+        if (it.data?.locker) {
+          it.used = Boolean(s.flags.lockerOpened);
+        } else if (it.data?.weapon) {
+          const w = it.data.weapon as "pistol" | "shotgun";
+          it.used = Boolean(s.weapons[w]);
+        } else {
+          const item = it.data?.item as string;
+          if (item === "key_tower") {
+            it.used = Boolean(s.flags.hasTowerKey || s.hasItem("key_tower"));
+          } else if (item === "keycard_blue" || item === "keycard_red") {
+            it.used = Boolean(s.flags.labEntered || s.hasItem(item as never));
+          } else {
+            it.used = false;
+          }
+        }
+      } else if (it.kind === "console") {
+        it.used = Boolean(s.flags.radioDone);
+      } else if (it.kind === "generator") {
+        it.used = Boolean(s.flags.generatorFixed);
+      } else if (it.kind === "gate") {
+        it.used = Boolean(s.flags.labEntered);
+      } else if (it.kind === "core") {
+        it.used = Boolean(s.flags.metAI);
+      } else if (it.kind === "npc") {
+        const sid = it.data?.survivor as "sara" | "adel" | "soldier";
+        it.used = Boolean(
+          sid === "sara" ? s.flags.saraSaved : sid === "adel" ? s.flags.adelSaved : s.flags.soldierSaved,
+        );
+      } else {
+        it.used = false;
+      }
+    }
+
+    // 3) إعادة إظهار مجسمات الالتقاط والوثائق في المشهد
+    const usedIds = new Set<string>();
+    for (const it of this.world.interactables) {
+      if (it.used) usedIds.add(it.id);
+    }
+    for (const p of this.pickupList()) {
+      if (p.obj.userData.baseY === undefined) {
+        p.obj.userData.baseY = p.obj.position.y;
+        p.obj.userData.phase = Math.random() * Math.PI * 2;
+      }
+      const picked = usedIds.has(p.id);
+      p.obj.userData.pickedUp = picked;
+      p.obj.visible = !picked;
+    }
+
+    // 4) إعادة ضبط الأبواب ومصادماتها
+    for (const d of this.doorList()) {
+      if (d.def.group.userData.baseRy === undefined) {
+        d.def.group.userData.baseRy = d.def.group.rotation.y;
+      }
+      const shouldOpen = d.id === "door_apt" && Boolean(s.flags.exitedApartment);
+      d.open = shouldOpen;
+      d.def.open = shouldOpen;
+      if (d.def.kind === "double") {
+        const kids = d.def.group.children;
+        if (kids[0]) kids[0].rotation.y = shouldOpen ? -1.6 : 0;
+        if (kids[1]) kids[1].rotation.y = shouldOpen ? 1.6 : 0;
+      } else {
+        const baseRy = (d.def.group.userData.baseRy as number | undefined) ?? 0;
+        d.def.group.rotation.y = shouldOpen ? baseRy - 1.9 : baseRy;
+      }
+      if (shouldOpen) this.world.dynamicColliders.delete(`door_${d.id}`);
+      else this.world.dynamicColliders.set(`door_${d.id}`, d.collider);
+    }
+
+    // 5) إعادة ضبط بوابة المختبر وبوابة الزعيم وحاجز الميناء
+    if (this.world.labDoor.open && !s.flags.labEntered) {
+      this.world.labDoor.open = false;
+      this.world.labDoor.group.position.y = 0;
+      if (this.labDoorColliderIdx >= 0) {
+        this.world.colliders.push({ minX: -70.6, maxX: -67.4, minZ: -72.5, maxZ: -71.9 });
+        this.labDoorColliderIdx = -1;
+      }
+    }
+    if (this.world.gateBarrier.open && !s.flags.generatorFixed && !s.flags.coreDestroyed && !s.flags.dealAccepted) {
+      this.world.gateBarrier.open = false;
+      this.world.gateBarrier.group.children.forEach((c) => (c.position.y += 3.2));
+      this.world.colliders.push({ minX: -5.5, maxX: 5.5, minZ: 98.8, maxZ: 100.2 });
+    }
+    this.bossGateClosed = false;
+    this.world.labBossGate.mesh.visible = false;
+    this.world.dynamicColliders.delete("bossGate");
+    this.extractionReady = false;
+    this.world.boatLight.intensity = 0;
+    this.radioChain = 0;
+    this.waveN = 0;
+    this.waveSpawnT = 0;
+
+    // 6) إعادة ضبط محفزات المناطق ونقاط الخريطة
+    for (const tr of this.world.triggers) {
+      tr.fired = false;
+    }
+    this.poiFound.clear();
+    this.poiFound.add("شقتك");
+
+    // 7) إعادة توليد الأعداء بالكامل من جديد
+    this.enemies.clear();
+    this.enemies.spawnFromPoints(this.world.spawns);
+    const fakeSpots: [number, number][] = [
+      [30, 30],
+      [-30, -30],
+      [-55, 15],
+      [40, -26],
+    ];
+    for (const [fx, fz] of fakeSpots) {
+      this.enemies.addFakeCorpse(fx, fz, "runner");
+    }
+    if (s.flags.bossKilled) {
+      for (const e of this.enemies.enemies) {
+        if (e.kind === "boss") {
+          e.state = "dead";
+          this.scene.remove(e.group);
+        }
+      }
+    }
+
+    // 8) إعادة ضبط مواقع وحالات الناجين (إما في أماكنهم الأصلية أو على متن القارب إذا أُنقذوا في الحفظ)
+    for (const sv of this.world.survivors) {
+      const isSaved =
+        sv.id === "sara"
+          ? s.flags.saraSaved
+          : sv.id === "adel"
+            ? s.flags.adelSaved
+            : s.flags.soldierSaved;
+      if (isSaved) {
+        sv.state = "on_boat";
+        sv.wpIndex = sv.waypoints.length;
+        sv.obj.position.set(sv.boatPos[0], sv.boatPos[1], sv.boatPos[2]);
+        sv.obj.rotation.y = sv.boatRy;
+        setSurvivorPose(sv.obj, "boat", 0, sv.id);
+      } else {
+        sv.state = "idle";
+        sv.wpIndex = 0;
+        sv.walkTime = 0;
+        sv.obj.position.set(sv.startX, sv.startY, sv.startZ);
+        sv.obj.rotation.y = sv.startRy;
+        setSurvivorPose(sv.obj, "initial", 0, sv.id);
+      }
+    }
+    this.hitMeshesCache = null;
   }
 
   private lastLoadedPos: [number, number] | null = null;
@@ -943,23 +1092,21 @@ export class GameEngine {
 
   private hitMeshesCache: THREE.Object3D[] | null = null;
   private hitTargets(): THREE.Object3D[] {
-    if (!this.hitMeshesCache) {
-      const list: THREE.Object3D[] = [];
-      this.scene.traverse((o) => {
-        if (o instanceof THREE.Mesh) {
-          if (o.userData.noHit === true) return;
-          // تجاهل أشجار الكاميرا (نموذج السلاح)
-          let p: THREE.Object3D | null = o;
-          while (p) {
-            if (p === this.camera) return;
-            p = p.parent;
-          }
-          list.push(o);
-        }
-      });
-      this.hitMeshesCache = list;
+    const list: THREE.Object3D[] = [];
+    if (this.enemies) {
+      for (const e of this.enemies.enemies) {
+        if (e.state !== "dead" && e.group.visible) list.push(e.group);
+      }
     }
-    return this.hitMeshesCache;
+    if (this.world) {
+      for (const c of this.world.chunks) {
+        if (c.group.visible) list.push(c.group);
+      }
+      for (const d of this.doorList()) {
+        if (!d.open && d.def.group.visible) list.push(d.def.group);
+      }
+    }
+    return list;
   }
 
   private pickEnemyHit(hits: THREE.Intersection[]): THREE.Intersection | null {
@@ -1067,8 +1214,8 @@ export class GameEngine {
     audio.setFire(0);
     if (endingId === "ending_death") {
       audio.play("explosion", { volume: 0.5 });
-      clearCheckpoint();
-      st.setHasSave(false);
+      // نحتفظ بآخر نقطة حفظ إن وجدت ليتمكن اللاعب من الاستئناف منها أو بدء رحلة جديدة
+      st.setHasSave(Boolean(loadCheckpoint()));
     }
     unlockEnding(endingId);
   }
@@ -1080,17 +1227,25 @@ export class GameEngine {
   private findInteract(): Interactable | null {
     if (!this.world) return null;
     this.camera.getWorldDirection(this.forward);
+    const fLen = Math.hypot(this.forward.x, this.forward.z) || 1;
+    const fx = this.forward.x / fLen;
+    const fz = this.forward.z / fLen;
     let best: Interactable | null = null;
     let bestScore = -1;
+    const playerInteractionY = this.floorY + 1.0;
     for (const it of this.world.interactables) {
       if (it.used) continue;
+      const iy = it.y ?? 1.0;
+      if (Math.abs(iy - playerInteractionY) > 2.5) continue;
       const dx = it.x - this.pos.x;
       const dz = it.z - this.pos.z;
       const d = Math.hypot(dx, dz);
       if (d > it.radius) continue;
-      const dot = (dx / (d || 1)) * this.forward.x + (dz / (d || 1)) * this.forward.z;
-      if (dot < 0.15 && d > 1.1) continue;
-      const score = dot + (it.radius - d);
+      const dot = (dx / (d || 1)) * fx + (dz / (d || 1)) * fz;
+      if (dot < -0.1 && d > 0.95) continue;
+      if (dot < 0.12 && d > 1.55) continue;
+      const noteBonus = it.kind === "note" ? 0.35 : 0;
+      const score = dot + (it.radius - d) + noteBonus;
       if (score > bestScore) {
         bestScore = score;
         best = it;
@@ -1136,7 +1291,12 @@ export class GameEngine {
           audio.play("pickup");
           it.used = true;
           this.hidePickup(it.id);
-          st.showHint("اضغط 2/3 لتبديل الأسلحة — 1 للعُقلة");
+          if (st.objectiveId === "obj_wake" || st.objectiveId === "obj_weapon") {
+            st.setObjective("obj_police");
+            st.showHint("حصلتَ على سلاح ناري… تذكّر ما ورد في يومياتك حول التوجه شرق الساحة نحو المقر الأمني");
+          } else {
+            st.showHint("اضغط 2/3 لتبديل الأسلحة — 1 للعُقلة");
+          }
           return;
         }
         const ok = st.addItem(item as never, qty);
@@ -1149,6 +1309,10 @@ export class GameEngine {
         audio.play("pickup");
         it.used = true;
         this.hidePickup(it.id);
+        if (item === "key_tower") {
+          st.setFlag("hasTowerKey", true);
+        }
+        this.syncObjectiveProgress(item);
         break;
       }
       case "note": {
@@ -1157,7 +1321,8 @@ export class GameEngine {
         st.markDoc(docId as never);
         st.setScreen("note");
         document.exitPointerLock();
-        it.used = true;
+        // لا نضع it.used = true على الوثائق حتى يتمكن اللاعب من فتحها وقراءتها في أي وقت
+        this.onDocRead(docId);
         break;
       }
       case "checkpoint": {
@@ -1202,12 +1367,75 @@ export class GameEngine {
   private hidePickup(id: string) {
     // عبر قائمة الالتقاط (contract 5-b)
     for (const p of this.pickupList()) {
-      if (p.id === id) p.obj.visible = false;
+      if (p.id === id) {
+        p.obj.userData.pickedUp = true;
+        p.obj.visible = false;
+      }
     }
     // احتياطي قديم
     this.scene.traverse((o) => {
-      if (o instanceof THREE.Mesh && o.userData.pickupId === id) o.visible = false;
+      if (o instanceof THREE.Mesh && o.userData.pickupId === id) {
+        o.userData.pickedUp = true;
+        o.visible = false;
+      }
     });
+  }
+
+  /** تحديث تسلسل المهام بناءً على قراءة الوثائق والتلميحات */
+  private onDocRead(docId: string) {
+    const st = useGame.getState();
+    if (docId === "doc_1") {
+      if (st.objectiveId === "obj_wake") {
+        st.setObjective("obj_weapon");
+      }
+      st.showHint("يومياتك أوضحت خطتك: أمّن سلاحاً نارياً من متجر العتاد جنوب الساحة قبل التوغل في المدينة");
+    } else if (docId === "doc_4") {
+      const hasKey = st.flags.hasTowerKey || st.hasItem("key_tower");
+      if (hasKey) {
+        if (st.objectiveId === "obj_police" || st.objectiveId === "obj_weapon" || st.objectiveId === "obj_wake") {
+          st.setObjective("obj_radio");
+        }
+        st.showHint("البرقية ومفتاح البث بحوزتك… اتجه إلى محطة الإذاعة في التل الشمالي الشرقي");
+      } else {
+        st.showHint("البرقية تشير إلى حفظ مفتاح غرفة البث النحاسي على الطاولة في هذا المكتب");
+      }
+    } else if (docId === "doc_2" || docId === "doc_3" || docId === "doc_5") {
+      if (st.flags.radioDone && st.objectiveId === "obj_survive") {
+        const both = st.hasItem("keycard_blue") && st.hasItem("keycard_red");
+        st.setObjective(both ? "obj_lab" : "obj_cards");
+      }
+    } else if (docId === "doc_6") {
+      st.showHint("استعدتَ الحقيقة كاملة وكود الإيقاف النهائي… واجه «كيميرا» في قاعة النواة");
+    }
+  }
+
+  /** تحديث تسلسل المهام عند التقاط المفاتيح أو شرائح التصريح */
+  private syncObjectiveProgress(pickedItem?: string) {
+    const st = useGame.getState();
+    if (pickedItem === "key_tower") {
+      if (st.docsRead.includes("doc_4")) {
+        if (st.objectiveId === "obj_police" || st.objectiveId === "obj_weapon" || st.objectiveId === "obj_wake") {
+          st.setObjective("obj_radio");
+        }
+        st.showHint("مفتاح غرفة البث بحوزتك… اتجه إلى محطة الإذاعة في التل الشمالي الشرقي");
+      } else {
+        st.showHint("التقطتَ مفتاح البث النحاسي… اقرأ البرقية العسكرية على المكتب لفهم خطة الطوارئ");
+      }
+    } else if (pickedItem === "keycard_blue" || pickedItem === "keycard_red") {
+      const blue = st.hasItem("keycard_blue");
+      const red = st.hasItem("keycard_red");
+      if (blue && red) {
+        st.setObjective("obj_lab");
+        st.showHint("اكتملت شريحتا التصريح المزدوجتان — يمكنك الآن فتح البوابة الفولاذية لمجمع كيبريس");
+      } else if (st.objectiveId === "obj_survive") {
+        st.setObjective("obj_cards");
+        st.showHint(
+          blue
+            ? "حصلتَ على الشريحة الطبية الزرقاء… بقيت الشريحة الصناعية الحمراء المذكورة في السجلات"
+            : "حصلتَ على الشريحة الصناعية الحمراء… بقيت الشريحة الطبية الزرقاء المذكورة في السجلات",
+        );
+      }
+    }
   }
 
   // ══════════ أبواب / التقاطات / اهتزاز (contract 5-b + 5-c) ══════════
@@ -1230,6 +1458,52 @@ export class GameEngine {
       st.toastMsg("الباب مقفل… لا يرد.");
       audio.play("door_locked");
       return;
+    }
+    // بوابات التسلسل المنطقي للمهام لمنع تشتت اللاعب:
+    if (!d.open) {
+      // 1) لا يغادر الشقة قبل قراءة تسجيله الشخصي على المكتب (doc_1)
+      if (id === "door_apt" && !st.docsRead.includes("doc_1")) {
+        st.toastMsg("لا يمكنني الخروج إلى المجهول بلا ذاكرة… عليّ تفحّص مكتبي في الغرفة الداخلية أولاً.");
+        audio.play("door_locked");
+        return;
+      }
+      // 2) لا يدخل المنشآت الخطرة في المدينة قبل تأمين سلاح ناري من متجر العتاد
+      if (
+        (id === "door_police" ||
+          id === "door_tower" ||
+          id === "door_hospital" ||
+          id === "door_hospital_west" ||
+          id === "door_factory" ||
+          id === "door_warehouse" ||
+          id === "door_gas") &&
+        !st.flags.hasWeapon
+      ) {
+        st.toastMsg("أصوات زئير وحركة بالداخل… المجازفة بالدخول أعزل انتحار، أحتاج سلاحاً نارياً أولاً.");
+        audio.play("door_locked");
+        return;
+      }
+      // 3) باب محطة الإذاعة يتطلب مفتاح البرج النحاسي وقراءة البرقية العسكرية
+      if (id === "door_tower") {
+        if (!st.flags.hasTowerKey && !st.hasItem("key_tower")) {
+          st.toastMsg("باب محطة البث مقفل — يتطلب المفتاح النحاسي من غرفة العمليات الأمنية.");
+          audio.play("door_locked");
+          return;
+        }
+        if (!st.docsRead.includes("doc_4")) {
+          st.toastMsg("معي المفتاح، لكن عليّ قراءة البرقية العسكرية في مركز الشرطة لمعرفة تردد البث.");
+          audio.play("door_locked");
+          return;
+        }
+      }
+      // 4) المستشفى المركزي ومصنع القطع مغلقان بإغلاق الطوارئ حتى يتم بث نداء الاستغاثة
+      if (
+        (id === "door_hospital" || id === "door_hospital_west" || id === "door_factory") &&
+        !st.flags.radioDone
+      ) {
+        st.toastMsg("أبواب المنشأة موصدة بنظام إغلاق الطوارئ… يجب بث نداء الاستغاثة أولاً لإعادة تغذيتها.");
+        audio.play("door_locked");
+        return;
+      }
     }
     d.open = !d.open;
     d.def.open = d.open;
@@ -1261,20 +1535,77 @@ export class GameEngine {
     }
     this.camera.getWorldPosition(this._laserOrigin);
     this.camera.getWorldDirection(this._laserDir);
-    this.raycaster.set(this._laserOrigin, this._laserDir);
-    this.raycaster.far = 40;
-    const hits = this.raycaster.intersectObjects(this.hitTargets(), true);
-    const start = new THREE.Vector3();
+
+    // حساب تقاطع شعاع الليزر بسرعة فائقة عبر مصادمات الجدران + الأعداء المرئيين فقط (دون فحص مثلثات المدينة)
+    let minT = 38;
+    const ox = this._laserOrigin.x;
+    const oy = this._laserOrigin.y;
+    const oz = this._laserOrigin.z;
+    const dx = this._laserDir.x;
+    const dy = this._laserDir.y;
+    const dz = this._laserDir.z;
+
+    if (dy < -0.001) {
+      const tFloor = -oy / dy;
+      if (tFloor > 0 && tFloor < minT) minT = tFloor;
+    } else if (dy > 0.001) {
+      const tCeil = (4.2 - oy) / dy;
+      if (tCeil > 0 && tCeil < minT) minT = tCeil;
+    }
+
+    if (this.world) {
+      const cols = this.allColliders();
+      const invX = Math.abs(dx) > 1e-6 ? 1 / dx : 1e6;
+      const invZ = Math.abs(dz) > 1e-6 ? 1 / dz : 1e6;
+      for (const c of cols) {
+        const tx1 = (c.minX - ox) * invX;
+        const tx2 = (c.maxX - ox) * invX;
+        const tminX = Math.min(tx1, tx2);
+        const tmaxX = Math.max(tx1, tx2);
+        const tz1 = (c.minZ - oz) * invZ;
+        const tz2 = (c.maxZ - oz) * invZ;
+        const tminZ = Math.min(tz1, tz2);
+        const tmaxZ = Math.max(tz1, tz2);
+        const tEnter = Math.max(tminX, tminZ);
+        const tExit = Math.min(tmaxX, tmaxZ);
+        if (tExit >= Math.max(0, tEnter) && tEnter > 0 && tEnter < minT) {
+          const hitY = oy + dy * tEnter;
+          if (hitY >= 0 && hitY <= 4.2) {
+            minT = tEnter;
+          }
+        }
+      }
+    }
+
+    if (this.enemies) {
+      const visEnemies: THREE.Object3D[] = [];
+      for (const e of this.enemies.enemies) {
+        if (e.state !== "dead" && e.group.visible) visEnemies.push(e.group);
+      }
+      if (visEnemies.length > 0) {
+        this.raycaster.set(this._laserOrigin, this._laserDir);
+        this.raycaster.far = minT;
+        const hits = this.raycaster.intersectObjects(visEnemies, true);
+        if (hits.length > 0 && hits[0].distance < minT) {
+          minT = hits[0].distance;
+        }
+      }
+    }
+
+    const start = this._laserStart;
     this.muzzle.getWorldPosition(start);
-    const end = hits.length > 0 ? hits[0].point : start.clone().addScaledVector(this._laserDir, 40);
+    const endX = ox + dx * minT;
+    const endY = oy + dy * minT;
+    const endZ = oz + dz * minT;
     const attr = laser.geometry.attributes.position as THREE.BufferAttribute;
     attr.setXYZ(0, start.x, start.y, start.z);
-    attr.setXYZ(1, end.x, end.y, end.z);
+    attr.setXYZ(1, endX, endY, endZ);
     attr.needsUpdate = true;
     laser.visible = true;
   }
   private _laserOrigin = new THREE.Vector3();
   private _laserDir = new THREE.Vector3();
+  private _laserStart = new THREE.Vector3();
 
   private doCheckpoint(label: string) {
     const st = useGame.getState();
@@ -1311,8 +1642,9 @@ export class GameEngine {
     const idx = this.radioChain;
     if (idx >= lines.length) {
       st.setFlag("radioDone", true);
-      st.setObjective("obj_survive");
-      st.toastMsg("استجاب الفريق السريع! الميناء الشمالي — نقطة الإخلاء");
+      const bothCards = st.hasItem("keycard_blue") && st.hasItem("keycard_red");
+      st.setObjective(bothCards ? "obj_lab" : "obj_survive");
+      st.toastMsg("بُثّت الإشارة وعادت طاقة الطوارئ للمنشآت الموصدة في المدينة");
       audio.play("stinger_discover", { volume: 0.7 });
       this.doCheckpoint("بعد البث");
       return;
@@ -1374,7 +1706,33 @@ export class GameEngine {
       st.setFlag(savedFlag, true);
       st.setFlag(deliveredFlag, true);
       it.used = true; // توقّف الطلب بعد التسليم
-      st.toastMsg(`${s.name}: شكراً… سأصل من وحدي.`);
+
+      // تحريك الناجي فعلياً للخروج من المبنى والتوجه نحو قارب الإخلاء في الميناء
+      if (this.world) {
+        const sv = this.world.survivors.find((x) => x.id === sid);
+        if (sv) {
+          sv.state = "walking";
+          sv.wpIndex = 0;
+          sv.walkTime = 0;
+        }
+        // فتح أبواب المبنى تلقائياً ليخرج الناجي بسلاسة أمام اللاعب
+        const doorsToOpen =
+          sid === "sara"
+            ? ["door_hospital_laundry", "door_hospital"]
+            : sid === "adel"
+              ? ["door_warehouse_office", "door_warehouse"]
+              : ["door_factory"];
+        for (const did of doorsToOpen) {
+          const d = this.doorList().find((x) => x.id === did);
+          if (d && !d.open) {
+            d.open = true;
+            d.def.open = true;
+            this.world.dynamicColliders.delete(`door_${d.id}`);
+          }
+        }
+      }
+
+      st.toastMsg(`${s.name}: شكراً لك! سأتوجه الآن إلى قارب الإخلاء في ميناء بلاك ووتر.`);
       st.showHint(MESSAGES.savedSurvivor(s.name));
       const f2 = useGame.getState().flags;
       const n = (f2.saraSaved ? 1 : 0) + (f2.adelSaved ? 1 : 0) + (f2.soldierSaved ? 1 : 0);
@@ -1392,6 +1750,16 @@ export class GameEngine {
     const st = useGame.getState();
     if (st.flags.generatorFixed) {
       st.showHint("المولد يعمل.");
+      return;
+    }
+    if (!st.flags.radioDone) {
+      st.toastMsg("بوابة الرصيف معطلة… لا يوجد إخلاء دون بث نداء الاستغاثة أولاً.");
+      audio.play("door_locked");
+      return;
+    }
+    if (!st.flags.metAI) {
+      st.toastMsg("القفل المركزي للرصيف مرتبط بنواة مجمع كيبريس… عليك حسم الأمر في المختبر أولاً.");
+      audio.play("door_locked");
       return;
     }
     if (!st.consumeFirst("fuel")) {
@@ -1432,12 +1800,17 @@ export class GameEngine {
       st.showHint("البوابة مفتوحة.");
       return;
     }
+    if (!st.flags.radioDone) {
+      st.toastMsg("البوابة الفولاذية مفصولة عن التيار… يجب تفعيل شبكة الطوارئ عبر محطة البث أولاً.");
+      audio.play("door_locked");
+      return;
+    }
     const blue = st.hasItem("keycard_blue");
     const red = st.hasItem("keycard_red");
     if (!blue || !red) {
       const missing: string[] = [];
-      if (!blue) missing.push("الزرقاء (المستشفى)");
-      if (!red) missing.push("الحمراء (المصنع)");
+      if (!blue) missing.push("الشريحة الطبية الزرقاء");
+      if (!red) missing.push("الشريحة الصناعية الحمراء");
       st.toastMsg(`${MESSAGES.labDoorNeed} — ينقص: ${missing.join(" و ")}`);
       audio.play("door_locked");
       if (st.objectiveId === "obj_survive") st.setObjective("obj_cards");
@@ -1467,6 +1840,9 @@ export class GameEngine {
   }
 
   private enterLab() {
+    this.floorY = 0;
+    this.lastCullX = -99999;
+    this.lastCullZ = -99999;
     this.pos.set(600, EYE_H, 21);
     this.yaw = Math.PI; // نحو -Z داخل النفق
     this.vel.set(0, 0, 0);
@@ -1478,6 +1854,9 @@ export class GameEngine {
   }
 
   private exitLab() {
+    this.floorY = 0;
+    this.lastCullX = -99999;
+    this.lastCullZ = -99999;
     this.pos.set(-69, EYE_H, -62);
     this.yaw = -Math.PI / 2; // نحو بوابة المجمع شرقاً
     this.vel.set(0, 0, 0);
@@ -1489,6 +1868,16 @@ export class GameEngine {
   private useCore(it: Interactable) {
     const st = useGame.getState();
     if (st.flags.metAI) return;
+    if (!st.flags.bossKilled) {
+      st.toastMsg("«الحارس» لا يزال يحمي القاعة! اقضِ عليه أولاً قبل الاقتراب من النواة.");
+      audio.play("door_locked");
+      return;
+    }
+    if (!st.docsRead.includes("doc_6")) {
+      st.toastMsg("ثمة ملف شخصي باسمك في ممر المختبر الخلفي… اقرأ رسالتك الأخيرة أولاً لاستعادة كود الإيقاف.");
+      audio.play("door_locked");
+      return;
+    }
     it.used = true;
     st.setFlag("metAI", true);
     st.setAiChoiceOpen(true);
@@ -1521,7 +1910,7 @@ export class GameEngine {
       this.doCheckpoint("بعد النواة");
     } else if (choice === "deal") {
       st.setFlag("dealAccepted", true);
-      st.setObjective("obj_gate");
+      st.setObjective("obj_escape");
       this.openGateBarrier();
       this.extractionReady = true;
       audio.setHeli(true);
@@ -1530,7 +1919,7 @@ export class GameEngine {
       this.doCheckpoint("الصفقة");
     } else {
       st.setObjective("obj_gate");
-      st.showHint("اتركك النواة خلفك. ميناء بلاك ووتر — حيّاً.");
+      st.showHint("تركتَ النواة خلفك… عليك فتح بوابة الرصيف النهري بالمولد للهرب.");
     }
     this.lockPointer();
   }
@@ -1670,18 +2059,29 @@ export class GameEngine {
 
   private updatePlayer(dt: number, canMove: boolean, st: ReturnType<typeof useGame.getState>) {
     void canMove;
-    // جري ولياقة
+    // جري ولياقة (مع تقييد تحديث الواجهة لتجنب إعادة رسم React كل إطار)
     const wantRun = this.keys.has("ShiftLeft") || this.keys.has("ShiftRight");
     let run = false;
-    if (canMove && wantRun && st.hud.stamina > 4) {
+    let curStamina = st.hud.stamina;
+    if (canMove && wantRun && curStamina > 4) {
       run = true;
-      st.setHud({ stamina: Math.max(0, st.hud.stamina - 14 * dt) });
+      curStamina = Math.max(0, curStamina - 14 * dt);
+      st.hud.stamina = curStamina;
       this.staminaLock = 0.8;
     } else {
       this.staminaLock -= dt;
-      if (this.staminaLock <= 0 && st.hud.stamina < 100) {
-        st.setHud({ stamina: Math.min(100, st.hud.stamina + 12 * dt) });
+      if (this.staminaLock <= 0 && curStamina < 100) {
+        curStamina = Math.min(100, curStamina + 12 * dt);
+        st.hud.stamina = curStamina;
       }
+    }
+    if (
+      Math.abs(curStamina - this.lastHudStamina) >= 1.2 ||
+      (curStamina === 100 && this.lastHudStamina !== 100) ||
+      (curStamina === 0 && this.lastHudStamina !== 0)
+    ) {
+      this.lastHudStamina = curStamina;
+      st.setHud({ stamina: curStamina });
     }
     this.running = run;
 
@@ -1701,14 +2101,16 @@ export class GameEngine {
     this.vel.z += (wish.z - this.vel.z) * Math.min(1, dt * 8);
 
     const p = { x: this.pos.x + this.vel.x * dt, z: this.pos.z + this.vel.z * dt };
-    collideCircle(p, PLAYER_R, this.allColliders());
+    this.resolveVerticalHeight(p.x, p.z, dt);
+    collideCircle(p, PLAYER_R, this.allColliders(), this.floorY, this.floorY + EYE_H);
+    this.resolveVerticalHeight(p.x, p.z, dt);
     const moved = Math.hypot(p.x - this.pos.x, p.z - this.pos.z);
     this.pos.x = p.x;
     this.pos.z = p.z;
-    // ارتداد الرأس (يُطبَّق على pos.y قبل نسخ الكاميرا)
+    // ارتداد الرأس (يُطبَّق على pos.y فوق ارتفاع الطابق الحالي)
     const targetAmp = moved > 0.001 ? (run ? 1.5 : 1) : 0;
     this.bobAmp += (targetAmp - this.bobAmp) * Math.min(1, dt * 8);
-    this.pos.y = EYE_H + Math.sin(this.walkPhase * 2) * 0.035 * this.bobAmp;
+    this.pos.y = this.floorY + EYE_H + Math.sin(this.walkPhase * 2) * 0.035 * this.bobAmp;
 
     // خطوات
     if (moved > 0.001) {
@@ -1733,7 +2135,7 @@ export class GameEngine {
       }
     }
     this.flickerT -= dt;
-    let intensity = st.hud.flashlightOn ? 46 : 0;
+    let intensity = st.hud.flashlightOn ? 11.5 : 0;
     if (st.hud.flashlightOn && bat < 15 && this.flickerT <= 0) {
       this.flickerT = 0.09;
       intensity *= Math.random() < 0.3 ? 0.25 : 1;
@@ -1839,24 +2241,166 @@ export class GameEngine {
     }
   }
 
+  /** حساب الارتفاع الرأسي للاعب على السلالم وبلاطات الطوابق المتعددة */
+  private resolveVerticalHeight(px: number, pz: number, dt: number) {
+    if (!this.world) return;
+    let targetY = -1;
+
+    // 1) التحقق أولاً من وجود اللاعب على درج مائل (StairRamp)
+    for (const st of this.world.stairs) {
+      if (px >= st.minX - 0.15 && px <= st.maxX + 0.15 && pz >= st.minZ - 0.25 && pz <= st.maxZ + 0.25) {
+        let t = 0;
+        if (st.dir === "+z") t = (pz - st.minZ) / Math.max(0.01, st.maxZ - st.minZ);
+        else if (st.dir === "-z") t = (st.maxZ - pz) / Math.max(0.01, st.maxZ - st.minZ);
+        else if (st.dir === "+x") t = (px - st.minX) / Math.max(0.01, st.maxX - st.minX);
+        else t = (st.maxX - px) / Math.max(0.01, st.maxX - st.minX);
+        t = Math.max(0, Math.min(1, t));
+        const rampY = st.yBottom + t * (st.yTop - st.yBottom);
+        if (Math.abs(rampY - this.floorY) < 1.65) {
+          targetY = Math.max(targetY, rampY);
+        }
+      }
+    }
+
+    // 2) التحقق من بلاطات الطوابق العلوية (مع مراعاة فتحات السلالم)
+    if (targetY < 0) {
+      let bestFloor = 0;
+      for (const fl of this.world.floors) {
+        if (px >= fl.minX && px <= fl.maxX && pz >= fl.minZ && pz <= fl.maxZ) {
+          if (
+            fl.hole &&
+            px > fl.hole.minX + 0.15 &&
+            px < fl.hole.maxX - 0.15 &&
+            pz > fl.hole.minZ + 0.15 &&
+            pz < fl.hole.maxZ - 0.15
+          ) {
+            continue; // فوق فتحة الدرج
+          }
+          if (fl.y <= this.floorY + 0.85 && fl.y > bestFloor) {
+            bestFloor = fl.y;
+          }
+        }
+      }
+      targetY = bestFloor;
+    }
+
+    if (targetY >= this.floorY) {
+      this.floorY += (targetY - this.floorY) * Math.min(1, dt * 18);
+      if (Math.abs(targetY - this.floorY) < 0.02) this.floorY = targetY;
+    } else {
+      // هبوط ناعم عند النزول من الدرج أو الحافة
+      this.floorY = Math.max(targetY, this.floorY - dt * 9.5);
+    }
+  }
+
+  /** تحمية الـ GPU مسبقاً لمنع أي تقطيع عند الحركة لأول مرة */
+  private prewarmGpu() {
+    if (!this.world) return;
+    try {
+      this.scene.traverse((obj) => {
+        if (obj instanceof THREE.Mesh) {
+          const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+          for (const m of mats) {
+            if (!m) continue;
+            const std = m as THREE.MeshStandardMaterial;
+            if (std.map) this.renderer.initTexture(std.map);
+            if (std.emissiveMap) this.renderer.initTexture(std.emissiveMap);
+            if (std.bumpMap) this.renderer.initTexture(std.bumpMap);
+            if (std.roughnessMap) this.renderer.initTexture(std.roughnessMap);
+          }
+        }
+      });
+      this.renderer.compile(this.scene, this.camera);
+    } catch {
+      /* ignore prewarm errors */
+    }
+  }
+
   private updateWorldFx(dt: number) {
     if (!this.world) return;
     const t = performance.now() / 1000;
-    for (const f of this.world.fireLights) {
-      f.light.intensity = f.base * (0.72 + Math.sin(t * 11 + f.light.position.x) * 0.14 + Math.random() * 0.14);
-    }
-    for (const f of this.world.flickerLights) {
-      if (f.speed > 6) {
-        f.light.intensity = Math.random() < 0.08 ? 0 : f.base * (0.6 + Math.random() * 0.5);
-      } else if (f.speed > 2) {
-        f.light.intensity = f.base * (0.75 + Math.sin(t * f.speed) * 0.25);
-      } else {
-        f.light.intensity = f.base * (0.5 + Math.max(0, Math.sin(t * f.speed * 2)) * 0.5);
+    const px = this.pos.x;
+    const py = this.pos.y;
+    const pz = this.pos.z;
+    const CHUNK_CULL_DIST = 54;
+    const CHUNK_CULL_SQ = CHUNK_CULL_DIST * CHUNK_CULL_DIST;
+
+    // 1) تحديث ظهور القطاعات فقط عند تحرك اللاعب مسافة 2م لتجنب التكرار كل إطار
+    const cullMoveSq = (px - this.lastCullX) * (px - this.lastCullX) + (pz - this.lastCullZ) * (pz - this.lastCullZ);
+    if (cullMoveSq >= 4.0) {
+      this.lastCullX = px;
+      this.lastCullZ = pz;
+      for (const c of this.world.chunks) {
+        const dx = px < c.minX ? c.minX - px : px > c.maxX ? px - c.maxX : 0;
+        const dz = pz < c.minZ ? c.minZ - pz : pz > c.maxZ ? pz - c.maxZ : 0;
+        const vis = dx * dx + dz * dz <= CHUNK_CULL_SQ;
+        if (c.group.visible !== vis) c.group.visible = vis;
+      }
+      for (const c of this.world.cullables) {
+        const dx = c.x - px;
+        const dz = c.z - pz;
+        const maxD = CHUNK_CULL_DIST + c.r;
+        const vis = dx * dx + dz * dz <= maxD * maxD;
+        if (c.obj.visible !== vis) c.obj.visible = vis;
       }
     }
-    // تحريك الأبواب باتجاه الهدف (smooth damp ~4.5 rad/s)
+
+    // 2) توزيع حوض الأضواء الثابت (lightPool) على أقرب الأضواء الافتراضية دون تغيير visible مطلقاً
+    const vLights = this.world.virtualLights;
+    const poolLen = this.lightPool.length;
+    // إيجاد أقرب poolLen أضواء ضمن 38 متراً
+    const bestIndices = [-1, -1, -1, -1, -1, -1];
+    const bestDists = [1444, 1444, 1444, 1444, 1444, 1444];
+    for (let i = 0; i < vLights.length; i++) {
+      const vl = vLights[i];
+      const dx = vl.x - px;
+      const dy = (vl.y - py) * 1.6;
+      const dz = vl.z - pz;
+      const d2 = dx * dx + dy * dy + dz * dz;
+      if (d2 >= bestDists[poolLen - 1]) continue;
+      for (let slot = 0; slot < poolLen; slot++) {
+        if (d2 < bestDists[slot]) {
+          for (let k = poolLen - 1; k > slot; k--) {
+            bestDists[k] = bestDists[k - 1];
+            bestIndices[k] = bestIndices[k - 1];
+          }
+          bestDists[slot] = d2;
+          bestIndices[slot] = i;
+          break;
+        }
+      }
+    }
+    for (let slot = 0; slot < poolLen; slot++) {
+      const pl = this.lightPool[slot];
+      const idx = bestIndices[slot];
+      if (idx < 0) {
+        pl.intensity = 0;
+        continue;
+      }
+      const vl = vLights[idx];
+      pl.position.set(vl.x, vl.y, vl.z);
+      pl.color.setHex(vl.color);
+      pl.distance = vl.dist;
+      pl.decay = 1.7;
+      if (vl.isFire) {
+        pl.intensity = vl.base * (0.72 + Math.sin(t * 11 + vl.x) * 0.14 + Math.random() * 0.14);
+      } else if (vl.speed > 6) {
+        pl.intensity = Math.random() < 0.08 ? 0 : vl.base * (0.6 + Math.random() * 0.5);
+      } else if (vl.speed > 2) {
+        pl.intensity = vl.base * (0.75 + Math.sin(t * vl.speed) * 0.25);
+      } else {
+        pl.intensity = vl.base * (0.5 + Math.max(0, Math.sin(t * vl.speed * 2)) * 0.5);
+      }
+    }
+
+    // 3) تحريك الأبواب القريبة وإخفاء الأبواب خلف الضباب
     const k = 1 - Math.exp(-4.5 * dt);
     for (const d of this.doorList()) {
+      const dx = d.def.group.position.x - px;
+      const dz = d.def.group.position.z - pz;
+      const vis = dx * dx + dz * dz <= CHUNK_CULL_SQ;
+      if (d.def.group.visible !== vis) d.def.group.visible = vis;
+      if (!vis) continue;
       if (d.def.kind === "double") {
         const kids = d.def.group.children;
         if (kids[0]) kids[0].rotation.y += ((d.open ? -1.6 : 0) - kids[0].rotation.y) * k;
@@ -1866,16 +2410,91 @@ export class GameEngine {
         d.def.group.rotation.y += ((d.open ? baseRy - 1.9 : baseRy) - d.def.group.rotation.y) * k;
       }
     }
-    // التقاطات عائمة قرب اللاعب (حتى 45م)
+
+    // 4) التقاطات: إخفاء ما وراء الضباب وتحريك القريب فقط
     for (const p of this.pickupList()) {
-      const dx = p.obj.position.x - this.pos.x;
-      const dz = p.obj.position.z - this.pos.z;
-      if (dx * dx + dz * dz > 2025) continue;
-      if (!p.obj.visible) continue;
+      if (p.obj.userData.pickedUp) {
+        if (p.obj.visible) p.obj.visible = false;
+        continue;
+      }
+      const dx = p.obj.position.x - px;
+      const dz = p.obj.position.z - pz;
+      const d2 = dx * dx + dz * dz;
+      const vis = d2 <= CHUNK_CULL_SQ;
+      if (p.obj.visible !== vis) p.obj.visible = vis;
+      if (d2 > 1296) continue; // تحريك الدوران فقط ضمن 36م
       const base = (p.obj.userData.baseY as number | undefined) ?? p.obj.position.y;
       const ph = (p.obj.userData.phase as number | undefined) ?? 0;
       p.obj.position.y = base + Math.sin(t * 2 + ph) * 0.04;
       p.obj.rotation.y += dt * 0.9;
+    }
+
+    // 5) تمايل قارب الإخلاء فوق مياه النهر + حركة الناجين الفعليّة نحو الميناء وعلى متن القارب
+    const boatBob = Math.sin(t * 1.4) * 0.035;
+    if (this.world.boat) {
+      this.world.boat.position.y = -0.50 + boatBob;
+      this.world.boat.rotation.z = Math.sin(t * 1.1) * 0.012;
+      this.world.boat.rotation.x = Math.cos(t * 0.9) * 0.008;
+    }
+    for (const sv of this.world.survivors) {
+      if (sv.state === "walking") {
+        // إذا سبق اللاعبُ الناجيَ إلى الميناء، يصل الناجي فوراً إلى موقعه على متن القارب
+        if (pz > 92 && sv.obj.position.z < 88) {
+          sv.state = "on_boat";
+          sv.wpIndex = sv.waypoints.length;
+          sv.obj.position.set(sv.boatPos[0], sv.boatPos[1], sv.boatPos[2]);
+          sv.obj.rotation.y = sv.boatRy;
+          setSurvivorPose(sv.obj, "boat", t, sv.id);
+          continue;
+        }
+        const target = sv.waypoints[sv.wpIndex];
+        if (!target) {
+          sv.state = "on_boat";
+          sv.obj.position.set(sv.boatPos[0], sv.boatPos[1], sv.boatPos[2]);
+          sv.obj.rotation.y = sv.boatRy;
+          setSurvivorPose(sv.obj, "boat", t, sv.id);
+          continue;
+        }
+        const dx = target[0] - sv.obj.position.x;
+        const dy = target[1] - sv.obj.position.y;
+        const dz = target[2] - sv.obj.position.z;
+        const dist = Math.hypot(dx, dz);
+        const speed = 4.6;
+        if (dist <= speed * dt + 0.15) {
+          sv.obj.position.set(target[0], target[1], target[2]);
+          sv.wpIndex++;
+          if (sv.wpIndex >= sv.waypoints.length) {
+            sv.state = "on_boat";
+            sv.obj.position.set(sv.boatPos[0], sv.boatPos[1], sv.boatPos[2]);
+            sv.obj.rotation.y = sv.boatRy;
+            setSurvivorPose(sv.obj, "boat", t, sv.id);
+          }
+        } else {
+          sv.obj.position.x += (dx / dist) * speed * dt;
+          sv.obj.position.z += (dz / dist) * speed * dt;
+          sv.obj.position.y += dy * Math.min(1, dt * 8);
+          const targetYaw = Math.atan2(dx, dz);
+          let diff = targetYaw - sv.obj.rotation.y;
+          while (diff > Math.PI) diff -= Math.PI * 2;
+          while (diff < -Math.PI) diff += Math.PI * 2;
+          sv.obj.rotation.y += diff * Math.min(1, dt * 10);
+          sv.walkTime += dt * 9.5;
+          setSurvivorPose(sv.obj, "walk", sv.walkTime, sv.id);
+        }
+      } else if (sv.state === "on_boat") {
+        sv.obj.position.set(sv.boatPos[0], sv.boatPos[1] + boatBob, sv.boatPos[2]);
+        const dPlayer = Math.hypot(px - sv.boatPos[0], pz - sv.boatPos[2]);
+        if (dPlayer < 14) {
+          const lookYaw = Math.atan2(px - sv.boatPos[0], pz - sv.boatPos[2]);
+          let diff = lookYaw - sv.obj.rotation.y;
+          while (diff > Math.PI) diff -= Math.PI * 2;
+          while (diff < -Math.PI) diff += Math.PI * 2;
+          sv.obj.rotation.y += diff * Math.min(1, dt * 5);
+        } else {
+          sv.obj.rotation.y = sv.boatRy;
+        }
+        setSurvivorPose(sv.obj, "boat", t + (sv.id === "sara" ? 0 : sv.id === "adel" ? 1.5 : 3.0), sv.id);
+      }
     }
   }
 
@@ -1937,23 +2556,27 @@ export class GameEngine {
     switch (id) {
       case "trig_apartment_exit":
         st.setFlag("exitedApartment", true);
-        st.setObjective("obj_weapon");
-        st.showHint("الشارع… لا تنجُ دون سلاح. انتبه للصوت — الرصاص يجذبهم");
+        if (st.objectiveId === "obj_wake") st.setObjective("obj_weapon");
+        st.showHint("الشارع يغرق في الضباب… انتبه للصوت، فالرصاص يجذب المتجولين");
         break;
       case "trig_gunshop":
         this.poiFound.add("متجر الأسلحة");
         break;
       case "trig_police":
         this.poiFound.add("مركز الشرطة");
-        st.showHint("مركز الشرطة… قد يكون مفتاح برج الإذاعة هنا");
+        if (!st.docsRead.includes("doc_4")) {
+          st.showHint("المقر الأمني… لعلّ غرفة العمليات تحتفظ بآخر البرقيات الرسمية");
+        }
         break;
       case "trig_tower":
         this.poiFound.add("برج الإذاعة");
         break;
       case "trig_hospital":
         this.poiFound.add("المستشفى المركزي");
-        st.toastMsg(MESSAGES.bruteWarn);
-        audio.play("stinger_danger", { volume: 0.6 });
+        if (st.flags.radioDone) {
+          st.toastMsg(MESSAGES.bruteWarn);
+          audio.play("stinger_danger", { volume: 0.6 });
+        }
         break;
       case "trig_factory":
         this.poiFound.add("مصنع القطع");
@@ -1967,12 +2590,12 @@ export class GameEngine {
       case "trig_metro":
         this.poiFound.add("مجمع كيبريس — المختبر");
         this.poiFound.add("lab");
-        if (st.flags.radioDone) st.showHint("سور مجمع كيبريس… البوابة الكبيرة تحتاج بطاقتي وصول");
+        if (st.flags.radioDone) st.showHint("سور مجمع كيبريس… البوابة الفولاذية محمية بنظام تصريح مزدوج");
         break;
       case "trig_harbor":
         this.poiFound.add("ميناء بلاك ووتر");
-        if (!st.flags.generatorFixed && !st.flags.coreDestroyed && !st.flags.dealAccepted) {
-          st.showHint("بوابة الميناء مقفلة — المولد بجانبها يحتاج وقوداً");
+        if (st.flags.metAI && !st.flags.generatorFixed && !st.flags.coreDestroyed && !st.flags.dealAccepted) {
+          st.showHint("بوابة الرصيف مغلقة — المولد الكهربائي بجانبها يحتاج وقود ديزل");
         }
         break;
     }
@@ -2010,10 +2633,18 @@ export class GameEngine {
   private updateAudioDirectors(dt: number, st: ReturnType<typeof useGame.getState>) {
     if (!this.enemies) return;
     const { dist, chasing, boss } = this.enemies.nearestThreat(this.pos.x, this.pos.z);
+    // راديو الجيب الاستشعاري بأسلوب سايلنت هيل: تشويش يبدأ عند اقتراب الكائنات في الضباب حتى قبل المطاردة
     let threat = 0;
-    if (chasing) threat = Math.max(0.35, 1 - dist / 30);
-    if (boss && dist < 45) threat = Math.max(threat, 0.55);
-    if (Math.abs(threat - st.hud.threat) > 0.05) {
+    if (dist < 25) {
+      threat = Math.max(0.12, (1 - dist / 25) * 0.55);
+    }
+    if (chasing) {
+      threat = Math.max(threat, Math.max(0.42, 1 - dist / 28));
+    }
+    if (boss && dist < 45) {
+      threat = Math.max(threat, 0.65);
+    }
+    if (Math.abs(threat - st.hud.threat) > 0.04) {
       st.setHud({ threat });
       audio.setThreat(threat);
     }

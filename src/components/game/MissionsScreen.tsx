@@ -132,20 +132,22 @@ export default function MissionsScreen() {
                       ? "border-emerald-900/50 bg-emerald-950/15"
                       : met
                         ? "border-amber-800/50 bg-amber-950/20"
-                        : "border-stone-800/50 bg-black/15"
+                        : "border-stone-800/50 bg-black/15 opacity-65"
                   }`}
                 >
                   <div className="flex items-center justify-between gap-2">
-                    <p className="font-ui text-sm font-bold text-stone-200">{s.name}</p>
+                    <p className="font-ui text-sm font-bold text-stone-200">
+                      {met || saved ? s.name : "ناجٍ محاصر — لم يُكتشف بعد"}
+                    </p>
                     {saved ? (
                       <span className="flex items-center gap-1 font-ui text-[11px] text-emerald-500">
                         <BadgeCheck className="h-3.5 w-3.5" strokeWidth={2} />
                         اكتملت
                       </span>
                     ) : met ? (
-                      <span className="font-ui text-[11px] text-amber-500">جارية</span>
+                      <span className="font-ui text-[11px] text-amber-500">{s.place}</span>
                     ) : (
-                      <span className="font-ui text-[11px] text-stone-500">{s.place}</span>
+                      <span className="font-ui text-[11px] text-stone-600">مجهول الموقع</span>
                     )}
                   </div>
                   {met && !saved && s.quest && (
@@ -161,8 +163,10 @@ export default function MissionsScreen() {
                       <span className="text-stone-600"> — عد إليه وسلّم ما طلب</span>
                     </p>
                   )}
-                  {!met && (
-                    <p className="mt-1 font-ui text-xs text-stone-500">زر مكان احتمائه وتحدث معه…</p>
+                  {!met && !saved && (
+                    <p className="mt-1 font-ui text-xs text-stone-500">
+                      استكشف منشآت المدينة للعثور على ناجين قد يحتاجون لمساعدتك…
+                    </p>
                   )}
                 </div>
               ))}

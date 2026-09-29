@@ -12,6 +12,7 @@ export type AIChoice = "destroy" | "deal" | "leave";
 export interface GameEngineApi {
   startNewGame(): void;
   continueGame(): void;
+  startRun(): void;
   pause(): void;
   resume(): void;
   quitToMenu(): void;

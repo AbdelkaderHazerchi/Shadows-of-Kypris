@@ -1,10 +1,11 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { RotateCcw, Undo2 } from "lucide-react";
+import { Play, RotateCcw, Undo2 } from "lucide-react";
 import { ENDING_BY_ID } from "@/lib/game/content";
 import { useGame } from "@/lib/game/state";
-import { unlockEnding, getUnlockedEndings } from "@/lib/game/save";
+import { getEngine } from "@/lib/game/engineRef";
+import { unlockEnding, getUnlockedEndings, loadCheckpoint } from "@/lib/game/save";
 import { formatClock } from "./utils";
 import type { EndingRunRecord } from "@/lib/game/types";
 
@@ -18,6 +19,7 @@ const TONE_GLOW: Record<string, string> = {
 /** شاشة النهاية — سرد الخاتمة + إحصاءات الجولة */
 export default function EndScreen() {
   const endingId = useGame((g) => g.endingId);
+  const hasSave = useGame((g) => g.hasSave);
   const stats = useGame((g) => g.stats);
   const docs = useGame((g) => g.docsRead.length);
   const survivors = useGame(
@@ -152,23 +154,46 @@ export default function EndScreen() {
         <div className="mt-10 flex flex-wrap items-center justify-center gap-4">
           <button
             onClick={() => {
-              useGame.getState().resetRun();
-              useGame.getState().setScreen("menu");
+              const eng = getEngine();
+              if (eng) eng.quitToMenu();
+              else {
+                useGame.getState().resetRun();
+                useGame.getState().setScreen("menu");
+              }
             }}
-            className="kypris-btn flex items-center gap-2 px-8 py-3 font-ui text-stone-200"
+            className="kypris-btn flex items-center gap-2 px-6 py-3 font-ui text-stone-200"
           >
             <Undo2 className="h-4 w-4" strokeWidth={1.5} />
             القائمة الرئيسية
           </button>
+
+          {(hasSave || Boolean(loadCheckpoint())) && (
+            <button
+              onClick={() => {
+                getEngine()?.continueGame();
+              }}
+              className="kypris-btn flex items-center gap-2 border-amber-700/70 bg-amber-950/40 px-7 py-3 font-ui text-amber-200"
+            >
+              <Play className="h-4 w-4" strokeWidth={1.5} />
+              العودة من آخر نقطة حفظ
+            </button>
+          )}
+
           <button
             onClick={() => {
-              useGame.getState().resetRun();
-              useGame.getState().setScreen("intro");
+              const eng = getEngine();
+              if (eng) {
+                eng.startNewGame();
+                eng.startRun();
+              } else {
+                useGame.getState().resetRun();
+                useGame.getState().setScreen("intro");
+              }
             }}
-            className="kypris-btn flex items-center gap-2 px-8 py-3 font-ui text-red-300"
+            className="kypris-btn flex items-center gap-2 px-7 py-3 font-ui text-red-300"
           >
             <RotateCcw className="h-4 w-4" strokeWidth={1.5} />
-            رحلة جديدة
+            إعادة المحاولة من البداية
           </button>
         </div>
 

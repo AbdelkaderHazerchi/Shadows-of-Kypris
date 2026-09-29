@@ -1,0 +1,5 @@
+{
+  "name": "Shadows of Kypris",
+  "description": "لعبة رعب نفسي بمنظور الشخص الأول: جون، عالم فاقد للذاكرة، يكتشف أن تجاربه العلمية دمرت مدينته. اهرب، انجُ، واكشف الحقيقة.",
+  "capabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

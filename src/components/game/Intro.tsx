@@ -62,6 +62,7 @@ export default function Intro({ onFinish }: { onFinish: () => void }) {
       skip();
       return;
     }
+    audio.stopVoice();
     advance();
   };
 

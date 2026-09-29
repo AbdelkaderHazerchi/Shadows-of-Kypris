@@ -36,9 +36,9 @@ const _e = new THREE.Euler();
 const _v = new THREE.Vector3();
 const _s = new THREE.Vector3();
 
-/** مصفوفة سريعة: موضع + دوران + مقياس */
+/** مصفوفة سريعة: موضع + دوران + مقياس (بترتيب YXZ ليدور حول المحور المحلي ثم محور Y العالمي) */
 export function mat4(x: number, y: number, z: number, o: Mat4Opts = {}): THREE.Matrix4 {
-  _e.set(o.rx ?? 0, o.ry ?? 0, o.rz ?? 0);
+  _e.set(o.rx ?? 0, o.ry ?? 0, o.rz ?? 0, "YXZ");
   _q.setFromEuler(_e);
   _v.set(x, y, z);
   _s.set(o.sx ?? 1, o.sy ?? 1, o.sz ?? 1);
@@ -212,6 +212,14 @@ export function makePropMaterials(t: PropTextures): Record<string, THREE.Materia
     carTaxi: std({ color: 0x8a6a1e, roughness: 0.5, metalness: 0.45 }),
     ambulance: std({ color: 0x9a968c, roughness: 0.45, metalness: 0.5 }),
     glassDark: std({ color: 0x0c0f12, roughness: 0.12, metalness: 0.9 }),
+    glassWindow: std({
+      color: 0x6c90aa,
+      roughness: 0.14,
+      metalness: 0.25,
+      transparent: true,
+      opacity: 0.32,
+      depthWrite: false,
+    }),
     rubber: std({ color: 0x0d0d0d, roughness: 0.96 }),
     chrome: std({ color: 0x5c6266, roughness: 0.28, metalness: 0.95 }),
     // أثاث وداخلي
@@ -274,10 +282,10 @@ class PB {
   cyl(bucket: string, x: number, y: number, z: number, rTop: number, rBot: number, h: number, o: Mat4Opts & { seg?: number } = {}) {
     const p = this.toWorld(x, y, z, o);
     const g = new THREE.CylinderGeometry(rTop, rBot, h, o.seg ?? 10, 1);
-    if (o.rx || o.ry || o.rz) {
-      g.rotateX(o.rx ?? 0);
-      g.rotateY(o.ry ?? 0);
-      g.rotateZ(o.rz ?? 0);
+    if (o.rx || o.rz || p.ry) {
+      if (o.rz) g.rotateZ(o.rz);
+      if (o.rx) g.rotateX(o.rx);
+      if (p.ry) g.rotateY(p.ry);
     }
     g.translate(p.x, p.y, p.z);
     this.ctx.push(bucket, g, mat4(0, 0, 0));
@@ -292,10 +300,10 @@ class PB {
   geo(bucket: string, geo: THREE.BufferGeometry, x: number, y: number, z: number, o: Mat4Opts = {}) {
     const p = this.toWorld(x, y, z, o);
     const g = geo.clone();
-    if (o.rx || o.ry || o.rz) {
-      g.rotateX(o.rx ?? 0);
-      g.rotateY(o.ry ?? 0);
-      g.rotateZ(o.rz ?? 0);
+    if (o.rx || o.rz || p.ry) {
+      if (o.rz) g.rotateZ(o.rz);
+      if (o.rx) g.rotateX(o.rx);
+      if (p.ry) g.rotateY(p.ry);
     }
     g.translate(p.x, p.y, p.z);
     this.ctx.push(bucket, g, mat4(0, 0, 0));
@@ -596,64 +604,102 @@ export function fountain(w: PropCtx, x: number, z: number) {
 
 // ═══════════════ أثاث داخلي ═══════════════
 
-/** مكتب مع مونيتور وأوراق وأدراج */
+/** مكتب تنفيذي/مكتبي واقعي مع وحدة أدراج وحاسب وشاشة ومصباح وأوراق */
 export function desk(w: PropCtx, x: number, z: number, ry = 0, withMonitor = true) {
   const p = new PB(w).group(x, 0, z, ry);
-  p.boxB("wood2", 0, 0.66, 0, 1.8, 0.07, 0.85);
-  p.boxB("wood2", 0, 0.3, -0.3, 1.7, 0.5, 0.5);                     // درج
-  p.boxB("metal", -0.8, 0, -0.25, 0.07, 0.66, 0.75);
-  p.boxB("metal", 0.8, 0, -0.25, 0.07, 0.66, 0.75);
-  if (withMonitor) {
-    p.boxB("plastic", 0, 0.7, -0.2, 0.55, 0.06, 0.2);               // قاعدة شاشة
-    p.boxB("plastic", 0, 0.95, -0.28, 0.6, 0.4, 0.05, { rx: 0.08 });
-    p.boxB("screenGlow", 0, 0.95, -0.25, 0.52, 0.32, 0.02, { rx: 0.08 });
+  // 1) وحدة الأدراج اليمنى والقاعدة اليسرى (تجلس على الأرض مباشرة y=0)
+  p.boxB("wood2", -0.62, 0, 0, 0.46, 0.72, 0.82);
+  p.boxB("wood2", 0.62, 0, 0, 0.46, 0.72, 0.82);
+  // لوح الساتر الخلفي بين القاعدتين (Modesty Panel)
+  p.boxB("wood2", 0, 0.14, -0.34, 0.82, 0.58, 0.05);
+  // واجهات الأدراج ومقابض الكروم
+  for (let i = 0; i < 3; i++) {
+    const dy = 0.08 + i * 0.21;
+    p.boxB("woodFloor", 0.62, dy, 0.415, 0.40, 0.18, 0.02);
+    p.boxB("chrome", 0.62, dy + 0.08, 0.43, 0.12, 0.02, 0.02);
   }
-  // أوراق مبعثرة
-  p.boxB("paper", 0.45, 0.7, 0.15, 0.24, 0.005, 0.32, { ry: 0.3 });
-  p.boxB("paper", -0.4, 0.7, 0.2, 0.24, 0.005, 0.32, { ry: -0.5 });
-  p.hit(0, 0, 1.9, 1);
+  // باب الخزانة اليسرى + صندوق الحاسب المكتبي
+  p.boxB("woodFloor", -0.62, 0.08, 0.415, 0.40, 0.60, 0.02);
+  p.boxB("chrome", -0.48, 0.38, 0.43, 0.02, 0.14, 0.02);
+
+  // 2) سطح المكتب الخشبي المشطوف + رقعة جلدية وسطية
+  p.boxB("wood2", 0, 0.72, 0, 1.88, 0.055, 0.90);
+  p.boxB("plastic", 0, 0.775, 0.06, 0.86, 0.008, 0.48);
+
+  if (withMonitor) {
+    // قاعدة الشاشة وحامل الرقبة المعدني المتصل بالشاشة
+    p.boxB("plastic", 0, 0.78, -0.22, 0.28, 0.022, 0.20);
+    p.boxB("metal", 0, 0.80, -0.25, 0.06, 0.16, 0.04);
+    // إطار الشاشة المسطحة + الشاشة المضيئة
+    p.boxB("plastic", 0, 0.91, -0.21, 0.64, 0.38, 0.04, { rx: 0.05 });
+    p.boxB("screenGlow", 0, 0.93, -0.185, 0.58, 0.32, 0.015, { rx: 0.05 });
+    // لوحة المفاتيح والفأرة على الرقعة الجلدية
+    p.boxB("plastic", -0.04, 0.78, 0.08, 0.42, 0.018, 0.15);
+    p.boxB("plastic", 0.28, 0.78, 0.08, 0.07, 0.018, 0.11);
+  }
+  // مصباح مكتبي صغير وملفات وأوراق منظمة على الجانب
+  p.cyl("brass", -0.68, 0.79, -0.22, 0.09, 0.11, 0.03);
+  p.cyl("brass", -0.68, 0.95, -0.22, 0.015, 0.015, 0.30);
+  p.cyl("greenMetal", -0.62, 1.08, -0.18, 0.08, 0.13, 0.09, { rz: -0.25 });
+  p.boxB("paper", 0.56, 0.78, 0.12, 0.24, 0.012, 0.32, { ry: 0.18 });
+  p.boxB("paper", 0.52, 0.792, 0.10, 0.22, 0.008, 0.30, { ry: -0.12 });
+  p.hit(0, 0, 1.9, 1.0);
 }
 
 export function officeChair(w: PropCtx, x: number, z: number, ry = 0) {
   const p = new PB(w).group(x, 0, z, ry);
-  p.cyl("metal", 0, 0.25, 0, 0.26, 0.26, 0.04, { seg: 8 });
-  p.cyl("metal", 0, 0.27, 0, 0.04, 0.04, 0.35);
-  p.boxB("fabric", 0, 0.45, 0, 0.46, 0.09, 0.46);
-  p.boxB("fabric", 0, 0.62, -0.2, 0.44, 0.5, 0.08, { rx: -0.12 });
+  // قاعدة نجمية خماسية وعجلات على الأرض
+  p.cyl("metal", 0, 0.06, 0, 0.28, 0.28, 0.04, { seg: 8 });
+  for (const [wx, wz] of [[-0.22, -0.18], [0.22, -0.18], [-0.22, 0.18], [0.22, 0.18]] as const) {
+    p.cyl("rubber", wx, 0.03, wz, 0.03, 0.03, 0.03, { rx: Math.PI / 2 });
+  }
+  p.cyl("chrome", 0, 0.26, 0, 0.035, 0.04, 0.38);
+  // مقعد ومسند ظهر ومساند ذراعين
+  p.boxB("fabric", 0, 0.44, 0, 0.50, 0.08, 0.48);
+  p.boxB("fabric", 0, 0.52, -0.21, 0.48, 0.54, 0.08, { rx: -0.08 });
+  p.boxB("plastic", -0.26, 0.48, -0.02, 0.04, 0.18, 0.28);
+  p.boxB("plastic", 0.26, 0.48, -0.02, 0.04, 0.18, 0.28);
   p.hit(0, 0, 0.6, 0.6);
 }
 
-/** رف مخزن بكرات وبضائع */
+/** رف مخزن معدني بكراتين وبضائع */
 export function shelfStocked(w: PropCtx, x: number, z: number, ry = 0, len = 3, stocked = true, seed = Math.random()) {
   const p = new PB(w).group(x, 0, z, ry);
   const rnd = seededRandom(Math.floor(seed * 1e9));
   const buckets = ["wood2", "carA", "carB", "greenMetal", "medWhite"];
-  p.boxB("metal", 0, 1.0, 0, len, 2, 0.55);
-  p.boxB("metal", -len / 2, 0, 0, 0.07, 2, 0.55);
-  p.boxB("metal", len / 2, 0, 0, 0.07, 2, 0.55);
-  for (const lvl of [0.28, 0.95, 1.62]) {
-    p.boxB("metal", 0, lvl, 0, len, 0.05, 0.55);
-    if (stocked) {
-      let cx = -len / 2 + 0.3;
-      while (cx < len / 2 - 0.3) {
-        const bw = 0.3 + rnd() * 0.45;
-        const bh = 0.22 + rnd() * 0.3;
-        if (rnd() < 0.72) {
-          p.boxB(buckets[Math.floor(rnd() * buckets.length)], cx + bw / 2, lvl + 0.03, 0, bw, bh, 0.4, { ry: (rnd() - 0.5) * 0.2 });
+  // القوائم الرأسية الأربعة على الأرض (y=0)
+  for (const sx of [-len / 2 + 0.04, len / 2 - 0.04]) {
+    for (const sz of [-0.25, 0.25]) {
+      p.boxB("metal", sx, 0, sz, 0.06, 2.05, 0.06);
+    }
+  }
+  for (const lvl of [0.18, 0.78, 1.38, 1.96]) {
+    p.boxB("metal", 0, lvl, 0, len, 0.045, 0.56);
+    if (stocked && lvl < 1.8) {
+      let cx = -len / 2 + 0.26;
+      while (cx < len / 2 - 0.26) {
+        const bw = 0.28 + rnd() * 0.42;
+        const bh = 0.22 + rnd() * 0.28;
+        if (rnd() < 0.76) {
+          p.boxB(buckets[Math.floor(rnd() * buckets.length)], cx + bw / 2, lvl + 0.045, 0, bw, bh, 0.42, { ry: (rnd() - 0.5) * 0.14 });
         }
-        cx += bw + 0.12 + rnd() * 0.2;
+        cx += bw + 0.10 + rnd() * 0.16;
       }
     }
   }
-  p.hit(0, 0, len + 0.7, 0.7);
+  p.hit(0, 0, len + 0.5, 0.65);
 }
 
 export function cabinet(w: PropCtx, x: number, z: number, ry = 0, bucket = "wood2") {
   const p = new PB(w).group(x, 0, z, ry);
-  p.boxB(bucket, 0, 0.5, 0, 1.1, 2, 0.5);
-  p.boxB("metal", 0, 0.5, 0.26, 0.9, 1.7, 0.03);
-  p.boxB("chrome", 0, 1.3, 0.29, 0.5, 0.04, 0.04);
-  p.hit(0, 0, 1.2, 0.6);
+  p.boxB(bucket, 0, 0, 0, 1.05, 1.95, 0.52);
+  // أدراج/أبواب أمامية ومقابض
+  for (let i = 0; i < 4; i++) {
+    const dy = 0.08 + i * 0.45;
+    p.boxB("metal", 0, dy, 0.265, 0.92, 0.40, 0.02);
+    p.boxB("chrome", 0, dy + 0.22, 0.285, 0.18, 0.025, 0.025);
+  }
+  p.hit(0, 0, 1.15, 0.62);
 }
 
 /** صف خزائن أمنية (شرطة) — إحداها خزانة الأسلحة */
@@ -661,37 +707,72 @@ export function lockerRow(w: PropCtx, x: number, z: number, ry = 0, count = 4) {
   const p = new PB(w).group(x, 0, z, ry);
   for (let i = 0; i < count; i++) {
     const bx = (i - (count - 1) / 2) * 0.62;
-    p.boxB("greenMetal", bx, 0, 0, 0.58, 2.1, 0.5);
-    p.boxB("metal", bx, 1.05, 0.26, 0.5, 1.9, 0.02);
-    p.boxB("plastic", bx + 0.18, 1.0, 0.28, 0.05, 0.18, 0.03);
-    p.sph("plastic", bx - 0.15, 1.5, 0.27, 0.03);
+    p.boxB("greenMetal", bx, 0, 0, 0.58, 2.05, 0.52);
+    p.boxB("metal", bx, 0.08, 0.265, 0.50, 1.88, 0.02);
+    p.boxB("chrome", bx + 0.18, 1.02, 0.28, 0.03, 0.16, 0.03);
   }
-  p.hit(0, 0, count * 0.62 + 0.2, 0.7);
+  p.hit(0, 0, count * 0.62 + 0.2, 0.68);
 }
 
 export function bed(w: PropCtx, x: number, z: number, ry = 0, messy = true) {
   const p = new PB(w).group(x, 0, z, ry);
-  p.boxB("metal", 0, 0.28, 0, 1.0, 0.22, 2.05);
-  p.boxB("fabric2", 0, 0.44, 0, 0.95, 0.16, 2.0);
-  p.boxB("sheet", 0, 0.6, 0.55, 0.9, 0.1, 0.85, messy ? { ry: 0.06 } : {});
-  p.boxB("fabric2", 0, 0.58, -0.35, 0.95, 0.14, 1.25, messy ? { rz: 0.03, ry: -0.05 } : {});
-  p.boxB("metal", 0, 0.3, 1.02, 0.96, 0.5, 0.05);
-  p.boxB("metal", 0, 0.3, -1.02, 0.96, 0.62, 0.05);
-  p.hit(0, 0, 1.1, 2.2);
+  // قوائم السرير الأربعة على الأرض + إطار السرير واللوح الأمامي والخلفي
+  for (const [lx, lz] of [[-0.48, -0.98], [0.48, -0.98], [-0.48, 0.98], [0.48, 0.98]] as const) {
+    p.boxB("wood2", lx, 0, lz, 0.08, 0.52, 0.08);
+  }
+  p.boxB("wood2", 0, 0.16, 0, 1.04, 0.20, 2.04);
+  p.boxB("wood2", 0, 0.16, -1.01, 1.06, 0.96, 0.07); // لوح الرأس (Headboard)
+  p.boxB("wood2", 0, 0.16, 1.01, 1.06, 0.52, 0.06);  // لوح القدم (Footboard)
+  // المرتبة والوسائد والغطاء
+  p.boxB("sheet", 0, 0.36, 0, 0.98, 0.18, 1.94);
+  p.boxB("white", -0.22, 0.54, -0.74, 0.38, 0.09, 0.28, messy ? { ry: 0.08 } : {});
+  p.boxB("white", 0.22, 0.54, -0.74, 0.38, 0.09, 0.28, messy ? { ry: -0.06 } : {});
+  p.boxB("fabric2", 0, 0.54, 0.22, 0.99, 0.06, 1.32, messy ? { ry: 0.02 } : {});
+  p.hit(0, 0, 1.15, 2.15);
 }
 
-/** سرير مستشفى بعجلات وملاءة ملطخة */
+/** سرير مستشفى طبي متكامل بعجلات وحواجز جانبية ومرتبة مفصلية ولوح ملاحظات */
 export function gurney(w: PropCtx, x: number, z: number, ry = 0, bloody = true) {
   const p = new PB(w).group(x, 0, z, ry);
-  p.boxB("metal", 0, 0.72, 0, 0.85, 0.07, 2.0);
-  p.boxB("white", 0, 0.78, 0, 0.8, 0.1, 1.95);
-  if (bloody) p.boxB("medRed", 0.05, 0.89, 0.1, 0.45, 0.015, 0.7, { ry: 0.4 });
-  p.boxB("white", 0, 0.8, -1.02, 0.8, 0.42, 0.07, { rx: 0.25 });
-  for (const [wx, wz] of [[-0.34, 0.7], [0.34, 0.7], [-0.34, -0.7], [0.34, -0.7]] as const) {
-    p.cyl("metal", wx, 0.36, wz, 0.025, 0.025, 0.7);
-    p.cyl("rubber", wx, 0.09, wz, 0.09, 0.09, 0.05, { rx: Math.PI / 2, seg: 8 });
+  // 1) القوائم الفولاذية والعجلات الطبية والصينية السفلية (من الأرض y=0)
+  for (const [wx, wz] of [[-0.38, 0.82], [0.38, 0.82], [-0.38, -0.82], [0.38, -0.82]] as const) {
+    p.cyl("rubber", wx, 0.07, wz, 0.07, 0.07, 0.05, { rz: Math.PI / 2, seg: 10 });
+    p.cyl("chrome", wx, 0.40, wz, 0.028, 0.028, 0.64);
   }
-  p.hit(0, 0, 1, 2.2);
+  // قاعدة سفلية وأسطوانة أكسجين تحت السرير
+  p.boxB("metal", 0, 0.16, 0, 0.78, 0.04, 1.68);
+  p.cyl("greenMetal", -0.18, 0.26, 0.2, 0.07, 0.07, 0.65, { rx: Math.PI / 2 });
+  // عمودان هيدروليكيان مركزيان لحمل السرير
+  p.cyl("chrome", 0, 0.44, -0.45, 0.05, 0.06, 0.52);
+  p.cyl("chrome", 0, 0.44, 0.45, 0.05, 0.06, 0.52);
+
+  // 2) إطار السرير المعدني العلوي (y = 0.68)
+  p.boxB("medWhite", 0, 0.68, 0, 0.96, 0.07, 2.12);
+  // لوح الرأس ولوح القدم الطبيان مع ملف حالة المريض
+  p.boxB("medWhite", 0, 0.68, -1.05, 0.94, 0.52, 0.05);
+  p.boxB("chrome", 0, 1.18, -1.05, 0.86, 0.03, 0.06);
+  p.boxB("medWhite", 0, 0.68, 1.05, 0.94, 0.38, 0.05);
+  p.boxB("wood2", 0, 0.82, 1.08, 0.24, 0.30, 0.02);
+  p.boxB("paper", 0, 0.84, 1.095, 0.20, 0.25, 0.01);
+
+  // 3) المرتبة الطبية والوسادة والملاءة
+  p.boxB("white", 0, 0.75, 0.18, 0.88, 0.12, 1.66);
+  p.boxB("white", 0, 0.78, -0.78, 0.88, 0.13, 0.44, { rx: 0.18 });
+  p.boxB("sheet", 0, 0.91, -0.82, 0.54, 0.08, 0.30, { rx: 0.18 });
+  p.boxB("sheet", 0, 0.87, 0.28, 0.89, 0.03, 1.36);
+  if (bloody) {
+    p.boxB("medRed", 0.06, 0.902, 0.12, 0.46, 0.008, 0.68, { ry: 0.25 });
+  }
+
+  // 4) قضبان الحماية الجانبية المعدنية (Side Safety Rails)
+  for (const sx of [-0.47, 0.47]) {
+    p.boxB("chrome", sx, 1.02, 0, 0.03, 0.03, 1.32);
+    p.boxB("chrome", sx, 0.86, 0, 0.025, 0.025, 1.32);
+    for (const rz of [-0.62, -0.20, 0.20, 0.62]) {
+      p.boxB("chrome", sx, 0.72, rz, 0.025, 0.32, 0.025);
+    }
+  }
+  p.hit(0, 0, 1.08, 2.22);
 }
 
 export function ivStand(w: PropCtx, x: number, z: number) {
@@ -704,28 +785,30 @@ export function ivStand(w: PropCtx, x: number, z: number) {
 
 export function sofa(w: PropCtx, x: number, z: number, ry = 0, len = 2.1) {
   const p = new PB(w).group(x, 0, z, ry);
-  p.boxB("fabric", 0, 0.24, 0, len, 0.34, 0.9);
-  p.boxB("fabric", 0, 0.6, -0.38, len, 0.7, 0.22, { rx: -0.1 });
-  p.boxB("fabric", -len / 2 + 0.12, 0.48, 0, 0.24, 0.34, 0.85);
-  p.boxB("fabric", len / 2 - 0.12, 0.48, 0, 0.24, 0.34, 0.85);
-  p.boxB("fabric2", -len / 4, 0.46, -0.05, 0.4, 0.14, 0.35, { rx: -0.5 });
-  p.hit(0, 0, len + 0.2, 1.1);
+  p.boxB("wood2", 0, 0, 0, len, 0.10, 0.86);
+  p.boxB("fabric", 0, 0.10, 0, len, 0.32, 0.88);
+  p.boxB("fabric", 0, 0.42, -0.34, len, 0.52, 0.22, { rx: -0.08 });
+  p.boxB("fabric", -len / 2 + 0.12, 0.10, 0, 0.24, 0.54, 0.88);
+  p.boxB("fabric", len / 2 - 0.12, 0.10, 0, 0.24, 0.54, 0.88);
+  p.boxB("fabric2", -len / 4, 0.42, -0.05, 0.38, 0.12, 0.34, { ry: 0.2 });
+  p.hit(0, 0, len + 0.2, 1.05);
 }
 
 export function tvSet(w: PropCtx, x: number, z: number, ry = 0) {
   const p = new PB(w).group(x, 0, z, ry);
-  p.boxB("plastic", 0, 0.25, 0, 1.2, 0.5, 0.4);
-  p.boxB("plastic", 0, 0.78, 0, 1.05, 0.62, 0.09);
-  p.boxB("plastic", 0, 0.4, 0, 0.1, 0.3, 0.35);
+  p.boxB("wood2", 0, 0, 0, 1.25, 0.52, 0.44);
+  p.boxB("plastic", 0, 0.52, 0, 0.34, 0.04, 0.24);
+  p.boxB("plastic", 0, 0.56, 0, 0.08, 0.12, 0.08);
+  p.boxB("plastic", 0, 0.66, 0, 1.08, 0.62, 0.07);
   // شاشة متشققة مظلمة
-  p.boxB("glassDark", 0, 0.78, 0.05, 0.92, 0.5, 0.02);
+  p.boxB("glassDark", 0, 0.70, 0.04, 0.98, 0.54, 0.02);
   p.hit(0, 0, 1.3, 0.6);
 }
 
 export function coffeeTable(w: PropCtx, x: number, z: number, ry = 0) {
   const p = new PB(w).group(x, 0, z, ry);
   p.boxB("wood2", 0, 0.4, 0, 1.1, 0.05, 0.6);
-  p.boxB("wood2", 0, 0.18, 0, 1.0, 0.04, 0.5);
+  p.boxB("wood2", 0, 0.14, 0, 1.0, 0.04, 0.5);
   p.boxB("metal", -0.48, 0, 0, 0.05, 0.4, 0.5);
   p.boxB("metal", 0.48, 0, 0, 0.05, 0.4, 0.5);
   p.hit(0, 0, 1.2, 0.7);
@@ -734,19 +817,19 @@ export function coffeeTable(w: PropCtx, x: number, z: number, ry = 0) {
 /** كاونتر مطبخ مع حوض وخزائن علوية */
 export function kitchenCounter(w: PropCtx, x: number, z: number, ry = 0, len = 2.4) {
   const p = new PB(w).group(x, 0, z, ry);
-  p.boxB("wood2", 0, 0.44, 0, len, 0.88, 0.62);
-  p.boxB("white", 0, 0.92, 0, len + 0.06, 0.05, 0.66);
-  p.boxB("chrome", -0.4, 0.94, 0, 0.5, 0.03, 0.4);                 // حوض
-  p.boxB("wood2", 0, 1.9, -0.1, len, 0.7, 0.38);                   // خزائن علوية
+  p.boxB("wood2", 0, 0, 0, len, 0.88, 0.62);
+  p.boxB("white", 0, 0.88, 0, len + 0.06, 0.05, 0.66);
+  p.boxB("chrome", -0.4, 0.93, 0, 0.5, 0.03, 0.4);                 // حوض
+  p.boxB("wood2", 0, 1.65, -0.12, len, 0.68, 0.38);                 // خزائن علوية
   p.hit(0, 0, len + 0.2, 0.8);
 }
 
 export function fridge(w: PropCtx, x: number, z: number, ry = 0, open = false) {
   const p = new PB(w).group(x, 0, z, ry);
-  p.boxB("white", 0, 0.9, 0, 0.75, 1.8, 0.72);
-  p.boxB("chrome", 0.35, 1.0, 0.38, 0.04, 0.5, 0.04);
+  p.boxB("white", 0, 0, 0, 0.78, 1.86, 0.72);
+  p.boxB("chrome", 0.34, 0.95, 0.37, 0.03, 0.45, 0.03);
   if (open) {
-    p.boxB("white", -0.72, 0.9, 0.3, 0.06, 1.74, 0.7, { ry: 1.1 });
+    p.boxB("white", -0.38, 0.04, 0.55, 0.06, 1.76, 0.68, { ry: 0.9 });
   }
   p.hit(0, 0, 0.9, 0.85);
 }
@@ -775,71 +858,91 @@ export function barrel(w: PropCtx, x: number, z: number, bucket = "greenMetal", 
   }
 }
 
-/** خادم شبكة بمؤشرات مضيئة */
+/** خزانة خادم بيانات احترافية (Data Center Server Rack 42U) بوحدات شفرات ومؤشرات LED */
 export function serverRack(w: PropCtx, x: number, z: number, ry = 0) {
   const p = new PB(w).group(x, 0, z, ry);
-  p.boxB("labMetal", 0, 1.1, 0, 0.85, 2.2, 1.1);
-  for (let i = 0; i < 6; i++) {
-    p.boxB("plastic", 0, 0.25 + i * 0.33, 0.56, 0.75, 0.22, 0.02);
-    p.boxB(i % 3 === 0 ? "screenGlow" : i % 3 === 1 ? "screenGlowAmber" : "plastic", -0.22, 0.3 + i * 0.33, 0.58, 0.07, 0.04, 0.01);
-    p.boxB(i % 2 === 0 ? "screenGlow" : "plastic", 0.02, 0.3 + i * 0.33, 0.58, 0.07, 0.04, 0.01);
+  // 1) قاعدة الخادم الفولاذية على الأرض (y=0) والهيكل المعدني الرئيسي
+  p.boxB("metal", 0, 0, 0, 0.94, 0.08, 1.04);
+  p.boxB("labMetal", 0, 0.08, -0.02, 0.90, 2.06, 0.96);
+  p.boxB("metal", 0, 2.14, 0, 0.94, 0.07, 1.04);
+  // القائمان الأماميان من الكروم
+  p.boxB("chrome", -0.41, 0.08, 0.47, 0.05, 2.06, 0.04);
+  p.boxB("chrome", 0.41, 0.08, 0.47, 0.05, 2.06, 0.04);
+
+  // 2) سبع وحدات خوادم نصلية (Server Blades) مركبة داخل الخزانة مع شاشات ومؤشرات حالة
+  for (let i = 0; i < 7; i++) {
+    const by = 0.14 + i * 0.28;
+    p.boxB("plastic", 0, by, 0.46, 0.74, 0.23, 0.04);
+    // مقابض سحب الوحدة الجانبية
+    p.boxB("chrome", -0.34, by + 0.04, 0.485, 0.02, 0.15, 0.02);
+    p.boxB("chrome", 0.34, by + 0.04, 0.485, 0.02, 0.15, 0.02);
+    // شاشة حالة ومؤشرات LED مضيئة
+    const ledBucket = i % 3 === 0 ? "screenGlow" : i % 3 === 1 ? "screenGlowAmber" : "redEmissive";
+    p.boxB(ledBucket, -0.20, by + 0.09, 0.485, 0.12, 0.045, 0.015);
+    p.boxB("screenGlow", 0.04, by + 0.10, 0.485, 0.05, 0.03, 0.015);
+    p.boxB(i % 2 === 0 ? "screenGlow" : "screenGlowAmber", 0.14, by + 0.10, 0.485, 0.05, 0.03, 0.015);
+    p.boxB("metal", 0.25, by + 0.05, 0.482, 0.06, 0.13, 0.01);
   }
-  p.hit(0, 0, 1.0, 1.3);
+  // باب زجاجي مدخن أمامي
+  p.boxB("glassWindow", 0, 0.12, 0.50, 0.76, 1.98, 0.02);
+  p.hit(0, 0, 1.02, 1.14);
 }
 
-/** آلة تصنيع ضخمة (مكبس) */
+/** آلة تصنيع ضخمة (مكبس هيدروليكي صناعي) */
 export function pressMachine(w: PropCtx, x: number, z: number, ry = 0) {
   const p = new PB(w).group(x, 0, z, ry);
-  p.boxB("labMetal", 0, 1.5, 0, 2.6, 3, 1.8);
-  p.boxB("labMetal", 0, 3.15, 0, 3.0, 0.5, 2.0);
-  p.cyl("metal", 0, 2.3, 0, 0.3, 0.3, 1.5);
-  p.boxB("metal", 0, 1.45, 0, 1.2, 0.4, 1.0);
-  p.boxB("hazard", 0, 0.06, 0.95, 2.4, 0.12, 0.5);
-  p.boxB("redEmissive", 0.9, 3.45, 0, 0.12, 0.12, 0.12);
-  p.hit(0, 0, 3.2, 2.2);
+  p.boxB("labMetal", 0, 0, 0, 2.6, 3.0, 1.8);
+  p.boxB("labMetal", 0, 3.0, 0, 3.0, 0.45, 2.0);
+  p.cyl("chrome", 0, 2.1, 0, 0.28, 0.28, 1.4);
+  p.boxB("metal", 0, 1.1, 0, 1.3, 0.38, 1.1);
+  p.boxB("hazard", 0, 0, 0.95, 2.4, 0.12, 0.45);
+  p.boxB("redEmissive", 0.9, 3.2, 0.95, 0.14, 0.14, 0.14);
+  p.hit(0, 0, 3.0, 2.1);
 }
 
 export function conveyor(w: PropCtx, x: number, z: number, ry = 0, len = 5) {
   const p = new PB(w).group(x, 0, z, ry);
   p.boxB("labMetal", 0, 0.72, 0, 0.9, 0.1, len);
-  p.boxB("metal", -0.35, 0.36, 0, 0.08, 0.72, len);
-  p.boxB("metal", 0.35, 0.36, 0, 0.08, 0.72, len);
+  p.boxB("metal", -0.35, 0, 0, 0.08, 0.72, len);
+  p.boxB("metal", 0.35, 0, 0, 0.08, 0.72, len);
   for (let i = 0; i < Math.floor(len / 0.8); i++) {
-    p.cyl("rubber", 0, 0.74, -len / 2 + 0.4 + i * 0.8, 0.3, 0.3, 0.04, { rx: Math.PI / 2, seg: 8 });
+    p.cyl("rubber", 0, 0.78, -len / 2 + 0.4 + i * 0.8, 0.3, 0.3, 0.04, { rx: Math.PI / 2, seg: 8 });
   }
   p.hit(0, 0, 1.1, len);
 }
 
 export function controlPanel(w: PropCtx, x: number, z: number, ry = 0) {
   const p = new PB(w).group(x, 0, z, ry);
-  p.boxB("labMetal", 0, 0.55, 0, 1.3, 1.1, 0.6);
-  p.boxB("labMetal", 0, 1.35, -0.12, 1.3, 0.7, 0.35, { rx: -0.35 });
-  p.boxB("screenGlow", 0, 1.4, 0.02, 0.8, 0.4, 0.02, { rx: -0.35 });
-  p.sph("redEmissive", 0.45, 0.85, 0.31, 0.035);
-  p.sph("screenGlowAmber", 0.32, 0.85, 0.31, 0.035);
-  p.hit(0, 0, 1.4, 0.8);
+  p.boxB("labMetal", 0, 0, 0, 1.35, 1.05, 0.65);
+  p.boxB("labMetal", 0, 1.05, -0.10, 1.35, 0.62, 0.36, { rx: -0.30 });
+  p.boxB("screenGlow", -0.28, 1.16, 0.05, 0.52, 0.34, 0.02, { rx: -0.30 });
+  p.boxB("screenGlowAmber", 0.32, 1.16, 0.05, 0.42, 0.34, 0.02, { rx: -0.30 });
+  p.sph("redEmissive", 0.45, 0.95, 0.33, 0.035);
+  p.sph("screenGlow", 0.30, 0.95, 0.33, 0.035);
+  p.hit(0, 0, 1.45, 0.8);
 }
 
 export function forklift(w: PropCtx, x: number, z: number, ry = 0) {
   const p = new PB(w).group(x, 0, z, ry);
-  p.boxB("carC", 0, 0.5, 0.3, 1.15, 0.7, 1.7);
-  p.boxB("carC", 0, 1.2, -0.5, 1.05, 1.15, 0.9);
-  p.boxB("glassDark", 0, 1.45, -0.45, 0.95, 0.6, 0.06);
-  p.boxB("metal", 0, 0.55, 1.15, 0.9, 1.2, 0.09);                  // سارية
-  p.boxB("metal", -0.4, 0.28, 1.55, 0.12, 0.08, 0.9);              // شوكة
-  p.boxB("metal", 0.4, 0.28, 1.55, 0.12, 0.08, 0.9);
-  for (const [wx, wz] of [[-0.55, -0.75], [0.55, -0.75], [-0.55, 0.6], [0.55, 0.6]] as const) {
-    p.cyl("rubber", wx, 0.26, wz, 0.26, 0.26, 0.2, { rx: Math.PI / 2, seg: 8 });
+  p.boxB("carC", 0, 0.18, 0.3, 1.15, 0.68, 1.7);
+  p.boxB("carC", 0, 0.86, -0.4, 1.05, 1.12, 0.95);
+  p.boxB("glassDark", 0, 1.05, -0.35, 0.95, 0.62, 0.06);
+  p.boxB("metal", 0, 0.12, 1.15, 0.9, 1.65, 0.09);                  // سارية
+  p.boxB("metal", -0.36, 0.04, 1.55, 0.12, 0.06, 0.9);              // شوكة
+  p.boxB("metal", 0.36, 0.04, 1.55, 0.12, 0.06, 0.9);
+  for (const [wx, wz] of [[-0.55, -0.55], [0.55, -0.55], [-0.55, 0.65], [0.55, 0.65]] as const) {
+    p.cyl("rubber", wx, 0.24, wz, 0.24, 0.24, 0.2, { rz: Math.PI / 2, seg: 10 });
   }
   p.hit(0, 0, 1.4, 2.6);
 }
 
 export function vending(w: PropCtx, x: number, z: number, ry = 0) {
   const p = new PB(w).group(x, 0, z, ry);
-  p.boxB("carA", 0, 1.0, 0, 1.0, 2.0, 0.75);
-  p.boxB("glassDark", 0, 1.35, 0.39, 0.7, 1.0, 0.03);
-  p.boxB("plastic", 0.4, 0.85, 0.39, 0.16, 0.5, 0.06);
-  p.hit(0, 0, 1.1, 0.9);
+  p.boxB("carA", 0, 0, 0, 1.02, 2.02, 0.76);
+  p.boxB("glassWindow", -0.08, 0.62, 0.385, 0.68, 1.18, 0.02);
+  p.boxB("screenGlowAmber", 0.36, 0.95, 0.385, 0.14, 0.45, 0.03);
+  p.boxB("plastic", -0.08, 0.16, 0.385, 0.68, 0.24, 0.04);
+  p.hit(0, 0, 1.1, 0.88);
 }
 
 /** رف منتجات ملونة (بقالة) */
@@ -847,48 +950,47 @@ export function shopShelf(w: PropCtx, x: number, z: number, ry = 0, len = 3.4, s
   const p = new PB(w).group(x, 0, z, ry);
   const rnd = seededRandom(Math.floor(seed * 1e9));
   const buckets = ["medWhite", "carA", "greenMetal", "carTaxi", "medRed"];
-  p.boxB("metal", 0, 0.95, 0, len, 1.9, 0.5);
-  for (const lvl of [0.3, 0.85, 1.4]) {
-    p.boxB("metal", 0, lvl, 0, len, 0.04, 0.5);
-    let cx = -len / 2 + 0.25;
-    while (cx < len / 2 - 0.25) {
+  p.boxB("metal", 0, 0, 0, len, 1.92, 0.10);
+  for (const lvl of [0.18, 0.68, 1.18, 1.66]) {
+    p.boxB("metal", 0, lvl, 0, len, 0.04, 0.52);
+    let cx = -len / 2 + 0.22;
+    while (cx < len / 2 - 0.22) {
       if (rnd() < 0.8) {
-        const s = 0.14 + rnd() * 0.12;
-        p.boxB(buckets[Math.floor(rnd() * buckets.length)], cx, lvl + 0.02 + s / 2, 0, s, s * 1.4, s, { ry: 0 });
+        const s = 0.13 + rnd() * 0.11;
+        p.boxB(buckets[Math.floor(rnd() * buckets.length)], cx, lvl + 0.04, 0.14, s, s * 1.35, s);
       }
       cx += 0.2 + rnd() * 0.1;
     }
   }
-  p.hit(0, 0, len + 0.6, 0.6);
+  p.hit(0, 0, len + 0.4, 0.6);
 }
 
 export function counter(w: PropCtx, x: number, z: number, ry = 0, len = 2.6) {
   const p = new PB(w).group(x, 0, z, ry);
-  p.boxB("wood2", 0, 0.55, 0, len, 1.1, 0.7);
-  p.boxB("wood2", 0, 1.13, 0, len + 0.1, 0.06, 0.8);
-  p.boxB("plastic", len / 2 - 0.4, 1.2, 0, 0.3, 0.12, 0.25);       // سجل نقدية
-  p.hit(0, 0, len + 0.2, 0.9);
+  p.boxB("wood2", 0, 0, 0, len, 1.04, 0.72);
+  p.boxB("woodFloor", 0, 1.04, 0, len + 0.10, 0.06, 0.80);
+  p.boxB("plastic", len / 2 - 0.45, 1.10, 0, 0.32, 0.16, 0.26);       // سجل نقدية
+  p.boxB("screenGlow", len / 2 - 0.45, 1.24, 0.08, 0.18, 0.08, 0.02);
+  p.hit(0, 0, len + 0.2, 0.88);
 }
 
 /** حامل أسلحة على الجدار (متجر) */
 export function gunRack(w: PropCtx, x: number, z: number, ry = 0) {
   const p = new PB(w).group(x, 0, z, ry);
-  p.boxB("wood2", 0, 1.5, 0, 2.2, 1.1, 0.08);
+  p.boxB("wood2", 0, 1.15, 0, 2.2, 1.1, 0.08);
   for (let i = 0; i < 3; i++) {
-    p.boxB("plastic", -0.6 + i * 0.6, 1.55, 0.05, 0.06, 0.85, 0.04);
-    p.boxB("wood2", -0.6 + i * 0.6, 1.2, 0.07, 0.07, 0.3, 0.06);
+    p.boxB("plastic", -0.6 + i * 0.6, 1.32, 0.05, 0.06, 0.78, 0.04);
+    p.boxB("wood2", -0.6 + i * 0.6, 1.22, 0.07, 0.07, 0.28, 0.06);
   }
   p.boxB("metal", 0, 1.98, 0.05, 2.2, 0.05, 0.1);
 }
 
 export function turnstile(w: PropCtx, x: number, z: number, ry = 0) {
   const p = new PB(w).group(x, 0, z, ry);
-  p.boxB("metal", 0, 0.5, 0, 0.12, 1.0, 1.3);
-  p.boxB("metal", 0, 0.55, 0, 0.5, 0.25, 0.3);
-  p.cyl("chrome", 0, 0.85, 0, 0.02, 0.02, 0.7, { rz: Math.PI / 2 });
-  for (let i = 0; i < 3; i++) {
-    p.boxB("chrome", 0, 0.88, 0, 0.05, 0.02, 0.34, { ry: (i * Math.PI * 2) / 3 });
-  }
+  p.boxB("metal", 0, 0, 0, 0.22, 1.02, 1.32);
+  p.boxB("chrome", 0, 1.02, 0, 0.24, 0.04, 1.36);
+  p.cyl("chrome", 0.26, 0.78, 0.15, 0.02, 0.02, 0.55, { rz: Math.PI / 2 });
+  p.cyl("chrome", 0.22, 0.72, -0.05, 0.02, 0.02, 0.52, { rz: Math.PI / 2, rx: 0.5 });
 }
 
 /** نباتات ميتة في أصص */
@@ -928,6 +1030,586 @@ export function bodyBag(w: PropCtx, x: number, z: number, ry = 0) {
   p.boxB("chrome", 0, 0.1, 0.3, 0.3, 0.02, 0.06);
 }
 
+// ═══════════════ تفاصيل معمارية حقيقية للمباني ═══════════════
+
+/** نافذة واقعية بإطار خشبي/معدني وعتبة وزجاج شفاف حقيقي مع مصاريع أو قضبان */
+export function realisticWindow(
+  w: PropCtx,
+  x: number,
+  y: number,
+  z: number,
+  width = 1.6,
+  height = 2.0,
+  orient: "x" | "z" = "x",
+  style: "wood" | "metal" | "hospital" = "wood",
+) {
+  const p = new PB(w).group(x, y, z, orient === "z" ? Math.PI / 2 : 0);
+  const frameMat = style === "metal" ? "metal" : style === "hospital" ? "medWhite" : "wood2";
+  const sillMat = style === "hospital" ? "white" : "concrete";
+  const t = 0.09;
+
+  // عتبة سفلية حجرية بارزة للخارج والداخل (Window Sill)
+  p.boxB(sillMat, 0, -0.1, 0, width + 0.34, 0.14, 0.68);
+  // تاج علوي معماري بارز (Header Lintel & Keystone)
+  p.boxB(sillMat, 0, height - 0.02, 0, width + 0.3, 0.18, 0.64);
+  p.boxB(sillMat, 0, height + 0.02, 0, 0.26, 0.22, 0.68);
+
+  // إطارات الجوانب والعمق (Deep Window Casing)
+  p.boxB(frameMat, -width / 2 + t / 2, 0, 0, t, height, 0.56);
+  p.boxB(frameMat, width / 2 - t / 2, 0, 0, t, height, 0.56);
+  p.boxB(frameMat, 0, 0, 0, width, t * 0.8, 0.56);
+  p.boxB(frameMat, 0, height - t * 0.8, 0, width, t * 0.8, 0.56);
+
+  // قواطع الزجاج الأفقية والعمودية (Mullions & Muntins)
+  p.boxB(frameMat, 0, 0, 0, t * 0.75, height, 0.18);
+  p.boxB(frameMat, 0, height * 0.52, 0, width - t * 1.6, t * 0.75, 0.18);
+  p.boxB(frameMat, 0, height * 0.25, 0, width - t * 1.6, t * 0.45, 0.12);
+  p.boxB(frameMat, 0, height * 0.78, 0, width - t * 1.6, t * 0.45, 0.12);
+
+  // ألواح زجاجية شفافة تسمح بالرؤية من الداخل والخارج
+  p.boxB("glassWindow", 0, t * 0.5, 0, width - t * 1.6, height - t * 1.2, 0.04);
+
+  // مصاريع خشبية جانبية للمنازل أو قضبان حماية للمباني الصناعية
+  if (style === "wood") {
+    p.boxB("wood2", -width / 2 - 0.22, 0.04, 0.27, 0.34, height - 0.08, 0.05);
+    p.boxB("wood2", width / 2 + 0.22, 0.04, 0.27, 0.34, height - 0.08, 0.05);
+    p.boxB("wood2", -width / 2 - 0.22, 0.04, -0.27, 0.34, height - 0.08, 0.05);
+    p.boxB("wood2", width / 2 + 0.22, 0.04, -0.27, 0.34, height - 0.08, 0.05);
+  } else if (style === "metal") {
+    for (let bx = -width / 2 + 0.28; bx <= width / 2 - 0.28; bx += 0.32) {
+      p.cyl("chrome", bx, height / 2, 0.16, 0.014, 0.014, height - 0.1);
+    }
+  }
+}
+
+/** إطار باب واقعي مع عتبة وتاج علوي وكشافات مدخل (Door Frame / Architrave) */
+export function realisticDoorFrame(
+  w: PropCtx,
+  x: number,
+  y: number,
+  z: number,
+  width = 1.8,
+  height = 2.45,
+  orient: "x" | "z" = "x",
+  style: "wood" | "metal" | "hospital" = "wood",
+) {
+  const p = new PB(w).group(x, y, z, orient === "z" ? Math.PI / 2 : 0);
+  const frameMat = style === "metal" ? "metal" : style === "hospital" ? "medWhite" : "wood2";
+  const trimMat = style === "hospital" ? "white" : "concrete";
+  const t = 0.14;
+  // قائمان جانبيان عريضان
+  p.boxB(frameMat, -width / 2 - t / 2, 0, 0, t, height + 0.15, 0.62);
+  p.boxB(frameMat, width / 2 + t / 2, 0, 0, t, height + 0.15, 0.62);
+  // عارضة علوية وتاج معماري
+  p.boxB(frameMat, 0, height - 0.04, 0, width + t * 2 + 0.16, 0.18, 0.66);
+  p.boxB(trimMat, 0, height + 0.12, 0, width + t * 2 + 0.32, 0.16, 0.72);
+  // نافذة علوية فوق الباب (Transom Window)
+  p.boxB("glassWindow", 0, height + 0.28, 0, width - 0.1, 0.36, 0.06);
+  p.boxB(frameMat, 0, height + 0.64, 0, width + t * 2 + 0.2, 0.12, 0.64);
+  // عتبة أرضية معدنية بارزة
+  p.boxB("chrome", 0, 0, 0, width + t * 2, 0.035, 0.58);
+  // مصابيح جدارية على جانبي المدخل
+  for (const sx of [-width / 2 - 0.38, width / 2 + 0.38]) {
+    p.boxB("metal", sx, 1.95, 0.28, 0.12, 0.28, 0.14);
+    p.boxB("lampGlow", sx, 1.98, 0.35, 0.08, 0.18, 0.08);
+    p.boxB("metal", sx, 1.95, -0.28, 0.12, 0.28, 0.14);
+    p.boxB("lampGlow", sx, 1.98, -0.35, 0.08, 0.18, 0.08);
+  }
+}
+
+/** رواق مدخل معماري بأعمدة ومظلة ودرجات (Entrance Porch / Portico) */
+export function entrancePorch(
+  w: PropCtx,
+  x: number,
+  z: number,
+  width = 4.6,
+  depth = 2.6,
+  height = 3.6,
+  orient: "N" | "S" | "E" | "W" = "S",
+  style: "brick" | "concrete" | "hospital" = "brick",
+) {
+  const ry =
+    orient === "S" ? 0 : orient === "N" ? Math.PI : orient === "E" ? Math.PI / 2 : -Math.PI / 2;
+  const p = new PB(w).group(x, 0, z, ry);
+  const colMat = style === "hospital" ? "white" : style === "brick" ? "wood2" : "concrete";
+  const roofMat = style === "hospital" ? "medWhite" : "concrete";
+
+  // منصة المدخل السفلية العريضة
+  p.boxB("concrete", 0, 0, depth / 2, width + 0.6, 0.14, depth + 0.4);
+  p.boxB("tile", 0, 0.14, depth / 2, width + 0.2, 0.03, depth);
+
+  // عمودان أماميان يحملان المظلة
+  for (const sx of [-width / 2 + 0.28, width / 2 - 0.28]) {
+    p.boxB("concrete", sx, 0.14, depth - 0.25, 0.46, 0.45, 0.46);
+    p.boxB(colMat, sx, 0.59, depth - 0.25, 0.32, height - 0.59, 0.32);
+    p.boxB("concrete", sx, height - 0.18, depth - 0.25, 0.44, 0.18, 0.44);
+  }
+
+  // سقف المظلة العلوي وإضاءة السقف
+  p.boxB(roofMat, 0, height, depth / 2, width + 0.5, 0.28, depth + 0.3);
+  p.boxB("concrete", 0, height + 0.28, depth / 2, width + 0.7, 0.14, depth + 0.5);
+  p.boxB("lampGlow", 0, height - 0.04, depth * 0.55, 0.9, 0.04, 0.35);
+}
+
+/** دربزين حماية للطوابق العلوية والشرفات (Mezzanine & Balcony Railing) */
+export function railingSection(
+  w: PropCtx,
+  x1: number,
+  z1: number,
+  x2: number,
+  z2: number,
+  style: "wood" | "chrome" | "metal" = "chrome",
+  solid = true,
+) {
+  const horiz = Math.abs(x2 - x1) >= Math.abs(z2 - z1);
+  const len = Math.hypot(x2 - x1, z2 - z1);
+  if (len < 0.15) return;
+  const cx = (x1 + x2) / 2;
+  const cz = (z1 + z2) / 2;
+  const p = new PB(w).group(cx, 0, cz, horiz ? 0 : Math.PI / 2);
+  const mat = style === "wood" ? "wood2" : style === "chrome" ? "chrome" : "metal";
+  const h = 1.05;
+
+  // القضيب العلوي والسفلي
+  p.boxB(mat, 0, h - 0.06, 0, len, 0.07, 0.09);
+  p.boxB(mat, 0, 0.12, 0, len, 0.05, 0.07);
+
+  // لوح زجاجي في الدربزين الطبي/الحديث أو أعمدة متقاربة
+  if (style === "chrome") {
+    p.boxB("glassWindow", 0, 0.17, 0, Math.max(0.1, len - 0.16), h - 0.25, 0.03);
+  }
+  const posts = Math.max(2, Math.ceil(len / 0.85) + 1);
+  for (let i = 0; i < posts; i++) {
+    const px = -len / 2 + (i / (posts - 1)) * len;
+    p.boxB(mat, px, 0, 0, 0.06, h, 0.08);
+  }
+  if (solid) {
+    if (horiz) {
+      w.collider(cx - len / 2, cx + len / 2, cz - 0.12, cz + 0.12);
+    } else {
+      w.collider(cx - 0.12, cx + 0.12, cz - len / 2, cz + len / 2);
+    }
+  }
+}
+
+/** ستائر نوافذ داخلية مع قضيب تعليق (Interior Window Curtains) */
+export function curtainPair(
+  w: PropCtx,
+  x: number,
+  y: number,
+  z: number,
+  width = 1.8,
+  height = 2.2,
+  orient: "x" | "z" = "x",
+) {
+  const p = new PB(w).group(x, y, z, orient === "z" ? Math.PI / 2 : 0);
+  p.cyl("brass", 0, height + 0.08, 0, 0.02, 0.02, width + 0.5, { rz: Math.PI / 2 });
+  p.boxB("fabric2", -width / 2 - 0.05, -0.15, 0, 0.38, height + 0.2, 0.08);
+  p.boxB("fabric2", width / 2 + 0.05, -0.15, 0, 0.38, height + 0.2, 0.08);
+}
+
+/** لوحة جدارية مؤطرة أو مخطط طبي/أمني (Framed Wall Picture / Chart) */
+export function wallPicture(
+  w: PropCtx,
+  x: number,
+  y: number,
+  z: number,
+  width = 1.2,
+  height = 0.85,
+  orient: "x" | "z" = "x",
+  theme: "art" | "medical" | "map" = "art",
+) {
+  const p = new PB(w).group(x, y, z, orient === "z" ? Math.PI / 2 : 0);
+  const frameMat = theme === "medical" ? "chrome" : "wood2";
+  const canvasMat = theme === "medical" ? "medWhite" : theme === "map" ? "paper" : "fabric2";
+  p.boxB(frameMat, 0, 0, 0, width, height, 0.05);
+  p.boxB(canvasMat, 0, 0.05, 0, width - 0.12, height - 0.12, 0.06);
+  if (theme === "medical") {
+    p.boxB("medRed", -width * 0.2, height * 0.45, 0, 0.18, 0.06, 0.07);
+    p.boxB("medRed", -width * 0.2, height * 0.39, 0, 0.06, 0.18, 0.07);
+    p.boxB("screenGlow", width * 0.15, height * 0.35, 0, width * 0.35, height * 0.35, 0.065);
+  }
+}
+
+/** مغسلة حمام مع مرآة وخزانة سفلية (Bathroom Sink Vanity & Mirror) */
+export function sinkVanity(w: PropCtx, x: number, z: number, ry = 0) {
+  const p = new PB(w).group(x, 0, z, ry);
+  p.boxB("wood2", 0, 0, 0, 0.85, 0.82, 0.52);
+  p.boxB("white", 0, 0.82, 0, 0.9, 0.08, 0.56);
+  p.cyl("chrome", 0, 0.9, -0.18, 0.02, 0.02, 0.16);
+  // مرآة علوية بإطار
+  p.boxB("wood2", 0, 1.15, -0.24, 0.78, 0.95, 0.04);
+  p.boxB("glassWindow", 0, 1.2, -0.22, 0.68, 0.85, 0.05);
+  p.boxB("lampGlow", 0, 2.14, -0.2, 0.55, 0.06, 0.08);
+  p.hit(0, 0, 0.95, 0.62);
+}
+
+/** مرحاض حمام خزفي (Porcelain Toilet) */
+export function toiletBowl(w: PropCtx, x: number, z: number, ry = 0) {
+  const p = new PB(w).group(x, 0, z, ry);
+  p.boxB("white", 0, 0, 0.08, 0.44, 0.42, 0.52);
+  p.boxB("white", 0, 0.42, -0.18, 0.46, 0.44, 0.22);
+  p.boxB("white", 0, 0.86, -0.18, 0.48, 0.04, 0.24);
+  p.boxB("chrome", 0.18, 0.78, -0.06, 0.08, 0.03, 0.04);
+  p.hit(0, 0, 0.55, 0.68);
+}
+
+/** خزانة ملابس خشبية كبيرة لغرف النوم (Bedroom Wardrobe Closet) */
+export function wardrobeCloset(w: PropCtx, x: number, z: number, ry = 0) {
+  const p = new PB(w).group(x, 0, z, ry);
+  p.boxB("wood2", 0, 0, 0, 1.5, 2.35, 0.62);
+  p.boxB("woodFloor", -0.36, 0.12, 0.32, 0.68, 2.1, 0.03);
+  p.boxB("woodFloor", 0.36, 0.12, 0.32, 0.68, 2.1, 0.03);
+  p.boxB("brass", -0.06, 1.1, 0.35, 0.03, 0.22, 0.03);
+  p.boxB("brass", 0.06, 1.1, 0.35, 0.03, 0.22, 0.03);
+  p.hit(0, 0, 1.6, 0.72);
+}
+
+/** أبواب مصعد معدنية مع لوحة أزرار ومؤشر طابق (Elevator Doors) */
+export function elevatorDoors(w: PropCtx, x: number, y: number, z: number, orient: "x" | "z" = "x") {
+  const p = new PB(w).group(x, y, z, orient === "z" ? Math.PI / 2 : 0);
+  p.boxB("chrome", 0, 0, 0, 2.1, 2.55, 0.18);
+  p.boxB("metal", -0.46, 0.04, 0, 0.88, 2.4, 0.22);
+  p.boxB("metal", 0.46, 0.04, 0, 0.88, 2.4, 0.22);
+  // شاشة رقم الطابق المضيئة فوق المصعد
+  p.boxB("plastic", 0, 2.62, 0, 0.55, 0.22, 0.22);
+  p.boxB("redEmissive", 0, 2.66, 0, 0.38, 0.14, 0.24);
+  // لوحة أزرار الاستدعاء
+  p.boxB("chrome", 1.22, 1.1, 0, 0.14, 0.32, 0.16);
+  p.boxB("screenGlowAmber", 1.22, 1.2, 0, 0.05, 0.05, 0.18);
+}
+
+/** كبسولة حجر حيوي زجاجية مضيئة لمختبر الطابق الثالث في المستشفى (Bio-Containment Incubator) */
+export function bioIncubator(w: PropCtx, x: number, z: number) {
+  const p = new PB(w).group(x, 0, z, 0);
+  p.cyl("labMetal", 0, 0.2, 0, 0.68, 0.72, 0.4, { seg: 14 });
+  p.cyl("glassWindow", 0, 1.35, 0, 0.6, 0.6, 1.9, { seg: 14 });
+  p.cyl("screenGlow", 0, 1.3, 0, 0.28, 0.22, 1.4, { seg: 10 });
+  p.cyl("labMetal", 0, 2.42, 0, 0.72, 0.68, 0.28, { seg: 14 });
+  p.hit(0, 0, 1.45, 1.45);
+}
+
+/**
+ * درج واقعي قابل للصعود والنزول بدرجات ودربزين وأعمدة (Walkable Staircase)
+ * لا يغلق ممر الصعود بمصادم جداري بل يضع مصادمات لحافتي الدربزين فقط.
+ */
+export function staircase(
+  w: PropCtx,
+  x: number,
+  y: number,
+  z: number,
+  width = 2.4,
+  height = 4.2,
+  length = 6.4,
+  ry = 0,
+  steps = 14,
+) {
+  const p = new PB(w).group(x, y, z, ry);
+  const stepH = height / steps;
+  const stepD = length / steps;
+
+  // الجسور الحاملة المائلة أسفل جانبي الدرج (Side Stringers)
+  const slopeLen = Math.hypot(height, length);
+  const angle = Math.atan2(height, length);
+  for (const sx of [-width / 2 + 0.09, width / 2 - 0.09]) {
+    p.box("wood2", sx, height / 2 - 0.14, 0, 0.14, 0.26, slopeLen, { rx: -angle });
+  }
+
+  for (let i = 0; i < steps; i++) {
+    const curY = i * stepH;
+    const curZ = -length / 2 + (i + 0.5) * stepD;
+    // قائم الدرجة (Riser)
+    p.boxB("concrete", 0, curY, curZ - stepD * 0.42, width - 0.08, stepH, 0.06);
+    // دعسة الدرجة العريضة (Tread)
+    p.boxB("woodFloor", 0, curY + stepH - 0.045, curZ, width + 0.04, 0.05, stepD + 0.05);
+  }
+
+  // دربزين جانبي متين (Handrails & Newel Posts) مع مصادمات جانبية رفيعة فقط
+  for (const side of [-width / 2 + 0.08, width / 2 - 0.08]) {
+    p.boxB("wood2", side, 0, -length / 2 + 0.18, 0.11, 1.02, 0.11);
+    p.boxB("wood2", side, height, length / 2 - 0.18, 0.11, 1.02, 0.11);
+    p.box("wood2", side, height / 2 + 0.92, 0, 0.07, 0.07, slopeLen, { rx: -angle });
+    for (let i = 1; i < steps; i++) {
+      const curY = i * stepH;
+      const curZ = -length / 2 + i * stepD;
+      p.boxB("chrome", side, curY, curZ, 0.035, 0.9, 0.035);
+    }
+    p.hit(side, 0, 0.16, length);
+  }
+}
+
+/** طاولة عمليات جراحية احترافية (Operating Table) */
+export function operatingTable(w: PropCtx, x: number, z: number, ry = 0) {
+  const p = new PB(w).group(x, 0, z, ry);
+  // قاعدة هيدروليكية ثقيلة
+  p.boxB("chrome", 0, 0, 0, 0.7, 0.16, 1.2);
+  p.cyl("chrome", 0, 0.16, 0, 0.18, 0.22, 0.7, { seg: 10 });
+  // سطح الطاولة المائل المفصل
+  p.boxB("medWhite", 0, 0.86, 0, 0.75, 0.09, 2.0);
+  p.boxB("fabric", 0, 0.95, 0, 0.7, 0.06, 1.95);
+  // وسادة رأس
+  p.boxB("fabric", 0, 1.01, -0.75, 0.45, 0.06, 0.35);
+  // مساند أذرع جانبية
+  p.boxB("medWhite", -0.48, 0.88, 0.1, 0.16, 0.05, 0.55);
+  p.boxB("medWhite", 0.48, 0.88, 0.1, 0.16, 0.05, 0.55);
+  p.hit(0, 0, 1.1, 2.2);
+}
+
+/** كشافات جراحية سقفية مزدوجة (Dual Surgical Overhead Lamps) */
+export function surgicalLamps(w: PropCtx, x: number, y = 3.9, z: number, ry = 0) {
+  const p = new PB(w).group(x, y, z, ry);
+  // قاعدة سقفية
+  p.cyl("chrome", 0, 0, 0, 0.25, 0.25, 0.08);
+  p.cyl("chrome", 0, -0.4, 0, 0.04, 0.04, 0.8);
+  // ذراعان مفصليان مع قبتي كشاف
+  for (const [ox, oz, tilt] of [[-0.65, 0.3, 0.35], [0.65, -0.3, -0.35]] as const) {
+    p.cyl("chrome", ox / 2, -0.75, oz / 2, 0.03, 0.03, 0.8, { rz: tilt });
+    p.cyl("medWhite", ox, -1.05, oz, 0.45, 0.35, 0.2, { rx: 0.2, rz: tilt, seg: 12 });
+    p.cyl("screenGlow", ox, -1.16, oz, 0.38, 0.38, 0.02, { rx: 0.2, rz: tilt, seg: 12 });
+  }
+}
+
+/** جهاز تخدير وتنفس اصطناعي طبي (Anesthesia Machine) */
+export function anesthesiaMachine(w: PropCtx, x: number, z: number, ry = 0) {
+  const p = new PB(w).group(x, 0, z, ry);
+  // عربة الجهاز
+  p.boxB("medWhite", 0, 0.12, 0, 0.85, 1.35, 0.7);
+  // عجلات
+  for (const [wx, wz] of [[-0.35, -0.28], [0.35, -0.28], [-0.35, 0.28], [0.35, 0.28]] as const) {
+    p.cyl("rubber", wx, 0.06, wz, 0.06, 0.06, 0.04, { rx: Math.PI / 2, seg: 8 });
+  }
+  // شاشة تخطيط ومراقبة علوية
+  p.boxB("plastic", 0, 1.48, 0.08, 0.65, 0.45, 0.12, { rx: -0.15 });
+  p.boxB("screenGlow", 0, 1.5, 0.15, 0.55, 0.35, 0.02, { rx: -0.15 });
+  // أسطوانات غاز ملونة في الخلف
+  p.cyl("greenMetal", -0.22, 0.45, -0.38, 0.09, 0.09, 0.8);
+  p.cyl("jerrycan", 0.22, 0.45, -0.38, 0.09, 0.09, 0.8);
+  // خراطيم تنفس مطاطية
+  p.cyl("rubber", 0.35, 0.95, 0.22, 0.025, 0.025, 0.6, { rz: 0.5 });
+  p.hit(0, 0, 1.0, 0.9);
+}
+
+/** جهاز فحص أشعة إكس جداري مضيء (X-Ray Lightbox) */
+export function xrayLightbox(w: PropCtx, x: number, y = 2.1, z: number, ry = 0) {
+  const p = new PB(w).group(x, y, z, ry);
+  // إطار الألمنيوم
+  p.boxB("chrome", 0, 0, 0, 1.2, 0.85, 0.08);
+  // شاشة مضيئة بيضاء
+  p.boxB("white", 0, 0.04, 0.05, 1.1, 0.75, 0.02);
+  // فيلم صورة أشعة القفص الصدري
+  p.boxB("glassDark", 0, 0.04, 0.07, 0.95, 0.68, 0.01);
+}
+
+/** سرير عناية مشددة وتنويم طبي متكامل مع أعمدة وستائر خصوصية (Curtained Ward Bed) */
+export function curtainedWardBed(w: PropCtx, x: number, z: number, ry = 0) {
+  const p = new PB(w).group(x, 0, z, ry);
+  // 1) قاعدة السرير الهيدروليكية والعجلات على الأرض (y=0)
+  p.boxB("metal", 0, 0.08, 0, 0.86, 0.08, 1.78);
+  for (const [wx, wz] of [[-0.42, -0.82], [0.42, -0.82], [-0.42, 0.82], [0.42, 0.82]] as const) {
+    p.cyl("rubber", wx, 0.06, wz, 0.06, 0.06, 0.05, { rz: Math.PI / 2, seg: 10 });
+  }
+  p.boxB("medWhite", 0, 0.16, -0.45, 0.46, 0.38, 0.24);
+  p.boxB("medWhite", 0, 0.16, 0.45, 0.46, 0.38, 0.24);
+
+  // 2) هيكل السرير والمرتبة الطبية والوسائد
+  p.boxB("medWhite", 0, 0.54, 0, 1.08, 0.10, 2.20);
+  p.boxB("white", 0, 0.64, 0, 1.00, 0.16, 2.06);
+  p.boxB("sheet", -0.22, 0.80, -0.78, 0.40, 0.09, 0.30, { rx: 0.15 });
+  p.boxB("sheet", 0.22, 0.80, -0.78, 0.40, 0.09, 0.30, { rx: 0.15 });
+  p.boxB("fabric", 0, 0.80, 0.22, 1.01, 0.04, 1.42);
+
+  // 3) لوح الرأس والقدم الطبيان + حواجز الحماية الجانبية
+  p.boxB("medWhite", 0, 0.52, -1.08, 1.08, 0.68, 0.06);
+  p.boxB("medWhite", 0, 0.52, 1.08, 1.08, 0.50, 0.06);
+  p.boxB("screenGlow", 0, 0.86, 1.115, 0.26, 0.14, 0.01);
+  for (const sx of [-0.53, 0.53]) {
+    p.boxB("medWhite", sx, 0.68, -0.38, 0.04, 0.28, 0.68);
+    p.boxB("medWhite", sx, 0.68, 0.38, 0.04, 0.28, 0.68);
+  }
+
+  // 4) أعمدة وسكة ستائر الخصوصية الطبية (من الأرض y=0 إلى السكة y=2.32 دون اختراق السقف)
+  for (const [px2, pz2] of [[-0.78, -1.15], [0.78, -1.15], [-0.78, 1.15], [0.78, 1.15]] as const) {
+    p.cyl("chrome", px2, 1.16, pz2, 0.02, 0.02, 2.32);
+  }
+  p.cyl("chrome", -0.78, 2.32, 0, 0.02, 0.02, 2.32, { rx: Math.PI / 2 });
+  p.cyl("chrome", 0.78, 2.32, 0, 0.02, 0.02, 2.32, { rx: Math.PI / 2 });
+  // ستائر قماشية جانبية معلقة من السكة (y=0.28..2.30)
+  p.boxB("fabric2", -0.78, 0.28, -0.58, 0.03, 2.02, 0.86);
+  p.boxB("fabric2", 0.78, 0.28, 0.58, 0.03, 2.02, 0.86);
+  p.hit(0, 0, 1.4, 2.3);
+}
+
+/** عربة إنعاش وطوارئ مزودة بجهاز صدمات (Defibrillator Crash Cart) */
+export function defibrillatorCart(w: PropCtx, x: number, z: number, ry = 0) {
+  const p = new PB(w).group(x, 0, z, ry);
+  // عجلات سفلية وجسم العربة الأحمر (من الأرض y=0.08)
+  for (const [wx, wz] of [[-0.32, -0.25], [0.32, -0.25], [-0.32, 0.25], [0.32, 0.25]] as const) {
+    p.cyl("rubber", wx, 0.05, wz, 0.05, 0.05, 0.04, { rz: Math.PI / 2 });
+  }
+  p.boxB("medRed", 0, 0.09, 0, 0.75, 0.85, 0.6);
+  // أدراج بيضاء
+  for (let i = 0; i < 3; i++) {
+    p.boxB("medWhite", 0, 0.20 + i * 0.24, 0.305, 0.66, 0.18, 0.02);
+    p.boxB("chrome", 0, 0.27 + i * 0.24, 0.32, 0.18, 0.02, 0.02);
+  }
+  // جهاز الصدمات الكهربائية (Defibrillator)
+  p.boxB("medWhite", 0, 0.94, 0.02, 0.48, 0.28, 0.35);
+  p.boxB("screenGlowAmber", 0, 1.02, 0.20, 0.32, 0.16, 0.02);
+  p.cyl("rubber", -0.18, 1.02, 0.22, 0.04, 0.04, 0.14, { rx: Math.PI / 2 });
+  p.cyl("rubber", 0.18, 1.02, 0.22, 0.04, 0.04, 0.14, { rx: Math.PI / 2 });
+  p.hit(0, 0, 0.9, 0.75);
+}
+
+/** مجهر فحص مخبري مكتبي (Microscope) */
+export function microscope(w: PropCtx, x: number, y = 0.85, z: number, ry = 0) {
+  const p = new PB(w).group(x, y, z, ry);
+  p.boxB("medWhite", 0, 0, 0, 0.18, 0.04, 0.24);
+  p.cyl("medWhite", 0, 0.18, -0.06, 0.03, 0.03, 0.32, { rx: 0.2 });
+  p.cyl("chrome", 0, 0.32, 0.04, 0.02, 0.02, 0.18, { rx: -0.4 });
+  p.cyl("plastic", 0, 0.14, 0.02, 0.07, 0.07, 0.02);
+}
+
+/** طاولة طعام خشبية مع كراسي (Dining Table & Chairs) */
+export function diningTable(w: PropCtx, x: number, z: number, ry = 0) {
+  const p = new PB(w).group(x, 0, z, ry);
+  // سطح الطاولة
+  p.boxB("wood2", 0, 0.76, 0, 1.6, 0.06, 1.0);
+  // أرجل الطاولة
+  for (const [ox, oz] of [[-0.7, -0.4], [0.7, -0.4], [-0.7, 0.4], [0.7, 0.4]] as const) {
+    p.boxB("wood2", ox, 0, oz, 0.07, 0.76, 0.07);
+  }
+  // كرسيان خشبيان
+  for (const [cx, cz, cr] of [[0, -0.75, 0], [0, 0.75, Math.PI]] as const) {
+    p.boxB("wood2", cx, 0, cz, 0.42, 0.45, 0.42);
+    p.boxB("wood2", cx, 0.45, cz + (cr === 0 ? -0.18 : 0.18), 0.42, 0.48, 0.04);
+  }
+  p.hit(0, 0, 1.8, 1.8);
+}
+
+/** موقد غاز مطبخي متكامل مع شفاط (Kitchen Stove & Hood) */
+export function kitchenStove(w: PropCtx, x: number, z: number, ry = 0) {
+  const p = new PB(w).group(x, 0, z, ry);
+  // جسم الفرن
+  p.boxB("white", 0, 0, 0, 0.85, 0.9, 0.75);
+  // باب زجاجي للفرن
+  p.boxB("glassDark", 0, 0.35, 0.38, 0.65, 0.45, 0.02);
+  p.boxB("chrome", 0, 0.62, 0.41, 0.55, 0.03, 0.03);
+  // عيون الغاز (4 burners)
+  for (const [bx, bz] of [[-0.22, -0.18], [0.22, -0.18], [-0.22, 0.18], [0.22, 0.18]] as const) {
+    p.cyl("plastic", bx, 0.91, bz, 0.08, 0.08, 0.02);
+  }
+  // شفاط الهواء السقفي/الجداري
+  p.boxB("chrome", 0, 2.1, 0.05, 0.88, 0.18, 0.75);
+  p.cyl("chrome", 0, 2.55, 0, 0.12, 0.12, 0.7);
+  p.hit(0, 0, 0.95, 0.85);
+}
+
+/** حوض استحمام منزلي كامل (Bathroom Bathtub) */
+export function bathroomTub(w: PropCtx, x: number, z: number, ry = 0) {
+  const p = new PB(w).group(x, 0, z, ry);
+  // حوض الخزف الأبيض
+  p.boxB("white", 0, 0, 0, 0.95, 0.65, 1.9);
+  // صنبور ومقبض الدش
+  p.cyl("chrome", 0, 0.72, -0.85, 0.02, 0.02, 0.14);
+  p.cyl("chrome", 0, 1.8, -0.88, 0.015, 0.015, 1.2);
+  p.cyl("chrome", 0, 2.05, -0.75, 0.08, 0.06, 0.04, { rx: 0.5 });
+  p.hit(0, 0, 1.05, 2.0);
+}
+
+/** مشجب ملابس خشبي عمودي (Standing Coat Rack) */
+export function coatRack(w: PropCtx, x: number, z: number) {
+  const p = new PB(w).group(x, 0, z, 0);
+  p.cyl("wood2", 0, 0, 0, 0.28, 0.28, 0.06);
+  p.cyl("wood2", 0, 0.06, 0, 0.04, 0.04, 1.85);
+  for (let i = 0; i < 4; i++) {
+    const angle = (i * Math.PI) / 2;
+    p.cyl("brass", Math.sin(angle) * 0.08, 1.78, Math.cos(angle) * 0.08, 0.012, 0.012, 0.16, { rz: 0.6 * Math.cos(angle), rx: -0.6 * Math.sin(angle) });
+  }
+}
+
+/** خزانة كتب ومراجع علمية مليئة بالكتب والملفات (Full Bookcase) */
+export function bookshelfFull(w: PropCtx, x: number, z: number, ry = 0, width = 1.8, seed = 42) {
+  const p = new PB(w).group(x, 0, z, ry);
+  const rnd = seededRandom(seed);
+  const bookMats = ["carA", "carB", "wood2", "fabric2", "medRed", "medWhite"];
+  // هيكل الخزانة
+  p.boxB("wood2", 0, 0, 0, width, 2.3, 0.42);
+  // رفوف مع كتب ملونة
+  for (const lvl of [0.45, 0.95, 1.45, 1.92]) {
+    p.boxB("wood2", 0, lvl, 0, width - 0.1, 0.04, 0.4);
+    let curX = -width / 2 + 0.14;
+    while (curX < width / 2 - 0.18) {
+      const bW = 0.04 + rnd() * 0.05;
+      const bH = 0.24 + rnd() * 0.14;
+      const bD = 0.26 + rnd() * 0.06;
+      const tilt = rnd() < 0.15 ? (rnd() - 0.5) * 0.3 : 0;
+      p.boxB(bookMats[Math.floor(rnd() * bookMats.length)], curX, lvl + 0.04, 0, bW, bH, bD, { rz: tilt });
+      curX += bW + 0.01 + rnd() * 0.02;
+    }
+  }
+  p.hit(0, 0, width + 0.1, 0.5);
+}
+
+/** ديكورات وزخارف واجهات المباني الواقعية متعددة الطوابق (Building Exterior Trim) */
+export function buildingExteriorTrim(
+  w: PropCtx,
+  x: number,
+  z: number,
+  width: number,
+  depth: number,
+  height: number,
+  style: "brick" | "concrete" | "hospital" = "brick",
+) {
+  const p = new PB(w).group(x, 0, z, 0);
+  const trimMat = style === "hospital" ? "white" : "concrete";
+  const accentMat = style === "hospital" ? "medWhite" : style === "brick" ? "wood2" : "metal";
+
+  // قاعدة المبنى السفلية الحجرية (Plinth Base Course)
+  p.boxB(trimMat, 0, 0, -depth / 2, width + 0.44, 0.48, 0.42);
+  p.boxB(trimMat, 0, 0, depth / 2, width + 0.44, 0.48, 0.42);
+  p.boxB(trimMat, -width / 2, 0, 0, 0.42, 0.48, depth + 0.44);
+  p.boxB(trimMat, width / 2, 0, 0, 0.42, 0.48, depth + 0.44);
+
+  // أحزمة معمارية فاصلة بين كل طابق وآخر (Floor Stringcourse Bands كل 4.2م)
+  const floors = Math.max(1, Math.round(height / 4.2));
+  for (let f = 1; f < floors; f++) {
+    const fy = f * 4.2;
+    p.boxB(trimMat, 0, fy - 0.14, -depth / 2, width + 0.5, 0.28, 0.48);
+    p.boxB(trimMat, 0, fy - 0.14, depth / 2, width + 0.5, 0.28, 0.48);
+    p.boxB(trimMat, -width / 2, fy - 0.14, 0, 0.48, 0.28, depth + 0.5);
+    p.boxB(trimMat, width / 2, fy - 0.14, 0, 0.48, 0.28, depth + 0.5);
+  }
+
+  // أعمدة ركنية بارزة على زوايا المبنى الأربعة (Corner Pilasters)
+  for (const [cx, cz] of [
+    [-width / 2, -depth / 2],
+    [width / 2, -depth / 2],
+    [-width / 2, depth / 2],
+    [width / 2, depth / 2],
+  ] as const) {
+    p.boxB(trimMat, cx, 0, cz, 0.68, height + 0.4, 0.68);
+  }
+
+  // حافة السطح العلوية والدروة (Roof Parapet & Cornice)
+  p.boxB(trimMat, 0, height - 0.1, -depth / 2, width + 0.62, 0.46, 0.58);
+  p.boxB(trimMat, 0, height - 0.1, depth / 2, width + 0.62, 0.46, 0.58);
+  p.boxB(trimMat, -width / 2, height - 0.1, 0, 0.58, 0.46, depth + 0.62);
+  p.boxB(trimMat, width / 2, height - 0.1, 0, 0.58, 0.46, depth + 0.62);
+
+  // سور دروة السطح (Parapet Wall)
+  p.boxB(accentMat, 0, height + 0.36, -depth / 2, width + 0.3, 0.42, 0.32);
+  p.boxB(accentMat, 0, height + 0.36, depth / 2, width + 0.3, 0.42, 0.32);
+  p.boxB(accentMat, -width / 2, height + 0.36, 0, 0.32, 0.42, depth + 0.3);
+  p.boxB(accentMat, width / 2, height + 0.36, 0, 0.32, 0.42, depth + 0.3);
+
+  // مزاريب مياه الأمطار ووحدات تكييف خارجية
+  for (const [cx, cz] of [[-width / 2 - 0.12, -depth / 2 - 0.12], [width / 2 + 0.12, -depth / 2 - 0.12]] as const) {
+    p.cyl("metal", cx, height / 2, cz, 0.055, 0.055, height);
+  }
+  p.boxB("metal", width * 0.28, 3.2, depth / 2 + 0.28, 0.85, 0.58, 0.38);
+  p.boxB("metal", -width * 0.28, Math.min(height - 1.0, 7.4), -depth / 2 - 0.28, 0.85, 0.58, 0.38);
+}
+
 // ═══════════════ الناجون (نماذج بشرية حيّة) ═══════════════
 
 export interface SurvivorPose {
@@ -944,14 +1626,129 @@ const SURVIVOR_POSES: Record<string, SurvivorPose> = {
   soldier: { stance: "crouch", shirt: 0x3c4034, pants: 0x35392e, skin: 0xa8805e, hair: 0x181410 },
 };
 
-/** نموذج ناجٍ — جسم مفصلي بوضعية تعبّ عن حالته */
+export interface SurvivorRig {
+  torso: THREE.Group;
+  headG: THREE.Group;
+  armL: THREE.Group;
+  armR: THREE.Group;
+  foreL: THREE.Group;
+  foreR: THREE.Group;
+  legL: THREE.Group;
+  legR: THREE.Group;
+  shinL: THREE.Group;
+  shinR: THREE.Group;
+}
+
+/** تحديث وضعية أو حركة مشي الناجي (إما جالس/مصاب أو يركض نحو الميناء أو يقف على متن القارب) */
+export function setSurvivorPose(
+  g: THREE.Group,
+  mode: "initial" | "walk" | "boat",
+  walkTime = 0,
+  id = "adel",
+) {
+  const rig = g.userData.rig as SurvivorRig | undefined;
+  if (!rig) return;
+  const { torso, headG, armL, armR, foreL, foreR, legL, legR, shinL, shinR } = rig;
+  const pose = SURVIVOR_POSES[id] ?? SURVIVOR_POSES.adel;
+
+  if (mode === "walk") {
+    const s = Math.sin(walkTime);
+    const c = Math.cos(walkTime);
+    torso.position.y = 1.06 + Math.abs(c) * 0.038;
+    torso.rotation.x = 0.14;
+    torso.rotation.z = s * 0.03;
+    headG.rotation.x = -0.06;
+    headG.rotation.y = Math.sin(walkTime * 0.5) * 0.08;
+
+    legL.position.set(-0.11, 0.92, 0);
+    legR.position.set(0.11, 0.92, 0);
+    legL.rotation.x = s * 0.68;
+    legR.rotation.x = -s * 0.68;
+    shinL.rotation.x = Math.max(0.08, -s * 0.62);
+    shinR.rotation.x = Math.max(0.08, s * 0.62);
+
+    armL.rotation.x = -s * 0.52;
+    armR.rotation.x = s * 0.52;
+    foreL.rotation.x = -0.45 - Math.max(0, s) * 0.25;
+    foreR.rotation.x = -0.45 - Math.max(0, -s) * 0.25;
+    return;
+  }
+
+  if (mode === "boat") {
+    // واقف بأمان على سطح قارب الإخلاء في الميناء مع تنفس وحركة خفيفة
+    const breathe = Math.sin(walkTime * 1.8) * 0.015;
+    torso.position.y = 1.06 + breathe;
+    torso.rotation.set(0.03, 0, 0);
+    headG.rotation.set(0, Math.sin(walkTime * 0.7) * 0.18, 0);
+    legL.position.set(-0.12, 0.92, 0);
+    legR.position.set(0.12, 0.92, 0);
+    legL.rotation.x = -0.04;
+    legR.rotation.x = 0.04;
+    shinL.rotation.x = 0.04;
+    shinR.rotation.x = 0.04;
+    armL.rotation.x = -0.18;
+    foreL.rotation.x = -0.35;
+    // تلويح خفيف باليد اليمنى للاعب القادم نحو القارب
+    armR.rotation.x = -0.45 + Math.sin(walkTime * 2.2) * 0.12;
+    foreR.rotation.x = -0.55;
+    return;
+  }
+
+  // الوضعية الابتدائية قبل الإنقاذ
+  torso.rotation.set(0, 0, 0);
+  headG.rotation.set(0, 0, 0);
+  if (pose.stance === "sit") {
+    torso.position.y = 0.78;
+    legL.position.set(-0.11, 0.5, 0);
+    legL.rotation.x = -1.4;
+    shinL.rotation.x = 1.5;
+    legR.position.set(0.11, 0.5, 0);
+    legR.rotation.x = -1.4;
+    shinR.rotation.x = 1.5;
+    armL.rotation.x = -1.9;
+    foreL.rotation.x = -1.2;
+    armR.rotation.x = -1.9;
+    foreR.rotation.x = -1.2;
+    headG.rotation.x = 0.3;
+  } else if (pose.stance === "crouch") {
+    torso.position.y = 0.62;
+    torso.rotation.x = 0.35;
+    legL.position.set(-0.11, 0.42, 0.05);
+    legL.rotation.x = -2.0;
+    shinL.rotation.x = 2.1;
+    legR.position.set(0.13, 0.42, -0.1);
+    legR.rotation.x = -1.1;
+    shinR.rotation.x = 1.9;
+    armL.rotation.x = -0.7;
+    foreL.rotation.x = -0.3;
+    armR.rotation.x = -0.4;
+    foreR.rotation.x = -0.2;
+    headG.rotation.x = 0.15;
+  } else {
+    torso.position.y = 1.06;
+    torso.rotation.x = pose.stance === "lean" ? 0.12 : 0.05;
+    legL.position.set(-0.11, 0.92, 0);
+    legR.position.set(0.11, 0.92, 0);
+    legL.rotation.x = 0;
+    legR.rotation.x = 0;
+    shinL.rotation.x = 0;
+    shinR.rotation.x = 0;
+    armL.rotation.x = 0.15;
+    foreL.rotation.x = -0.2;
+    armR.rotation.x = 0.1;
+    foreR.rotation.x = -0.2;
+  }
+}
+
+/** نموذج ناجٍ مفصلي واقعي مع ملابس وتفاصيل مميزة لكل شخصية */
 export function survivorModel(id: string): THREE.Group {
   const pose = SURVIVOR_POSES[id] ?? SURVIVOR_POSES.adel;
   const g = new THREE.Group();
-  const skin = new THREE.MeshStandardMaterial({ color: pose.skin, roughness: 0.9 });
-  const shirt = new THREE.MeshStandardMaterial({ color: pose.shirt, roughness: 0.95 });
-  const pants = new THREE.MeshStandardMaterial({ color: pose.pants, roughness: 0.95 });
-  const hair = new THREE.MeshStandardMaterial({ color: pose.hair, roughness: 1 });
+  const skin = new THREE.MeshStandardMaterial({ color: pose.skin, roughness: 0.85 });
+  const shirt = new THREE.MeshStandardMaterial({ color: pose.shirt, roughness: 0.9 });
+  const pants = new THREE.MeshStandardMaterial({ color: pose.pants, roughness: 0.9 });
+  const hair = new THREE.MeshStandardMaterial({ color: pose.hair, roughness: 0.95 });
+  const bootMat = new THREE.MeshStandardMaterial({ color: 0x1a1816, roughness: 0.8 });
 
   const mkMesh = (geo: THREE.BufferGeometry, mat: THREE.Material, x: number, y: number, z: number) => {
     const m = new THREE.Mesh(geo, mat);
@@ -960,24 +1757,42 @@ export function survivorModel(id: string): THREE.Group {
     return m;
   };
 
-  // جذع
+  // جذع + تفاصيل الزي (معطف طبي لسارة، سترة عمل وحقيبة لعادل، درع تكتيكي للرقيب)
   const torso = new THREE.Group();
-  torso.add(mkMesh(new THREE.BoxGeometry(0.4, 0.55, 0.24), shirt, 0, 0, 0));
-  torso.add(mkMesh(new THREE.BoxGeometry(0.42, 0.18, 0.26), shirt, 0, -0.3, 0));
-  // رأس
+  torso.add(mkMesh(new THREE.BoxGeometry(0.42, 0.56, 0.24), shirt, 0, 0, 0));
+  torso.add(mkMesh(new THREE.BoxGeometry(0.43, 0.18, 0.26), pants, 0, -0.30, 0));
+  if (id === "sara") {
+    const coatMat = new THREE.MeshStandardMaterial({ color: 0xd8dedc, roughness: 0.75 });
+    torso.add(mkMesh(new THREE.BoxGeometry(0.45, 0.58, 0.26), coatMat, 0, -0.04, -0.01));
+    const badgeMat = new THREE.MeshStandardMaterial({ color: 0x22789a, emissive: 0x0a2836, emissiveIntensity: 0.5 });
+    torso.add(mkMesh(new THREE.BoxGeometry(0.07, 0.09, 0.02), badgeMat, -0.12, 0.12, 0.135));
+  } else if (id === "adel") {
+    const packMat = new THREE.MeshStandardMaterial({ color: 0x382e22, roughness: 0.9 });
+    torso.add(mkMesh(new THREE.BoxGeometry(0.32, 0.42, 0.16), packMat, 0, 0.02, -0.18));
+  } else if (id === "soldier") {
+    const vestMat = new THREE.MeshStandardMaterial({ color: 0x283022, roughness: 0.85 });
+    torso.add(mkMesh(new THREE.BoxGeometry(0.46, 0.44, 0.28), vestMat, 0, 0.02, 0));
+  }
+
+  // رأس وملامح وجه
   const headG = new THREE.Group();
-  headG.position.y = 0.42;
+  headG.position.y = 0.43;
   headG.add(mkMesh(new THREE.BoxGeometry(0.22, 0.26, 0.24), skin, 0, 0, 0));
-  headG.add(mkMesh(new THREE.BoxGeometry(0.24, 0.1, 0.26), hair, 0, 0.12, -0.01));
+  headG.add(mkMesh(new THREE.BoxGeometry(0.24, 0.11, 0.26), hair, 0, 0.12, -0.01));
+  if (id === "soldier") {
+    const helmetMat = new THREE.MeshStandardMaterial({ color: 0x2c3426, roughness: 0.7, metalness: 0.2 });
+    headG.add(mkMesh(new THREE.BoxGeometry(0.26, 0.12, 0.28), helmetMat, 0, 0.13, 0));
+  }
   torso.add(headG);
+
   // ذراعان
   const mkArm = (side: number) => {
     const a = new THREE.Group();
-    a.position.set(side * 0.26, 0.18, 0);
-    a.add(mkMesh(new THREE.BoxGeometry(0.1, 0.3, 0.11), shirt, 0, -0.15, 0));
+    a.position.set(side * 0.27, 0.18, 0);
+    a.add(mkMesh(new THREE.BoxGeometry(0.11, 0.30, 0.11), shirt, 0, -0.15, 0));
     const fore = new THREE.Group();
-    fore.position.y = -0.3;
-    fore.add(mkMesh(new THREE.BoxGeometry(0.09, 0.3, 0.1), skin, 0, -0.15, 0));
+    fore.position.y = -0.30;
+    fore.add(mkMesh(new THREE.BoxGeometry(0.095, 0.30, 0.10), skin, 0, -0.15, 0));
     a.add(fore);
     a.userData.fore = fore;
     return a;
@@ -985,61 +1800,38 @@ export function survivorModel(id: string): THREE.Group {
   const armL = mkArm(-1);
   const armR = mkArm(1);
   torso.add(armL, armR);
-  // ساقان
-  const mkLeg = (side: number) => {
+
+  // ساقان وحذاء
+  const mkLeg = () => {
     const l = new THREE.Group();
-    l.add(mkMesh(new THREE.BoxGeometry(0.14, 0.42, 0.15), pants, 0, -0.21, 0));
+    l.add(mkMesh(new THREE.BoxGeometry(0.15, 0.42, 0.16), pants, 0, -0.21, 0));
     const shin = new THREE.Group();
     shin.position.y = -0.42;
-    shin.add(mkMesh(new THREE.BoxGeometry(0.13, 0.42, 0.14), pants, 0, -0.21, 0));
+    shin.add(mkMesh(new THREE.BoxGeometry(0.135, 0.40, 0.145), pants, 0, -0.20, 0));
+    shin.add(mkMesh(new THREE.BoxGeometry(0.145, 0.10, 0.22), bootMat, 0, -0.43, 0.03));
     l.add(shin);
     l.userData.shin = shin;
     return l;
   };
-  const legL = mkLeg(-1);
-  const legR = mkLeg(1);
+  const legL = mkLeg();
+  const legR = mkLeg();
+  g.add(torso, legL, legR);
 
-  if (pose.stance === "sit") {
-    torso.position.y = 0.78;
-    g.add(torso);
-    legL.position.set(-0.11, 0.5, 0);
-    legL.rotation.x = -1.4;
-    (legL.userData.shin as THREE.Group).rotation.x = 1.5;
-    legR.position.set(0.11, 0.5, 0);
-    legR.rotation.x = -1.4;
-    (legR.userData.shin as THREE.Group).rotation.x = 1.5;
-    g.add(legL, legR);
-    armL.rotation.x = -1.9;
-    (armL.userData.fore as THREE.Group).rotation.x = -1.2;
-    armR.rotation.x = -1.9;
-    (armR.userData.fore as THREE.Group).rotation.x = -1.2;
-    headG.rotation.x = 0.3; // رأس منحنٍ — تعب
-  } else if (pose.stance === "crouch") {
-    torso.position.y = 0.62;
-    torso.rotation.x = 0.35;
-    g.add(torso);
-    legL.position.set(-0.11, 0.42, 0.05);
-    legL.rotation.x = -2.0;
-    (legL.userData.shin as THREE.Group).rotation.x = 2.1;
-    legR.position.set(0.13, 0.42, -0.1);
-    legR.rotation.x = -1.1;
-    (legR.userData.shin as THREE.Group).rotation.x = 1.9;
-    g.add(legL, legR);
-    armL.rotation.x = -0.7;
-    armR.rotation.x = -0.4;
-    // إصابة: يد على ساقه
-    headG.rotation.x = 0.15;
-  } else {
-    // stand / lean
-    torso.position.y = 1.06;
-    torso.rotation.x = pose.stance === "lean" ? 0.12 : 0.05;
-    g.add(torso);
-    legL.position.set(-0.11, 0.94, 0);
-    legR.position.set(0.11, 0.94, 0);
-    g.add(legL, legR);
-    armL.rotation.x = 0.15;
-    armR.rotation.x = 0.1;
-  }
+  g.userData.rig = {
+    torso,
+    headG,
+    armL,
+    armR,
+    foreL: armL.userData.fore as THREE.Group,
+    foreR: armR.userData.fore as THREE.Group,
+    legL,
+    legR,
+    shinL: legL.userData.shin as THREE.Group,
+    shinR: legR.userData.shin as THREE.Group,
+  } satisfies SurvivorRig;
+
+  setSurvivorPose(g, "initial", 0, id);
+
   g.traverse((o) => {
     if (o instanceof THREE.Mesh) o.userData.noHit = true;
   });
@@ -1283,39 +2075,73 @@ export interface DoorDef {
   width: number;
   open: boolean;
   locked: boolean;
-  kind: "wood" | "metal" | "double";
+  kind: "wood" | "metal" | "double" | "hospital";
 }
 
 /**
- * باب حقيقي بمفصلة تُفتح بالتفاعل — يدور حول حافته.
- * الأصل pivot عند الحافة اليسرى (نظرة من الخارج).
+ * باب حقيقي بمفصلة تُفتح بالتفاعل — يدور حول حافته، مع نافذة رؤية علوية ومقبض ولوح حماية سفلي.
  */
-export function makeDoor(width = 1.5, style: "wood" | "metal" | "double" = "wood"): DoorDef {
+export function makeDoor(width = 1.5, style: "wood" | "metal" | "double" | "hospital" = "wood"): DoorDef {
   const group = new THREE.Group();
-  const h = 2.35;
+  const h = 2.42;
   const leafW = style === "double" ? width / 2 : width;
   const mat =
     style === "metal"
       ? stdMat({ color: 0x3a4045, roughness: 0.45, metalness: 0.75 })
-      : stdMat({ color: 0x4c3826, roughness: 0.7 });
+      : style === "hospital"
+        ? stdMat({ color: 0xb8c2c4, roughness: 0.4, metalness: 0.25 })
+        : stdMat({ color: 0x523b26, roughness: 0.68 });
+  const trimMat =
+    style === "metal"
+      ? stdMat({ color: 0x282c30, roughness: 0.5, metalness: 0.8 })
+      : style === "hospital"
+        ? stdMat({ color: 0x7c878a, roughness: 0.35, metalness: 0.7 })
+        : stdMat({ color: 0x3b2818, roughness: 0.75 });
+  const glassMat = stdMat({
+    color: 0x7898b0,
+    roughness: 0.15,
+    metalness: 0.2,
+    transparent: true,
+    opacity: 0.42,
+  });
+  const handleMat = stdMat({ color: 0xc2b89a, metalness: 0.92, roughness: 0.25 });
 
   const mkLeaf = (w: number) => {
     const leaf = new THREE.Group();
-    const panel = new THREE.Mesh(new THREE.BoxGeometry(w, h, 0.07), mat);
+    const panel = new THREE.Mesh(new THREE.BoxGeometry(w, h, 0.08), mat);
     panel.position.set(w / 2, h / 2, 0);
     panel.castShadow = true;
     leaf.add(panel);
-    // تكسير داخلي
-    for (let i = 0; i < 2; i++) {
-      const inset = new THREE.Mesh(new THREE.BoxGeometry(w - 0.24, h * 0.36, 0.02), style === "metal" ? mat : stdMat({ color: 0x3e2c1c, roughness: 0.75 }));
-      inset.position.set(w / 2, h * (0.28 + i * 0.42), 0.045);
-      leaf.add(inset);
+
+    // لوح حماية معدني سفلي (Kickplate)
+    const kick = new THREE.Mesh(new THREE.BoxGeometry(w - 0.08, 0.26, 0.095), handleMat);
+    kick.position.set(w / 2, 0.15, 0);
+    leaf.add(kick);
+
+    // حشوة سفلية بارزة + نافذة رؤية علوية زجاجية
+    const lowerInset = new THREE.Mesh(new THREE.BoxGeometry(w - 0.26, h * 0.34, 0.1), trimMat);
+    lowerInset.position.set(w / 2, h * 0.28, 0);
+    leaf.add(lowerInset);
+
+    if (style === "hospital" || style === "double" || style === "metal") {
+      const winFrame = new THREE.Mesh(new THREE.BoxGeometry(w * 0.46, h * 0.32, 0.095), trimMat);
+      winFrame.position.set(w / 2, h * 0.7, 0);
+      const winGlass = new THREE.Mesh(new THREE.BoxGeometry(w * 0.38, h * 0.26, 0.105), glassMat);
+      winGlass.position.set(w / 2, h * 0.7, 0);
+      leaf.add(winFrame, winGlass);
+    } else {
+      const upperInset = new THREE.Mesh(new THREE.BoxGeometry(w - 0.26, h * 0.34, 0.1), trimMat);
+      upperInset.position.set(w / 2, h * 0.7, 0);
+      leaf.add(upperInset);
     }
-    // مقبض
-    const knob = new THREE.Mesh(new THREE.SphereGeometry(0.035, 8, 8), stdMat({ color: 0x8a8f94, metalness: 0.9, roughness: 0.3 }));
-    knob.position.set(w - 0.14, 1.05, 0.06);
-    leaf.add(knob);
-    // لوحة (للأبواب المزدوجة: شعار)
+
+    // مقبض ذراعي مزدوج (Lever Handle) على الجهتين
+    const plate = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.22, 0.11), handleMat);
+    plate.position.set(w - 0.14, 1.05, 0);
+    const lever = new THREE.Mesh(new THREE.BoxGeometry(0.13, 0.03, 0.15), handleMat);
+    lever.position.set(w - 0.18, 1.05, 0);
+    leaf.add(plate, lever);
+
     leaf.traverse((o) => {
       if (o instanceof THREE.Mesh) o.userData.noHit = false;
     });
@@ -1334,28 +2160,114 @@ export function makeDoor(width = 1.5, style: "wood" | "metal" | "double" = "wood
   return { group, width, open: false, locked: false, kind: style };
 }
 
-// ═══════════════ دمج دلاء الدعائم ═══════════════
+// ═══════════════ دمج دلاء الدعائم (مقسّمة إلى قطاعات مكانية Chunks) ═══════════════
+
+export interface WorldChunk {
+  group: THREE.Group;
+  minX: number;
+  maxX: number;
+  minZ: number;
+  maxZ: number;
+}
+
+const CHUNK_SIZE = 64;
 
 /**
- * يدمج كل دلاء PropCtx التي لم تُدمج بعد — تُستدعى مرة واحدة من world.ts
- * مع موادّها، وتضيف mesh لكل دلو إلى المشهد.
+ * يدمج دلاء PropCtx ضمن قطاعات مكانية (Chunks) متوازنة بحجم 64×64م
+ * لتفادي التقطيع أثناء السير وتقليل استدعاءات الرسم (Draw Calls).
  */
 export function mergePropBuckets(
   scene: THREE.Scene,
   buckets: Map<string, THREE.BufferGeometry[]>,
   mats: Record<string, THREE.Material>,
-  noShadowBuckets = new Set(["glassDark", "paint", "water", "lampGlow"]),
-) {
+  noShadowBuckets = new Set(["glassDark", "glassWindow", "paint", "water", "lampGlow"]),
+): WorldChunk[] {
+  const cellMap = new Map<
+    string,
+    {
+      minX: number;
+      maxX: number;
+      minZ: number;
+      maxZ: number;
+      byBucket: Map<string, THREE.BufferGeometry[]>;
+    }
+  >();
+
   for (const [bucket, geos] of buckets) {
-    if (geos.length === 0) continue;
-    const mat = mats[bucket];
-    if (!mat) continue;
-    const merged = mergeGeometries(geos, false);
-    if (!merged) continue;
-    const mesh = new THREE.Mesh(merged, mat);
-    mesh.castShadow = !noShadowBuckets.has(bucket);
-    mesh.receiveShadow = true;
-    scene.add(mesh);
-    geos.forEach((g) => g.dispose());
+    if (geos.length === 0 || !mats[bucket]) continue;
+    for (const g of geos) {
+      const pos = g.attributes.position;
+      if (!pos || pos.count === 0) {
+        g.dispose();
+        continue;
+      }
+      let gMinX = Infinity;
+      let gMaxX = -Infinity;
+      let gMinZ = Infinity;
+      let gMaxZ = -Infinity;
+      const step = Math.max(1, Math.floor(pos.count / 16));
+      for (let i = 0; i < pos.count; i += step) {
+        const vx = pos.getX(i);
+        const vz = pos.getZ(i);
+        if (vx < gMinX) gMinX = vx;
+        if (vx > gMaxX) gMaxX = vx;
+        if (vz < gMinZ) gMinZ = vz;
+        if (vz > gMaxZ) gMaxZ = vz;
+      }
+      const cx = (gMinX + gMaxX) * 0.5;
+      const cz = (gMinZ + gMaxZ) * 0.5;
+      const key = `${Math.floor(cx / CHUNK_SIZE)},${Math.floor(cz / CHUNK_SIZE)}`;
+      let cell = cellMap.get(key);
+      if (!cell) {
+        cell = {
+          minX: gMinX,
+          maxX: gMaxX,
+          minZ: gMinZ,
+          maxZ: gMaxZ,
+          byBucket: new Map(),
+        };
+        cellMap.set(key, cell);
+      } else {
+        if (gMinX < cell.minX) cell.minX = gMinX;
+        if (gMaxX > cell.maxX) cell.maxX = gMaxX;
+        if (gMinZ < cell.minZ) cell.minZ = gMinZ;
+        if (gMaxZ > cell.maxZ) cell.maxZ = gMaxZ;
+      }
+      let list = cell.byBucket.get(bucket);
+      if (!list) {
+        list = [];
+        cell.byBucket.set(bucket, list);
+      }
+      list.push(g);
+    }
   }
+
+  const chunks: WorldChunk[] = [];
+  for (const [, cell] of cellMap) {
+    const group = new THREE.Group();
+    for (const [bucket, geos] of cell.byBucket) {
+      const mat = mats[bucket];
+      if (!mat || geos.length === 0) continue;
+      const merged = mergeGeometries(geos, false);
+      geos.forEach((g) => g.dispose());
+      if (!merged) continue;
+      merged.computeBoundingBox();
+      merged.computeBoundingSphere();
+      const mesh = new THREE.Mesh(merged, mat);
+      mesh.castShadow = !noShadowBuckets.has(bucket);
+      mesh.receiveShadow = true;
+      group.add(mesh);
+    }
+    if (group.children.length > 0) {
+      scene.add(group);
+      chunks.push({
+        group,
+        minX: cell.minX - 2,
+        maxX: cell.maxX + 2,
+        minZ: cell.minZ - 2,
+        maxZ: cell.maxZ + 2,
+      });
+    }
+  }
+  return chunks;
 }

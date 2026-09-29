@@ -49,10 +49,9 @@ const STREETS: { t: string; x: number; z: number; horiz: boolean }[] = [
 ];
 
 const LEGEND: { label: string; color: string }[] = [
-  { label: "أنت", color: "#d6c9a8" },
-  { label: "هدف", color: "#f59e0b" },
-  { label: "إنقاذ", color: "#10b981" },
-  { label: "مختبر", color: "#dc2626" },
+  { label: "موقعك واتجاهك", color: "#f5f5f4" },
+  { label: "منشأة مكتشفة", color: "#f59e0b" },
+  { label: "طريق مسدود", color: "#8b1a1a" },
 ];
 
 /** رسم خريطة شادو هافن — إحداثيات العالم (متر) → بكسل، X→X و Z→Y (الشمال أعلى) */
@@ -213,11 +212,12 @@ function drawMap(canvas: HTMLCanvasElement | null, snap: MapSnapshot | null) {
     // أسماء المكتشفة من اللقطة (تحت العلامة)
     ctx.font = "11px Cairo, sans-serif";
     for (const b of snap.buildings) {
-      if (!b.poi || !b.discovered || !b.name || b.x > 250) continue;
-      const numbered = NUMBERED.find((p) => b.name.includes(p.name.split(" (")[0]) || p.name.includes(b.name));
+      const bName = b.name;
+      if (!b.poi || !b.discovered || !bName || b.x > 250) continue;
+      const numbered = NUMBERED.find((p) => bName.includes(p.name.split(" (")[0]) || p.name.includes(bName));
       if (numbered) continue;
       ctx.fillStyle = "#d6c9a8";
-      ctx.fillText(b.name, clamp(px(b.x), 30, W - 30), clamp(py(b.z) - 12, 12, H - 6));
+      ctx.fillText(bName, clamp(px(b.x), 30, W - 30), clamp(py(b.z) - 12, 12, H - 6));
     }
 
     // ── العلامات الحية ──
@@ -281,7 +281,7 @@ function drawMap(canvas: HTMLCanvasElement | null, snap: MapSnapshot | null) {
     const ppy = clamp(py(snap.player.z), 10, H - 10);
     ctx.save();
     ctx.translate(ppx, ppy);
-    ctx.rotate(Math.PI - snap.player.yaw);
+    ctx.rotate(-snap.player.yaw);
     ctx.beginPath();
     ctx.moveTo(0, -11);
     ctx.lineTo(7, 8);
@@ -326,7 +326,10 @@ export default function MapScreen() {
   const snapRef = useRef<MapSnapshot | null>(null);
   const [hasSnap, setHasSnap] = useState(false);
 
-  const close = () => useGame.getState().setScreen("playing");
+  const close = () => {
+    useGame.getState().setScreen("playing");
+    getEngine()?.resume();
+  };
 
   // Tab / Escape / M للإغلاق
   useEffect(() => {
@@ -334,6 +337,7 @@ export default function MapScreen() {
       if (e.key === "Tab" || e.key === "Escape" || e.key.toLowerCase() === "m") {
         e.preventDefault();
         useGame.getState().setScreen("playing");
+        getEngine()?.resume();
       }
     };
     window.addEventListener("keydown", onKey);
@@ -414,11 +418,11 @@ export default function MapScreen() {
           </div>
         </div>
 
-        <p className="mt-3 text-center text-[11px] text-stone-600">
+        <p className="mt-3 text-center text-[11px] text-stone-500">
           <span dir="ltr" className="font-mono">
             M
           </span>{" "}
-          للإغلاق — النقطة الكهرمانية هدفك الحالي، والشمال في الأعلى
+          للإغلاق — اعتمد على قراءة الوثائق وأسماء الشوارع ودفتر المدينة لتحديد وجهتك (الشمال في الأعلى)
         </p>
       </div>
     </div>

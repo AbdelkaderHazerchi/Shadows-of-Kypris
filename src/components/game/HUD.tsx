@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Battery, Crosshair, Flashlight, Package } from "lucide-react";
+import { Battery, Crosshair, Flashlight, Package, Radio } from "lucide-react";
 import { useGame } from "@/lib/game/state";
 import { formatClock } from "./utils";
 
@@ -215,6 +215,28 @@ export default function HUD() {
             strokeWidth={1.5}
           />
         </div>
+        {/* راديو الاستشعار الميداني بأسلوب سايلنت هيل */}
+        {threat > 0.08 && (
+          <div className="mt-0.5 flex items-center gap-2 text-xs text-red-400/90">
+            <Radio className="kypris-pulse h-3.5 w-3.5 text-red-500" strokeWidth={1.6} />
+            <div className="flex items-end gap-0.5 h-3">
+              {[0.2, 0.38, 0.55, 0.72, 0.88].map((lvl, idx) => (
+                <span
+                  key={idx}
+                  className={`w-1 rounded-xs transition-all duration-150 ${
+                    threat >= lvl ? "bg-red-500" : "bg-stone-800"
+                  }`}
+                  style={{
+                    height: `${Math.max(25, Math.min(100, (idx + 1) * 20 * (threat >= lvl ? 0.75 + (now % 200) / 800 : 0.4)))}%`,
+                  }}
+                />
+              ))}
+            </div>
+            <span className="font-mono text-[10px] tracking-wider text-red-300/80">
+              تشويش راديو قريب
+            </span>
+          </div>
+        )}
       </div>
 
       {/* ── السلاح (أسفل اليمين) ── */}

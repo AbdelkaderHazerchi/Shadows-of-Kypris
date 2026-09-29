@@ -1142,24 +1142,13 @@ class AudioEngine {
     this.currentAmbient = null;
   }
 
-  // ── pre-generated voice files (/public/audio/voices/{name}.mp3) ──
+  // ── صوت القراءة الاصطناعي معطّل بناءً على طلب المستخدم ──
   private currentVoice: HTMLAudioElement | null = null;
 
   playVoice(name: string, onEnd?: () => void): boolean {
-    const a = new Audio(`/audio/voices/${name}.wav`);
-    a.volume = this.volumes.master;
-    let ok = true;
-    a.onerror = () => {
-      ok = false;
-      onEnd?.();
-    };
-    a.onended = () => onEnd?.();
-    a.play().catch(() => {
-      ok = false;
-      onEnd?.();
-    });
-    this.currentVoice = a;
-    return ok;
+    void name;
+    onEnd?.();
+    return false;
   }
 
   stopVoice() {
