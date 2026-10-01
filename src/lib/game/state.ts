@@ -59,7 +59,11 @@ const initialHud: HudState = {
   stamina: 100,
   battery: 100,
   flashlightOn: true,
+  crouching: false,
+  hidden: false,
   equipped: null,
+  stickHits: 0,
+  stickMaxHits: 0,
   pistolMag: 0,
   shotgunMag: 0,
   pistolAmmo: 0,
@@ -85,7 +89,7 @@ export interface GameStore {
   prevScreen: Screen;
   hud: HudState;
   inventory: (InvSlot | null)[];
-  weapons: { pistol: boolean; shotgun: boolean };
+  weapons: { crowbar: boolean; pistol: boolean; shotgun: boolean };
   flags: GameFlags;
   docsRead: ItemId[];
   stats: GameStats;
@@ -124,7 +128,8 @@ export interface GameStore {
   moveSlot: (from: number, to: number) => void;
 
   equip: (w: WeaponId | null) => void;
-  giveWeapon: (w: "pistol" | "shotgun") => void;
+  giveWeapon: (w: "crowbar" | "pistol" | "shotgun", durability?: number) => void;
+  breakStick: () => void;
 
   addKill: () => void;
   addHeadshot: () => void;
@@ -151,7 +156,7 @@ export const useGame = create<GameStore>((set, get) => ({
   prevScreen: "menu",
   hud: { ...initialHud },
   inventory: emptyInventory(),
-  weapons: { pistol: false, shotgun: false },
+  weapons: { crowbar: false, pistol: false, shotgun: false },
   flags: { ...initialFlags },
   docsRead: [],
   stats: { ...initialStats },
@@ -333,16 +338,37 @@ export const useGame = create<GameStore>((set, get) => ({
 
   equip: (w) => set((g) => ({ hud: { ...g.hud, equipped: w, reloading: false } })),
 
-  giveWeapon: (w) => {
+  giveWeapon: (w, durability) => {
     set((g) => {
       const weapons = { ...g.weapons, [w]: true };
       const h = { ...g.hud };
-      if (!h.equipped) {
+      if (w === "crowbar") {
+        const hits = durability ?? (7 + Math.floor(Math.random() * 5));
+        h.stickHits = hits;
+        h.stickMaxHits = hits;
+        if (!h.equipped) h.equipped = "crowbar";
+        return { weapons, hud: h };
+      }
+      if (!h.equipped || h.equipped === "crowbar") {
         h.equipped = w;
       }
       if (w === "pistol" && h.pistolMag === 0) h.pistolMag = WEAPONS.pistol.magSize;
       if (w === "shotgun" && h.shotgunMag === 0) h.shotgunMag = WEAPONS.shotgun.magSize;
       return { weapons, hud: h, flags: { ...g.flags, hasWeapon: true } };
+    });
+  },
+
+  breakStick: () => {
+    set((g) => {
+      const weapons = { ...g.weapons, crowbar: false };
+      let nextEq: WeaponId | null = g.hud.equipped;
+      if (nextEq === "crowbar") {
+        nextEq = weapons.pistol ? "pistol" : weapons.shotgun ? "shotgun" : null;
+      }
+      return {
+        weapons,
+        hud: { ...g.hud, stickHits: 0, stickMaxHits: 0, equipped: nextEq },
+      };
     });
   },
 
@@ -363,7 +389,7 @@ export const useGame = create<GameStore>((set, get) => ({
       screen: g.screen,
       hud: { ...initialHud },
       inventory: emptyInventory(),
-      weapons: { pistol: false, shotgun: false },
+      weapons: { crowbar: false, pistol: false, shotgun: false },
       flags: { ...initialFlags },
       docsRead: [],
       stats: { ...initialStats },
@@ -376,26 +402,43 @@ export const useGame = create<GameStore>((set, get) => ({
     })),
 
   applySave: (s) =>
-    set(() => ({
-      hud: {
-        ...initialHud,
-        hp: s.hp,
-        stamina: s.stamina,
-        battery: s.battery,
-        pistolAmmo: s.pistolAmmo,
-        shotgunAmmo: s.shotgunAmmo,
-        pistolMag: s.pistolMag,
-        shotgunMag: s.shotgunMag,
-        equipped: s.equipped,
-      },
-      inventory: s.inventory,
-      weapons: s.weapons,
-      flags: s.flags,
-      docsRead: s.docsRead,
-      stats: s.stats,
-      objectiveId: s.objectiveId,
-      checkpoint: s.checkpoint,
-    })),
+    set(() => {
+      const hasCrowbar = Boolean(s.weapons?.crowbar && (s.stickHits ?? 0) > 0);
+      const eq =
+        s.equipped === "crowbar" && !hasCrowbar
+          ? s.weapons?.pistol
+            ? "pistol"
+            : s.weapons?.shotgun
+              ? "shotgun"
+              : null
+          : s.equipped;
+      return {
+        hud: {
+          ...initialHud,
+          hp: s.hp,
+          stamina: s.stamina,
+          battery: s.battery,
+          pistolAmmo: s.pistolAmmo,
+          shotgunAmmo: s.shotgunAmmo,
+          pistolMag: s.pistolMag,
+          shotgunMag: s.shotgunMag,
+          stickHits: hasCrowbar ? (s.stickHits ?? 9) : 0,
+          stickMaxHits: hasCrowbar ? (s.stickMaxHits ?? 9) : 0,
+          equipped: eq,
+        },
+        inventory: s.inventory,
+        weapons: {
+          crowbar: hasCrowbar,
+          pistol: Boolean(s.weapons?.pistol),
+          shotgun: Boolean(s.weapons?.shotgun),
+        },
+        flags: s.flags,
+        docsRead: s.docsRead,
+        stats: s.stats,
+        objectiveId: s.objectiveId,
+        checkpoint: s.checkpoint,
+      };
+    }),
 
   getSaveData: (pos, yaw) => {
     const g = get();
@@ -409,6 +452,8 @@ export const useGame = create<GameStore>((set, get) => ({
       shotgunAmmo: g.hud.shotgunAmmo,
       pistolMag: g.hud.pistolMag,
       shotgunMag: g.hud.shotgunMag,
+      stickHits: g.hud.stickHits,
+      stickMaxHits: g.hud.stickMaxHits,
       weapons: g.weapons,
       equipped: g.hud.equipped,
       inventory: g.inventory,

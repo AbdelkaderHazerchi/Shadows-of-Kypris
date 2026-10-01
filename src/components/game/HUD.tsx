@@ -1,277 +1,255 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Battery, Crosshair, Flashlight, Package, Radio } from "lucide-react";
+import { Flashlight, Heart } from "lucide-react";
 import { getContent } from "@/lib/game/content";
 import { useGame } from "@/lib/game/state";
 import { formatClock } from "./utils";
 
-function Bar({
-  w,
-  h,
-  pct,
-  className,
-  trackClass = "bg-black/70",
-}: {
-  w: string;
-  h: string;
-  pct: number;
-  className: string;
-  trackClass?: string;
-}) {
-  return (
-    <div className={`${w} ${h} ${trackClass} overflow-hidden rounded-sm border border-stone-700/50`}>
-      <div
-        className={`h-full rounded-sm transition-[width] duration-200 ${className}`}
-        style={{ width: `${Math.max(0, Math.min(100, pct))}%` }}
-      />
-    </div>
-  );
-}
-
-/** شاشة HUD — طبقة عرض فقط، بلا تفاعل، فوق مشهد المحرك */
+/** واجهة لعب نظيفة وشفافة بدون أي إطارات — تعرض فقط الصحة، بطارية المصباح، ونوع السلاح المحمول */
 export default function HUD() {
-  // ──Selectors──
   const hp = useGame((g) => g.hud.hp);
   const maxHp = useGame((g) => g.hud.maxHp);
-  const stamina = useGame((g) => g.hud.stamina);
   const battery = useGame((g) => g.hud.battery);
   const flashlightOn = useGame((g) => g.hud.flashlightOn);
+  const crouching = useGame((g) => g.hud.crouching);
+  const hidden = useGame((g) => g.hud.hidden);
   const equipped = useGame((g) => g.hud.equipped);
+  const stickHits = useGame((g) => g.hud.stickHits);
+  const stickMaxHits = useGame((g) => g.hud.stickMaxHits);
   const pistolMag = useGame((g) => g.hud.pistolMag);
   const shotgunMag = useGame((g) => g.hud.shotgunMag);
   const pistolAmmo = useGame((g) => g.hud.pistolAmmo);
   const shotgunAmmo = useGame((g) => g.hud.shotgunAmmo);
   const reloading = useGame((g) => g.hud.reloading);
-  const objective = useGame((g) => g.hud.objective);
-  const optionalObjective = useGame((g) => g.hud.optionalObjective);
   const prompt = useGame((g) => g.hud.prompt);
   const hint = useGame((g) => g.hud.hint);
   const hintAt = useGame((g) => g.hud.hintAt);
   const damageAt = useGame((g) => g.hud.damageAt);
+  const healAt = useGame((g) => g.hud.healAt);
   const heartbeat = useGame((g) => g.hud.heartbeat);
   const threat = useGame((g) => g.hud.threat);
   const zone = useGame((g) => g.hud.zone);
   const escapeTimer = useGame((g) => g.hud.escapeTimer);
   const waveTimer = useGame((g) => g.hud.waveTimer);
   const toast = useGame((g) => g.toast);
-  const docsCount = useGame((g) => g.docsRead.length);
+  const weapons = useGame((g) => g.weapons);
+  const lang = useGame((g) => g.lang);
 
-  // نبضة زمنية كل 250ms لإخفاء العناصر المعتمدة على الوقت
-  const [, setTick] = useState(0);
+  // نبضة زمنية لإخفاء التنبيهات النصية المؤقتة
+  const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    const id = setInterval(() => setTick((t) => t + 1), 250);
+    const id = setInterval(() => setNow(Date.now()), 250);
     return () => clearInterval(id);
   }, []);
 
-  // وميض الضرر — يُزال بعد ثانية
-  const [damageOn, setDamageOn] = useState(false);
-  useEffect(() => {
-    if (!damageAt) return;
-    setDamageOn(true);
-    const t = setTimeout(() => setDamageOn(false), 900);
-    return () => clearTimeout(t);
-  }, [damageAt]);
+  // وميض الضرر والعلاج
+  const damageOn = damageAt > 0 && now - damageAt < 800;
+  const healOn = healAt > 0 && now - healAt < 650;
 
-  // لافتة المنطقة — تظهر 3.5 ثانية ثم تتلاشى
+  // اسم المنطقة عند دخولها (نص نظيف بدون إطار يختفي تلقائياً)
   const [zoneView, setZoneView] = useState<{ name: string; fade: boolean } | null>(null);
   useEffect(() => {
     if (!zone) return;
-    setZoneView({ name: zone, fade: false });
-    const t1 = setTimeout(() => setZoneView((v) => (v ? { ...v, fade: true } : v)), 2800);
-    const t2 = setTimeout(() => setZoneView(null), 3500);
+    const t0 = setTimeout(() => setZoneView({ name: zone, fade: false }), 0);
+    const t1 = setTimeout(() => setZoneView((v) => (v ? { ...v, fade: true } : v)), 2500);
+    const t2 = setTimeout(() => setZoneView(null), 3200);
     return () => {
+      clearTimeout(t0);
       clearTimeout(t1);
       clearTimeout(t2);
     };
   }, [zone]);
 
-  const lang = useGame((g) => g.lang);
   const c = getContent(lang);
   const ui = c.ui.hud;
 
-  const now = Date.now();
   const hintVisible = hint.length > 0 && now - hintAt < 4500;
-  const toastVisible = toast !== null && now - toast.at < 4000;
-  const hpPct = maxHp > 0 ? (hp / maxHp) * 100 : 0;
+  const toastVisible = toast !== null && now - toast.at < 3800;
+  const hpPct = maxHp > 0 ? Math.max(0, Math.min(100, (hp / maxHp) * 100)) : 0;
+  const batPct = Math.max(0, Math.min(100, battery));
   const lowHp = hp < 30;
 
+  const isFirearm = equipped === "pistol" || equipped === "shotgun";
+  const isStick = equipped === "crowbar" && weapons.crowbar && stickHits > 0;
   const weaponName =
     equipped === "pistol"
       ? c.weapons.pistol.name
       : equipped === "shotgun"
         ? c.weapons.shotgun.name
-        : null;
+        : isStick
+          ? c.weapons.crowbar.name
+          : ui.unarmedLabel;
+
   const mag = equipped === "shotgun" ? shotgunMag : equipped === "pistol" ? pistolMag : 0;
   const reserve = equipped === "shotgun" ? shotgunAmmo : equipped === "pistol" ? pistolAmmo : 0;
+  const stickPct = stickMaxHits > 0 ? Math.max(0, Math.min(100, (stickHits / stickMaxHits) * 100)) : 0;
 
   return (
     <div className="pointer-events-none fixed inset-0 z-30 select-none font-ui">
-      {/* ── Crosshair ── */}
+      {/* ── نقطة التصويب المركزية النظيفة (تتحول للأخضر الهادئ عند الاختباء خلف غطاء) ── */}
       <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
-        <div className="relative flex h-[18px] w-[18px] items-center justify-center rounded-full border border-stone-300/60">
-          <div className="absolute h-[2px] w-[2px] rounded-full bg-stone-300/90" />
-        </div>
+        <div
+          className={`rounded-full transition-all duration-200 ${
+            hidden
+              ? "h-1.5 w-1.5 bg-emerald-400/90 shadow-[0_0_8px_rgba(52,211,153,0.85)]"
+              : crouching
+                ? "h-1 w-1 bg-amber-200/75 shadow-[0_0_4px_rgba(0,0,0,0.9)]"
+                : "h-1 w-1 bg-white/60 shadow-[0_0_4px_rgba(0,0,0,0.9)]"
+          }`}
+        />
       </div>
 
-      {/* ── Objective (top right) ── */}
-      {(objective || optionalObjective) && (
-        <div className="kypris-panel absolute right-4 top-4 max-w-xs px-4 py-3">
-          <p className="text-xs tracking-wider text-amber-500">{ui.objective}</p>
-          <p className="mt-1 text-sm leading-6 text-stone-200">{objective}</p>
-          {optionalObjective && (
-            <p className="mt-1 text-xs leading-5 text-stone-400">{optionalObjective}</p>
+      {/* ── عداد الطوارئ النهائي عند الهروب أو الموجة (نص نظيف بدون إطار) ── */}
+      {(escapeTimer >= 0 || waveTimer >= 0) && (
+        <div className="absolute left-1/2 top-6 flex -translate-x-1/2 flex-col items-center gap-1 drop-shadow-[0_2px_8px_rgba(0,0,0,0.95)]">
+          {escapeTimer >= 0 && (
+            <div className="flex flex-col items-center">
+              <span dir="ltr" className="kypris-pulse font-mono text-2xl font-bold text-red-400">
+                {formatClock(escapeTimer)}
+              </span>
+              <span className="text-[11px] text-red-200/80">{ui.beforeExplosion}</span>
+            </div>
+          )}
+          {waveTimer >= 0 && (
+            <div className="flex flex-col items-center">
+              <span dir="ltr" className="font-mono text-xl font-bold text-amber-300">
+                {formatClock(waveTimer)}
+              </span>
+              <span className="text-[11px] text-amber-200/80">{ui.teamArrival}</span>
+            </div>
           )}
         </div>
       )}
 
-      {/* ── Document counter (top left) ── */}
-      <div className="absolute left-4 top-4 flex items-center gap-1.5 text-stone-500">
-        <Package className="h-3.5 w-3.5" strokeWidth={1.5} />
-        <span dir="ltr" className="font-mono text-xs">
-          {docsCount}/6
-        </span>
-      </div>
-
-      {/* ── Timers (top center) ── */}
-      <div className="absolute left-1/2 top-4 flex -translate-x-1/2 flex-col items-center gap-1">
-        {escapeTimer >= 0 && (
-          <div className="flex flex-col items-center">
-            <span dir="ltr" className="kypris-pulse font-mono text-3xl font-bold text-red-400">
-              {formatClock(escapeTimer)}
-            </span>
-            <span className="text-xs text-red-300/80">{ui.beforeExplosion}</span>
-          </div>
-        )}
-        {waveTimer >= 0 && (
-          <div className="flex flex-col items-center">
-            <span dir="ltr" className="font-mono text-xl font-bold text-amber-400">
-              {formatClock(waveTimer)}
-            </span>
-            <span className="text-xs text-amber-200/70">{ui.teamArrival}</span>
-          </div>
-        )}
-      </div>
-
-      {/* ── Zone banner ── */}
+      {/* ── اسم المنطقة عند اكتشافها (نص سينمائي بدون إطار) ── */}
       {zoneView && (
         <div
-          className={`absolute left-1/2 top-20 -translate-x-1/2 transition-opacity duration-700 ${
+          className={`absolute left-1/2 top-16 -translate-x-1/2 transition-opacity duration-700 ${
             zoneView.fade ? "opacity-0" : "opacity-100"
           }`}
         >
-          <p className="kypris-creep font-title text-xl text-stone-300">{zoneView.name}</p>
+          <p className="font-title text-2xl tracking-wide text-stone-200/90 drop-shadow-[0_2px_10px_rgba(0,0,0,0.95)]">
+            {zoneView.name}
+          </p>
         </div>
       )}
 
-      {/* ── Toast (upper center) ── */}
+      {/* ── رسائل التنبيه السريعة (بدون إطار) ── */}
       {toastVisible && toast && (
-        <div className="absolute left-1/2 top-[22%] w-full -translate-x-1/2 px-6 text-center">
-          <p className="kypris-creep inline-block bg-black/45 px-4 py-1 font-title text-2xl text-amber-200">
+        <div className="absolute left-1/2 top-[22%] w-full max-w-xl -translate-x-1/2 px-6 text-center">
+          <p className="kypris-creep font-title text-xl text-amber-100/95 drop-shadow-[0_2px_8px_rgba(0,0,0,0.95)]">
             {toast.text}
           </p>
         </div>
       )}
 
-      {/* ── Interaction prompt (below crosshair) ── */}
+      {/* ── تفاعل [E] أسفل نقطة التصويب (نص نظيف بدون إطار) ── */}
       {prompt.length > 0 && (
-        <div className="absolute left-1/2 top-[56%] -translate-x-1/2">
-          <p className="rounded border border-amber-900/40 bg-black/60 px-3 py-1 text-sm text-stone-100">
+        <div className="absolute left-1/2 top-[56%] -translate-x-1/2 text-center">
+          <p className="text-sm font-medium text-stone-100/95 drop-shadow-[0_2px_6px_rgba(0,0,0,0.95)]">
             {prompt}
           </p>
         </div>
       )}
 
-      {/* ── Hint (bottom center) ── */}
+      {/* ── التلميحات والحوارات السفلية (ترجمة سينمائية بدون إطار) ── */}
       {hintVisible && (
-        <div className="absolute bottom-24 left-1/2 -translate-x-1/2">
-          <div className="kypris-panel px-4 py-2 text-sm text-amber-200">{hint}</div>
+        <div className="absolute bottom-20 left-1/2 w-[min(560px,90vw)] -translate-x-1/2 text-center">
+          <p className="text-sm leading-6 text-amber-100/90 drop-shadow-[0_2px_8px_rgba(0,0,0,0.95)]">
+            {hint}
+          </p>
         </div>
       )}
 
-      {/* ── Vitals (bottom left) ── */}
-      <div className="absolute bottom-5 left-5 flex flex-col gap-2">
-        {/* Health */}
-        <div className="flex items-center gap-2">
-          <Bar
-            w="w-56"
-            h="h-3"
-            pct={hpPct}
-            className="bg-gradient-to-r from-[#7f1d1d] to-[#dc2626]"
+      {/* ── أسفل اليسار: الصحة + شريط بطارية المصباح فقط (بدون أي إطارات) ── */}
+      <div
+        className="absolute bottom-6 left-6 flex flex-col gap-2.5 drop-shadow-[0_2px_6px_rgba(0,0,0,0.95)]"
+        dir="ltr"
+      >
+        {/* 1. شريط الصحة */}
+        <div className="flex items-center gap-2.5">
+          <Heart
+            className={`h-4 w-4 shrink-0 ${
+              lowHp ? "kypris-pulse text-red-500" : "text-red-500/85"
+            }`}
+            strokeWidth={2}
           />
-          <span dir="ltr" className="font-mono text-[11px] text-stone-400">
-            {Math.round(hp)}/{maxHp}
+          <div className="h-1.5 w-36 overflow-hidden rounded-full bg-white/15">
+            <div
+              className={`h-full rounded-full transition-[width] duration-200 ${
+                lowHp ? "bg-red-500" : "bg-red-500/90"
+              }`}
+              style={{ width: `${hpPct}%` }}
+            />
+          </div>
+          <span
+            className={`font-mono text-xs font-semibold tabular-nums ${
+              lowHp ? "text-red-400" : "text-stone-200/90"
+            }`}
+          >
+            {Math.round(hp)}
           </span>
         </div>
-        {/* Stamina */}
-        <div className={`transition-opacity duration-300 ${stamina >= 99 ? "opacity-0" : "opacity-100"}`}>
-          <Bar w="w-40" h="h-1.5" pct={stamina} className="bg-amber-600" />
-        </div>
-        {/* Flashlight & Battery */}
-        <div className={`flex items-center gap-2 transition-opacity duration-300 ${flashlightOn ? "opacity-100" : "opacity-40"}`}>
+
+        {/* 2. شريط بطارية المصباح */}
+        <div
+          className={`flex items-center gap-2.5 transition-opacity ${
+            flashlightOn ? "opacity-95" : "opacity-50"
+          }`}
+        >
           <Flashlight
-            className={`h-3.5 w-3.5 ${battery < 20 && flashlightOn ? "text-red-500" : "text-stone-400"}`}
-            strokeWidth={1.5}
+            className={`h-4 w-4 shrink-0 ${
+              battery < 20 && flashlightOn
+                ? "text-red-400"
+                : flashlightOn
+                  ? "text-amber-300"
+                  : "text-stone-400"
+            }`}
+            strokeWidth={1.8}
           />
-          <Bar
-            w="w-24"
-            h="h-1.5"
-            pct={battery}
-            className={battery < 20 ? "bg-red-600" : "bg-yellow-600"}
-          />
-          <Battery
-            className={`h-3 w-3 ${flashlightOn ? "text-yellow-600" : "text-stone-700"}`}
-            strokeWidth={1.5}
-          />
-        </div>
-        {/* Silent Hill style proximity radio */}
-        {threat > 0.08 && (
-          <div className="mt-0.5 flex items-center gap-2 text-xs text-red-400/90">
-            <Radio className="kypris-pulse h-3.5 w-3.5 text-red-500" strokeWidth={1.6} />
-            <div className="flex items-end gap-0.5 h-3">
-              {[0.2, 0.38, 0.55, 0.72, 0.88].map((lvl, idx) => (
-                <span
-                  key={idx}
-                  className={`w-1 rounded-xs transition-all duration-150 ${
-                    threat >= lvl ? "bg-red-500" : "bg-stone-800"
-                  }`}
-                  style={{
-                    height: `${Math.max(25, Math.min(100, (idx + 1) * 20 * (threat >= lvl ? 0.75 + (now % 200) / 800 : 0.4)))}%`,
-                  }}
-                />
-              ))}
-            </div>
-            <span className="font-mono text-[10px] tracking-wider text-red-300/80">
-              {ui.radioStaticNear}
-            </span>
+          <div className="h-1 w-28 overflow-hidden rounded-full bg-white/15">
+            <div
+              className={`h-full rounded-full transition-[width] duration-200 ${
+                battery < 20 ? "bg-red-500" : "bg-amber-300/90"
+              }`}
+              style={{ width: `${batPct}%` }}
+            />
           </div>
-        )}
+        </div>
       </div>
 
-      {/* ── Weapon (bottom right) ── */}
-      <div className="absolute bottom-5 right-5 text-left">
+      {/* ── أسفل اليمين: نوع السلاح المحمول فقط (بدون أي إطارات) ── */}
+      <div className="absolute bottom-6 right-6 flex flex-col items-end gap-1 drop-shadow-[0_2px_6px_rgba(0,0,0,0.95)]">
+        <span className="text-sm font-semibold tracking-wide text-stone-200/95">
+          {weaponName}
+        </span>
+
         {reloading ? (
-          <p className="kypris-pulse font-ui text-lg text-amber-400">{ui.reloading}</p>
-        ) : weaponName ? (
-          <div className="flex flex-col items-end">
-            <span className="text-xs text-stone-400">{weaponName}</span>
-            <span dir="ltr" className="font-mono text-4xl font-bold leading-none text-stone-100">
-              {mag}
-              <span className="ms-2 align-middle font-mono text-sm font-normal text-stone-500">
-                / {reserve}
-              </span>
-            </span>
-            {mag === 0 && reserve > 0 && (
-              <span className="kypris-pulse mt-1 flex items-center gap-1.5 text-xs text-amber-400">
-                <span dir="ltr" className="rounded border border-amber-700/60 px-1.5 font-mono font-bold">
-                  R
-                </span>
-                {ui.reloadPrompt}
-              </span>
-            )}
+          <span className="kypris-pulse text-xs text-amber-300/90">{ui.reloading}</span>
+        ) : isFirearm ? (
+          <div className="flex items-baseline gap-1 font-mono tabular-nums" dir="ltr">
+            <span className="text-lg font-bold text-stone-100">{mag}</span>
+            <span className="text-xs text-stone-400">/ {reserve}</span>
           </div>
-        ) : equipped === "crowbar" ? (
-          <span className="font-ui text-lg text-stone-300">{ui.crowbarShort}</span>
+        ) : isStick ? (
+          <div className="flex items-center gap-2" dir="ltr">
+            <div className="h-1 w-20 overflow-hidden rounded-full bg-white/15">
+              <div
+                className={`h-full rounded-full transition-[width] duration-200 ${
+                  stickHits <= 2 ? "bg-red-500" : "bg-amber-400/85"
+                }`}
+                style={{ width: `${stickPct}%` }}
+              />
+            </div>
+            <span
+              className={`font-mono text-[11px] tabular-nums ${
+                stickHits <= 2 ? "text-red-400" : "text-stone-300/85"
+              }`}
+            >
+              {stickHits}/{stickMaxHits}
+            </span>
+          </div>
         ) : null}
       </div>
 
@@ -283,6 +261,18 @@ export default function HUD() {
           style={{
             background:
               "radial-gradient(ellipse at center, transparent 30%, rgba(140,10,10,0.55) 100%)",
+          }}
+        />
+      )}
+
+      {/* ── وميض العلاج ── */}
+      {healOn && (
+        <div
+          key={healAt}
+          className="kypris-damage absolute inset-0"
+          style={{
+            background:
+              "radial-gradient(ellipse at center, transparent 45%, rgba(16,140,90,0.28) 100%)",
           }}
         />
       )}
@@ -308,13 +298,6 @@ export default function HUD() {
           }}
         />
       )}
-
-      {/* زخرفة: أيقونة صغيرة خافتة بجانب المؤشر عند تسليح ناري */}
-      {equipped === "pistol" || equipped === "shotgun" ? (
-        <div className="absolute left-1/2 top-[52.5%] -translate-x-1/2 text-stone-600/70">
-          <Crosshair className="h-3 w-3" strokeWidth={1.5} />
-        </div>
-      ) : null}
     </div>
   );
 }

@@ -60,20 +60,22 @@ export function segmentBlocked(
   x2: number,
   z2: number,
   colliders: Collider[],
-  y = 1.0,
+  y1 = 1.0,
+  y2 = y1,
 ): boolean {
-  const steps = Math.min(60, Math.max(4, Math.floor(Math.hypot(x2 - x1, z2 - z1) / 1.2)));
+  const steps = Math.min(60, Math.max(4, Math.floor(Math.hypot(x2 - x1, z2 - z1) / 1.0)));
   for (let i = 1; i <= steps; i++) {
     const t = i / steps;
     const x = x1 + (x2 - x1) * t;
     const z = z1 + (z2 - z1) * t;
+    const y = y1 + (y2 - y1) * t;
     for (const c of colliders) {
       if (c.minY !== undefined || c.maxY !== undefined) {
         const cMinY = c.minY ?? 0;
         const cMaxY = c.maxY ?? 4.2;
         if (y < cMinY || y > cMaxY) continue;
       }
-      if (x > c.minX - 0.1 && x < c.maxX + 0.1 && z > c.minZ - 0.1 && z < c.maxZ + 0.1) {
+      if (x > c.minX - 0.12 && x < c.maxX + 0.12 && z > c.minZ - 0.12 && z < c.maxZ + 0.12) {
         return true;
       }
     }
@@ -359,28 +361,69 @@ const bloodPoolMat = new THREE.MeshBasicMaterial({
   depthWrite: false,
 });
 
-// ── جثة راقدة (خدعة النهوض) — كتلتان + طرف + بركة دم ──
+// ── جثة راقدة مفصلية كاملة (خدعة النهوض) — مبنية بنفس التشريح المفصلي للوحوش ──
 function makeCorpseProp(): THREE.Group {
   const g = new THREE.Group();
-  const body = new THREE.Mesh(sphGeo(0.3, 10), corpseMat);
-  body.scale.set(1.45, 0.42, 0.8);
-  body.position.y = 0.13;
-  body.castShadow = true;
-  g.add(body);
-  const head = new THREE.Mesh(sphGeo(0.16, 8), corpseMat);
-  head.scale.set(1, 0.8, 1);
-  head.position.set(0.52, 0.1, 0.06);
-  head.castShadow = true;
-  g.add(head);
-  const arm = new THREE.Mesh(boxGeo(0.09, 0.09, 0.42), corpseMat);
-  arm.position.set(0.08, 0.05, 0.36);
-  arm.rotation.y = 0.55;
-  arm.castShadow = true;
-  g.add(arm);
-  const pool = new THREE.Mesh(circleGeo(0.9, 16), bloodPoolMat);
+  const shirtMat = clothMat(0x3a342c);
+  const pantsMat = clothMat(0x23252a);
+  const bootMat = clothMat(0x141414);
+
+  const addPart = (
+    w: number,
+    h: number,
+    d: number,
+    mat: THREE.Material,
+    x: number,
+    y: number,
+    z: number,
+    ry = 0,
+  ) => {
+    const m = new THREE.Mesh(boxGeo(w, h, d), mat);
+    m.position.set(x, y + h / 2, z);
+    m.rotation.y = ry;
+    m.castShadow = true;
+    g.add(m);
+  };
+
+  // 1) الحوض والبطن والقفص الصدري والأضلاع المكشوفة
+  addPart(0.34, 0.19, 0.24, pantsMat, 0, 0.02, -0.12);
+  addPart(0.31, 0.16, 0.18, corpseMat, 0, 0.03, 0.06);
+  addPart(0.42, 0.22, 0.48, shirtMat, 0, 0.02, 0.36);
+  addPart(0.16, 0.022, 0.22, stumpMat, 0.05, 0.24, 0.35);
+  for (let i = 0; i < 3; i++) {
+    addPart(0.24 - i * 0.02, 0.022, 0.024, boneMat, 0.02, 0.255, 0.26 + i * 0.085);
+  }
+
+  // 2) الرقبة والجمجمة والفك والأسنان والشعر
+  addPart(0.12, 0.12, 0.12, corpseMat, 0, 0.05, 0.62);
+  addPart(0.22, 0.21, 0.24, corpseMat, 0.02, 0.02, 0.76, 0.15);
+  addPart(0.16, 0.09, 0.14, corpseMat, 0.01, 0.02, 0.66, 0.15);
+  addPart(0.12, 0.025, 0.03, teethMat, 0.01, 0.09, 0.68, 0.15);
+  addPart(0.23, 0.08, 0.23, hairMat, 0.02, 0.16, 0.78, 0.15);
+
+  // 3) الذراعان المفصليتان (عضد + ساعد + كف)
+  addPart(0.11, 0.11, 0.30, shirtMat, -0.31, 0.03, 0.61, 0.55);
+  addPart(0.09, 0.09, 0.28, corpseMat, -0.40, 0.02, 0.85, 0.15);
+  addPart(0.09, 0.05, 0.12, corpseMat, -0.42, 0.02, 1.01, 0.15);
+
+  addPart(0.11, 0.11, 0.30, shirtMat, 0.31, 0.03, 0.61, -0.58);
+  addPart(0.09, 0.09, 0.28, corpseMat, 0.41, 0.02, 0.85, -0.22);
+  addPart(0.09, 0.05, 0.12, corpseMat, 0.44, 0.02, 1.01, -0.22);
+
+  // 4) الساقان المفصليتان (فخذ + ساق + حذاء)
+  addPart(0.15, 0.15, 0.42, pantsMat, -0.15, 0.02, -0.41, -0.20);
+  addPart(0.12, 0.12, 0.40, pantsMat, -0.18, 0.02, -0.79, 0.05);
+  addPart(0.12, 0.18, 0.11, bootMat, -0.17, 0.01, -1.01, 0.05);
+
+  addPart(0.15, 0.15, 0.42, pantsMat, 0.16, 0.02, -0.41, 0.24);
+  addPart(0.12, 0.12, 0.40, pantsMat, 0.20, 0.02, -0.79, -0.12);
+  addPart(0.12, 0.18, 0.11, bootMat, 0.18, 0.01, -1.01, -0.12);
+
+  // 5) بركة الدم تحت الجثة
+  const pool = new THREE.Mesh(circleGeo(0.95, 16), bloodPoolMat);
   pool.rotation.x = -Math.PI / 2;
   pool.position.y = 0.015;
-  pool.scale.set(1.3, 0.8, 1);
+  pool.scale.set(1.15, 1.35, 1);
   g.add(pool);
   g.rotation.y = Math.random() * Math.PI * 2;
   return g;
@@ -719,7 +762,7 @@ export class Enemy {
     // ── الزعيم: معطف + نواة + كتفيان مدرّعتان ──
     let coatL: THREE.Group | null = null;
     let coatR: THREE.Group | null = null;
-    let coreLight: THREE.PointLight | null = null;
+    const coreLight: THREE.PointLight | null = null;
     if (kind === "boss") {
       // ياقة
       const collar = new THREE.Mesh(boxGeo(0.5, 0.1, 0.32), shirt);
@@ -1262,6 +1305,8 @@ export class Enemy {
     hooks: EnemyHooks,
     others: Enemy[],
     canAct: boolean,
+    crouching = false,
+    hidden = false,
   ) {
     const g = this.group;
     const px = player.x;
@@ -1323,19 +1368,28 @@ export class Enemy {
       return;
     }
 
-    // خط رؤية بتكرار متدرج (مع مراعاة فرق الطابق الرأسي)
-    const playerFloorY = Math.max(0, player.y - 1.66);
+    // خط رؤية بتكرار متدرج (مع مراعاة فرق الطابق الرأسي ووضع الانخفاض والاختباء خلف ساتر)
+    const eyeOffset = crouching ? 0.88 : 1.66;
+    const playerFloorY = Math.max(0, player.y - eyeOffset);
     const sameFloor = Math.abs(playerFloorY - g.position.y) < 2.2;
+    const effectiveSight = crouching ? this.def.sightRange * 0.55 : this.def.sightRange;
     this.losT -= dt;
     if (this.losT <= 0) {
-      this.losT = 0.24 + Math.random() * 0.12;
-      if (sameFloor && dist < this.def.sightRange) {
+      this.losT = 0.20 + Math.random() * 0.10;
+      if (hidden && dist > 1.85) {
+        // اللاعب منخفض ومختبئ وراء ساتر — الوحش لا يراه
+        this.canSee = false;
+      } else if (sameFloor && dist < effectiveSight) {
         const ex = g.position.x;
         const ez = g.position.z;
-        this.canSee = !segmentBlocked(ex, ez, px, pz, colliders, g.position.y + 1.0);
+        const enemyEyeY = g.position.y + (crouching ? 0.82 : 1.25);
+        const playerEyeY = player.y;
+        this.canSee = !segmentBlocked(ex, ez, px, pz, colliders, enemyEyeY, playerEyeY);
       } else {
         this.canSee = false;
       }
+    } else if (hidden && dist > 1.85) {
+      this.canSee = false;
     }
 
     const attackR = this.def.attackRange + (this.kind === "boss" ? 0.6 : 0.2);
@@ -1420,8 +1474,11 @@ export class Enemy {
           this.moveToward(tgt.x, tgt.z, spd, dt, colliders);
         }
         this.animate(dt, true, this.kind === "runner" ? 2.2 : this.kind === "spitter" ? 1.3 : this.kind === "brute" ? 1.1 : this.kind === "boss" ? 1.0 : 1.15);
-        // فقد الأثر
-        if (!this.canSee && Math.hypot(this.heardX - g.position.x, this.heardZ - g.position.z) < 1.2) {
+        // فقد الأثر (أو اختباء اللاعب خلف ساتر)
+        if (
+          !this.canSee &&
+          ((hidden && dist > 2.6) || Math.hypot(this.heardX - g.position.x, this.heardZ - g.position.z) < 1.5)
+        ) {
           this.hasHeard = false;
           this.state = "idle";
         }
@@ -1655,7 +1712,14 @@ export class EnemyManager {
     return n;
   }
 
-  update(dt: number, player: THREE.Vector3, colliders: Collider[], canAct: boolean) {
+  update(
+    dt: number,
+    player: THREE.Vector3,
+    colliders: Collider[],
+    canAct: boolean,
+    crouching = false,
+    hidden = false,
+  ) {
     // قذائف وجزيئات الحمض تعمل دائمًا
     stepAcidFx(dt, player, this.hooks, colliders);
 
@@ -1696,7 +1760,7 @@ export class EnemyManager {
       }
 
       e.group.visible = true;
-      e.update(dt, player, colliders, this.hooks, this.enemies, canAct);
+      e.update(dt, player, colliders, this.hooks, this.enemies, canAct, crouching, hidden);
 
       if (e.state === "dead") {
         if (e.fakeCorpseProp) {

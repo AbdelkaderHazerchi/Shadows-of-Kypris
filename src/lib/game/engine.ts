@@ -28,7 +28,7 @@ import {
   translateInteractPrompt,
 } from "./content";
 import { setSurvivorPose, type DoorDef } from "./props";
-import type { EndingId, EnemyKind, Lang, MapSnapshot, WeaponId } from "./types";
+import type { EndingId, Lang, MapSnapshot, WeaponId } from "./types";
 
 // ── grain/vignette shader ──
 const HorrorShader = {
@@ -79,6 +79,7 @@ const HorrorShader = {
 
 const PLAYER_R = 0.42;
 const EYE_H = 1.66;
+const CROUCH_EYE_H = 0.88;
 
 /** باب تفاعلي من العالم — contract 5-b (WorldData.doors) */
 interface DoorEntry {
@@ -139,6 +140,10 @@ export class GameEngine {
   private chargeShakeT = 0;
   private fireT = 0;
   private running = false;
+  private crouching = false;
+  private crouchToggle = false;
+  private isHidden = false;
+  private curEyeH = EYE_H;
   private bobAmp = 0;
   private swayVX = 0;
   private swayVY = 0;
@@ -496,35 +501,36 @@ export class GameEngine {
   }
   private buildCrowbarVM(): THREE.Group {
     const g = new THREE.Group();
-    const metal = new THREE.MeshStandardMaterial({ color: 0x5e2018, roughness: 0.42, metalness: 0.8 });
-    const metalDark = new THREE.MeshStandardMaterial({ color: 0x401410, roughness: 0.5, metalness: 0.7 });
-    // العمود الرئيسي المائل
-    const shaftTilt = { rx: Math.PI / 2 - 0.22, rz: 0.08 };
-    const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.0145, 0.017, 0.6, 10), metal);
+    const wood = new THREE.MeshStandardMaterial({ color: 0x6b4c30, roughness: 0.86, metalness: 0.05 });
+    const bark = new THREE.MeshStandardMaterial({ color: 0x47311d, roughness: 0.92, metalness: 0.04 });
+    const wrap = new THREE.MeshStandardMaterial({ color: 0x9e927c, roughness: 0.95 });
+    // العمود الخشبي الرئيسي المائل (عصا خشبية واقعية بعقد وتفاصيل لحاء)
+    const shaftTilt = { rx: Math.PI / 2 - 0.24, rz: 0.08 };
+    const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.016, 0.022, 0.64, 10), wood);
     shaft.rotation.set(shaftTilt.rx, 0, shaftTilt.rz);
-    shaft.position.set(0, 0.03, -0.28);
+    shaft.position.set(0, 0.035, -0.29);
     g.add(shaft);
-    // قوس الخطاف (torus جزئي في المستوى الرأسي)
-    const hook = new THREE.Mesh(new THREE.TorusGeometry(0.05, 0.016, 8, 16, Math.PI * 1.25), metal);
-    hook.position.set(0, 0.115, -0.55);
-    hook.rotation.set(0, Math.PI / 2, 2.5);
-    g.add(hook);
-    // الطرف المسطّح أعلى القوس
-    const tip = new THREE.Mesh(new THREE.BoxGeometry(0.012, 0.03, 0.024), metalDark);
-    tip.position.set(0, 0.168, -0.535);
-    tip.rotation.x = 0.5;
+    // عقد خشبية على طول العصا
+    for (const [ky, kz] of [
+      [0.06, -0.36],
+      [0.10, -0.49],
+    ] as const) {
+      const knot = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.019, 0.038, 8), bark);
+      knot.rotation.set(shaftTilt.rx, 0, shaftTilt.rz);
+      knot.position.set(0, ky, kz);
+      g.add(knot);
+    }
+    // رأس العصا الخشبي المدبب الخشن
+    const tip = new THREE.Mesh(new THREE.ConeGeometry(0.018, 0.065, 8), bark);
+    tip.rotation.set(shaftTilt.rx - Math.PI, 0, shaftTilt.rz);
+    tip.position.set(-0.02, 0.145, -0.585);
     g.add(tip);
-    // نهاية القرّادة السفلية
-    const claw = new THREE.Mesh(new THREE.BoxGeometry(0.024, 0.01, 0.05), metalDark);
-    claw.position.set(0, -0.075, -0.045);
-    claw.rotation.x = 0.35;
-    g.add(claw);
-    // لفافة القبضة
-    const grip = new THREE.Mesh(new THREE.CylinderGeometry(0.019, 0.019, 0.12, 10), metalDark);
+    // لفافة القماش على المقبض
+    const grip = new THREE.Mesh(new THREE.CylinderGeometry(0.023, 0.024, 0.16, 10), wrap);
     grip.rotation.set(shaftTilt.rx, 0, shaftTilt.rz);
-    grip.position.set(0, -0.01, -0.1);
+    grip.position.set(0.01, -0.015, -0.11);
     g.add(grip);
-    g.rotation.z = 0.35;
+    g.rotation.z = 0.32;
     return g;
   }
 
@@ -536,8 +542,11 @@ export class GameEngine {
     if (st.screen === "playing") {
       if (e.code === "KeyF") this.toggleFlashlight();
       else if (e.code === "KeyR") this.startReload();
-      else if (e.code === "Digit1") this.switchWeapon("crowbar");
-      else if (e.code === "Digit2" && st.weapons.pistol) this.switchWeapon("pistol");
+      else if (e.code === "KeyC" && !e.repeat) {
+        this.crouchToggle = !this.crouchToggle;
+      } else if (e.code === "Digit1" && st.weapons.crowbar && st.hud.stickHits > 0) {
+        this.switchWeapon("crowbar");
+      } else if (e.code === "Digit2" && st.weapons.pistol) this.switchWeapon("pistol");
       else if (e.code === "Digit3" && st.weapons.shotgun) this.switchWeapon("shotgun");
       else if (e.code === "KeyE") this.tryInteract();
       else if (e.code === "KeyJ") {
@@ -753,6 +762,10 @@ export class GameEngine {
       this.yaw = Math.PI; // نحو الباب الجنوبي
     }
     this.floorY = 0;
+    this.crouching = false;
+    this.crouchToggle = false;
+    this.isHidden = false;
+    this.curEyeH = EYE_H;
     this.resolveVerticalHeight(this.pos.x, this.pos.z, 1);
     this.pos.y = this.floorY + EYE_H;
     this.lastCullX = -99999;
@@ -778,7 +791,9 @@ export class GameEngine {
       this.removeLabDoorCollider();
     }
     if (s.flags.bossKilled) this.openBossGate();
-    if (!s.hud.equipped) s.equip("crowbar");
+    if (s.hud.equipped && !s.weapons[s.hud.equipped]) {
+      s.equip(null);
+    }
     this.lastHudStamina = s.hud.stamina;
     this.poiFound.add("شقتك");
 
@@ -816,8 +831,8 @@ export class GameEngine {
         if (it.data?.locker) {
           it.used = Boolean(s.flags.lockerOpened);
         } else if (it.data?.weapon) {
-          const w = it.data.weapon as "pistol" | "shotgun";
-          it.used = Boolean(s.weapons[w]);
+          const w = it.data.weapon as "crowbar" | "pistol" | "shotgun";
+          it.used = w === "crowbar" ? false : Boolean(s.weapons[w]);
         } else {
           const item = it.data?.item as string;
           if (item === "key_tower") {
@@ -886,7 +901,15 @@ export class GameEngine {
       this.world.labDoor.open = false;
       this.world.labDoor.group.position.y = 0;
       if (this.labDoorColliderIdx >= 0) {
-        this.world.colliders.push({ minX: -70.6, maxX: -67.4, minZ: -72.5, maxZ: -71.9 });
+        const dp = this.world.labDoor.group.position;
+        this.world.colliders.push({
+          minX: dp.x - 2.1,
+          maxX: dp.x + 2.1,
+          minZ: dp.z - 0.3,
+          maxZ: dp.z + 0.3,
+          minY: 0,
+          maxY: 3.8,
+        });
         this.labDoorColliderIdx = -1;
       }
     }
@@ -1031,11 +1054,12 @@ export class GameEngine {
     if (now - this.lastShot < def.fireRate) return;
 
     if (def.melee) {
+      if (!st.weapons.crowbar || st.hud.stickHits <= 0) return;
       this.lastShot = now;
       this.swingT = 0.28;
       this.vmRecoil = 1;
       audio.play("swing");
-      // ضربة قريبة
+      // ضربة قريبة بالعصا الخشبية
       this.raycaster.setFromCamera(new THREE.Vector2(0, 0), this.camera);
       this.raycaster.far = def.range;
       const hits = this.raycaster.intersectObjects(this.hitTargets(), true);
@@ -1045,6 +1069,27 @@ export class GameEngine {
         this.enemies!.damageAt(e, def.damage, hit.object.userData.isHead === true);
         this.spawnBlood(hit.point);
         audio.play("hit_flesh", { volume: 0.8 });
+      } else if (hits.length > 0) {
+        this.spawnBlood(hits[0].point, 0x7a5230, 4);
+      }
+      // اهتراء العصا الخشبية وانكسارها بعد 7 إلى 11 ضربة
+      const nextHits = st.hud.stickHits - 1;
+      if (nextHits <= 0) {
+        const breakPos = new THREE.Vector3();
+        this.camera.getWorldPosition(breakPos);
+        const dir = new THREE.Vector3();
+        this.camera.getWorldDirection(dir);
+        breakPos.addScaledVector(dir, 0.85);
+        this.spawnBlood(breakPos, 0x7a5230, 12);
+        audio.play("hit_head", { volume: 0.65 });
+        audio.play("door_locked", { volume: 0.55 });
+        st.breakStick();
+        st.toastMsg(MESSAGES.stickBroken);
+      } else {
+        st.setHud({ stickHits: nextHits });
+        if (nextHits === 2) {
+          st.toastMsg(MESSAGES.stickLow);
+        }
       }
       return;
     }
@@ -1296,8 +1341,23 @@ export class GameEngine {
         const item = it.data?.item as string;
         const qty = (it.data?.qty as number) ?? 1;
         if (it.data?.weapon) {
-          st.giveWeapon(it.data.weapon as "pistol" | "shotgun");
-          st.toastMsg(MESSAGES.pickedUp(WEAPONS[it.data.weapon as "pistol" | "shotgun"].name));
+          const wType = it.data.weapon as "crowbar" | "pistol" | "shotgun";
+          if (wType === "crowbar") {
+            if (st.weapons.crowbar && st.hud.stickHits >= st.hud.stickMaxHits && st.hud.stickMaxHits > 0) {
+              st.toastMsg(MESSAGES.stickAlreadyHave);
+              return;
+            }
+            const hits = 7 + Math.floor(Math.random() * 5);
+            st.giveWeapon("crowbar", hits);
+            if (!st.hud.equipped) st.equip("crowbar");
+            st.toastMsg(MESSAGES.stickPickedUp(hits));
+            audio.play("pickup");
+            it.used = true;
+            this.hidePickup(it.id);
+            return;
+          }
+          st.giveWeapon(wType);
+          st.toastMsg(MESSAGES.pickedUp(WEAPONS[wType].name));
           audio.play("pickup");
           it.used = true;
           this.hidePickup(it.id);
@@ -1832,9 +1892,10 @@ export class GameEngine {
 
   private removeLabDoorCollider() {
     if (!this.world || this.labDoorColliderIdx >= 0) return;
+    const dp = this.world.labDoor.group.position;
     for (let i = this.world.colliders.length - 1; i >= 0; i--) {
       const c = this.world.colliders[i];
-      if (Math.abs((c.minX + c.maxX) / 2 + 69) < 0.3 && Math.abs((c.minZ + c.maxZ) / 2 + 72.2) < 0.4) {
+      if (Math.abs((c.minX + c.maxX) / 2 - dp.x) < 0.4 && Math.abs((c.minZ + c.maxZ) / 2 - dp.z) < 0.4) {
         this.labDoorColliderIdx = i;
         this.world.colliders.splice(i, 1);
         break;
@@ -1860,9 +1921,19 @@ export class GameEngine {
     this.floorY = 0;
     this.lastCullX = -99999;
     this.lastCullZ = -99999;
-    this.pos.set(-69, EYE_H, -62);
-    this.yaw = -Math.PI / 2; // نحو بوابة المجمع شرقاً
+    this.pos.set(-71, EYE_H, -71.2);
+    this.yaw = 0; // نحو بهو المجمع الداخلي ومخارجه
     this.vel.set(0, 0, 0);
+    if (this.world) {
+      for (const did of ["door_complex_east", "door_complex_south"]) {
+        const d = this.doorList().find((x) => x.id === did);
+        if (d && !d.open) {
+          d.open = true;
+          d.def.open = true;
+          this.world.dynamicColliders.delete(`door_${d.id}`);
+        }
+      }
+    }
     audio.startAmbient(useGame.getState().flags.coreDestroyed ? "city" : "city");
     useGame.getState().setHud({ zone: "" });
     useGame.getState().showHint(MESSAGES.exitLabHint);
@@ -1974,7 +2045,7 @@ export class GameEngine {
       if (playing) {
         this.updatePlayer(dt, true, st);
         this.updateCombatTimers(dt, st);
-        this.enemies!.update(dt, this.pos, this.allColliders(), st.hud.hp > 0);
+        this.enemies!.update(dt, this.pos, this.allColliders(), st.hud.hp > 0, this.crouching, this.isHidden);
         this.updateStory(dt, st);
         this.updateAudioDirectors(dt, st);
         // وقت اللعب
@@ -2062,11 +2133,19 @@ export class GameEngine {
 
   private updatePlayer(dt: number, canMove: boolean, st: ReturnType<typeof useGame.getState>) {
     void canMove;
-    // جري ولياقة (مع تقييد تحديث الواجهة لتجنب إعادة رسم React كل إطار)
+    // الانخفاض (الجلوس) عبر Ctrl أو مفتاح C للاختباء خلف العوائق
+    const holdCtrl = this.keys.has("ControlLeft") || this.keys.has("ControlRight");
     const wantRun = this.keys.has("ShiftLeft") || this.keys.has("ShiftRight");
+    if (wantRun && !holdCtrl && this.crouchToggle) {
+      this.crouchToggle = false;
+    }
+    const crouching = canMove && (holdCtrl || this.crouchToggle);
+    this.crouching = crouching;
+
+    // جري ولياقة (لا يمكن الجري أثناء الانخفاض)
     let run = false;
     let curStamina = st.hud.stamina;
-    if (canMove && wantRun && curStamina > 4) {
+    if (canMove && wantRun && !crouching && curStamina > 4) {
       run = true;
       curStamina = Math.max(0, curStamina - 14 * dt);
       st.hud.stamina = curStamina;
@@ -2088,7 +2167,7 @@ export class GameEngine {
     }
     this.running = run;
 
-    const speed = run ? 7.5 : 4.3;
+    const speed = crouching ? 2.35 : run ? 7.5 : 4.3;
     const mf = new THREE.Vector3(-Math.sin(this.yaw), 0, -Math.cos(this.yaw));
     const mr = new THREE.Vector3(-mf.z, 0, mf.x); // يمين الكاميرا الحقيقي
     const wish = new THREE.Vector3();
@@ -2105,23 +2184,48 @@ export class GameEngine {
 
     const p = { x: this.pos.x + this.vel.x * dt, z: this.pos.z + this.vel.z * dt };
     this.resolveVerticalHeight(p.x, p.z, dt);
-    collideCircle(p, PLAYER_R, this.allColliders(), this.floorY, this.floorY + EYE_H);
+    const cols = this.allColliders();
+    collideCircle(p, PLAYER_R, cols, this.floorY, this.floorY + this.curEyeH);
     this.resolveVerticalHeight(p.x, p.z, dt);
     const moved = Math.hypot(p.x - this.pos.x, p.z - this.pos.z);
     this.pos.x = p.x;
     this.pos.z = p.z;
-    // ارتداد الرأس (يُطبَّق على pos.y فوق ارتفاع الطابق الحالي)
-    const targetAmp = moved > 0.001 ? (run ? 1.5 : 1) : 0;
-    this.bobAmp += (targetAmp - this.bobAmp) * Math.min(1, dt * 8);
-    this.pos.y = this.floorY + EYE_H + Math.sin(this.walkPhase * 2) * 0.035 * this.bobAmp;
 
-    // خطوات
+    // التحقق مما إذا كان اللاعب منخفضاً ومختبئاً بجوار ساتر (مكتب، طاولة، سيارة، صندوق، جدار، إلخ)
+    let hidden = false;
+    if (crouching) {
+      for (const c of cols) {
+        const cMinY = c.minY ?? 0;
+        const cMaxY = c.maxY ?? 4.2;
+        if (cMaxY < this.floorY + 0.65 || cMinY > this.floorY + 1.15) continue;
+        const cx = Math.max(c.minX, Math.min(this.pos.x, c.maxX));
+        const cz = Math.max(c.minZ, Math.min(this.pos.z, c.maxZ));
+        const dCover = Math.hypot(this.pos.x - cx, this.pos.z - cz);
+        if (dCover <= PLAYER_R + 0.52) {
+          hidden = true;
+          break;
+        }
+      }
+    }
+    this.isHidden = hidden;
+    if (st.hud.crouching !== crouching || st.hud.hidden !== hidden) {
+      st.setHud({ crouching, hidden });
+    }
+
+    // انتقال سلس لارتفاع الكاميرا عند الجلوس/الوقوف + ارتداد الرأس
+    const targetEyeH = crouching ? CROUCH_EYE_H : EYE_H;
+    this.curEyeH += (targetEyeH - this.curEyeH) * Math.min(1, dt * 10);
+    const targetAmp = moved > 0.001 ? (crouching ? 0.45 : run ? 1.5 : 1) : 0;
+    this.bobAmp += (targetAmp - this.bobAmp) * Math.min(1, dt * 8);
+    this.pos.y = this.floorY + this.curEyeH + Math.sin(this.walkPhase * 2) * 0.035 * this.bobAmp;
+
+    // خطوات (هادئة جداً عند الانخفاض)
     if (moved > 0.001) {
-      this.walkPhase += dt * (run ? 11 : 6.4);
+      this.walkPhase += dt * (crouching ? 4.2 : run ? 11 : 6.4);
       this.footT -= dt;
       if (this.footT <= 0) {
-        this.footT = run ? 0.31 : 0.47;
-        audio.play(run ? "footstep_run" : "footstep", { volume: 0.55 });
+        this.footT = crouching ? 0.62 : run ? 0.31 : 0.47;
+        audio.play(run ? "footstep_run" : "footstep", { volume: crouching ? 0.2 : 0.55 });
       }
     }
 
@@ -2211,7 +2315,7 @@ export class GameEngine {
     const w = st.hud.equipped;
     this.vmPistol.visible = w === "pistol";
     this.vmShotgun.visible = w === "shotgun";
-    this.vmCrowbar.visible = w === "crowbar";
+    this.vmCrowbar.visible = w === "crowbar" && st.weapons.crowbar && st.hud.stickHits > 0;
     const bobScale = Math.max(this.bobAmp, 0.25);
     const bobX = Math.sin(this.walkPhase) * 0.012 * bobScale;
     const bobY = Math.abs(Math.cos(this.walkPhase)) * 0.014 * bobScale;

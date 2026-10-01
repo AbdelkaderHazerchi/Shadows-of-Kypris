@@ -87,6 +87,8 @@ import {
   coatRack,
   bookshelfFull,
   buildingExteriorTrim,
+  streetDebrisBarricade,
+  streetRubbleCluster,
 } from "./props";
 
 export interface Collider {
@@ -966,9 +968,113 @@ export function buildWorld(scene: THREE.Scene): WorldData {
   wallWithGaps(ctx, "rubble", -B, -B, -B, B);
   wallWithGaps(ctx, "rubble", B, -B, B, B);
 
-  // ── أحياء خلفية بطابع مميز لكل منطقة ──
-  // خريطة شادو هافن: مجمع المختبر شمال غرب، السكن شمال، الساحة بالمنتصف،
-  // المستودع غرب، متجر الأسلحة جنوب الساحة، البرج شمال شرق، المستشفى جنوب شرق
+  // ── أحياء خلفية ومبانٍ غير قابلة للدخول بتصميم معماري مطابق للمباني القابلة للدخول ──
+  // دالة مساعدة لبناء مبنى مغلق غير قابل للدخول بنفس التفاصيل المعمارية (أفاريز، نوافذ ثلاثية الأبعاد، ستائر، رواق مدخل، وباب مغلق)
+  const buildClosedBuilding = (
+    cx: number,
+    cz: number,
+    wdt: number,
+    dpt: number,
+    floors: 2 | 3,
+    wallMat: "brick" | "concrete" | "metal",
+    trimStyle: "brick" | "concrete" | "hospital",
+    winStyle: "wood" | "metal" | "hospital",
+    doorSide: "N" | "S" | "E" | "W",
+    withCurtains = true,
+  ) => {
+    const hgt = floors * 4.2;
+    // الكتلة الجدارية المصمتة + مصادم يمنع الدخول
+    addBox(ctx, wallMat, cx, 0, cz, wdt, hgt, dpt, false);
+    ctx.colliders.push({
+      minX: cx - wdt / 2 - 0.35,
+      maxX: cx + wdt / 2 + 0.35,
+      minZ: cz - dpt / 2 - 0.35,
+      maxZ: cz + dpt / 2 + 0.35,
+      minY: 0,
+      maxY: hgt,
+    });
+    ctx.buildings.push({ x: cx, z: cz, w: wdt, d: dpt });
+
+    // السقف العلوي والأفاريز المعمارية والأعمدة الركنية ووحدات التكييف
+    roomRoof(ctx, cx, cz, wdt, dpt, "roof", hgt);
+    buildingExteriorTrim(w, cx, cz, wdt, dpt, hgt, trimStyle);
+
+    // رواق المدخل المعماري + إطار الباب + ضلفة باب ثلاثية الأبعاد مغلقة بإحكام
+    const doorW = 2.0;
+    const doorH = 2.45;
+    const isNS = doorSide === "N" || doorSide === "S";
+    const dx = doorSide === "E" ? cx + wdt / 2 : doorSide === "W" ? cx - wdt / 2 : cx;
+    const dz = doorSide === "S" ? cz + dpt / 2 : doorSide === "N" ? cz - dpt / 2 : cz;
+    const outX = doorSide === "E" ? 1 : doorSide === "W" ? -1 : 0;
+    const outZ = doorSide === "S" ? 1 : doorSide === "N" ? -1 : 0;
+
+    entrancePorch(w, dx, dz, 4.2, 2.2, 3.6, doorSide, trimStyle);
+    realisticDoorFrame(w, dx, 0, dz, doorW, doorH, isNS ? "x" : "z", winStyle);
+
+    // ضلفة الباب المغلق مع تجويف داكن وحشوات ومقبض ولوح حماية سفلي
+    const doorMatName = winStyle === "metal" ? "metal" : winStyle === "hospital" ? "medWhite" : "wood2";
+    const doorW1 = isNS ? doorW : 0.14;
+    const doorD1 = isNS ? 0.14 : doorW;
+    w.push("dark", new THREE.BoxGeometry(isNS ? doorW + 0.06 : 0.10, doorH, isNS ? 0.10 : doorW + 0.06), mat4(dx + outX * 0.03, doorH / 2, dz + outZ * 0.03));
+    w.push(doorMatName, new THREE.BoxGeometry(doorW1, doorH - 0.06, doorD1), mat4(dx + outX * 0.08, doorH / 2, dz + outZ * 0.08));
+    w.push("chrome", new THREE.BoxGeometry(isNS ? doorW - 0.16 : 0.18, 0.24, isNS ? 0.18 : doorW - 0.16), mat4(dx + outX * 0.09, 0.14, dz + outZ * 0.09));
+    w.push("brass", new THREE.BoxGeometry(0.14, 0.22, 0.14), mat4(dx + outX * 0.13 + (isNS ? doorW * 0.34 : 0), 1.05, dz + outZ * 0.13 + (isNS ? 0 : doorW * 0.34)));
+
+    // مصادم أعمدة رواق المدخل
+    ctx.colliders.push({
+      minX: dx + outX * 1.1 - (isNS ? 2.2 : 1.2),
+      maxX: dx + outX * 1.1 + (isNS ? 2.2 : 1.2),
+      minZ: dz + outZ * 1.1 - (isNS ? 1.2 : 2.2),
+      maxZ: dz + outZ * 1.1 + (isNS ? 1.2 : 2.2),
+      minY: 0,
+      maxY: 3.8,
+    });
+
+    // توزيع النوافذ الواقعية ثلاثية الأبعاد على الواجهات الأربع عبر كافة الطوابق
+    const winW = 1.85;
+    const winH = 1.9;
+    const addClosedWin = (wx: number, wy: number, wz: number, orient: "x" | "z", nX: number, nZ: number) => {
+      const pw = propCtxOf(ctx, wy - 1.1);
+      realisticWindow(pw, wx, 1.1, wz, winW, winH, orient, winStyle);
+      // خلفية زجاجية معتمة داخل إطار النافذة تمنع ظهور الجدار المصمت خلف الزجاج
+      w.push(
+        "dark",
+        new THREE.BoxGeometry(orient === "x" ? winW - 0.16 : 0.14, winH - 0.12, orient === "z" ? winW - 0.16 : 0.14),
+        mat4(wx + nX * 0.06, wy + winH / 2 - 0.04, wz + nZ * 0.06),
+      );
+      if (withCurtains) {
+        curtainPair(pw, wx + nX * 0.09, 1.1, wz + nZ * 0.09, winW, winH, orient);
+      }
+    };
+
+    const colsX = wdt >= 22 ? [-wdt * 0.3, 0, wdt * 0.3] : [-wdt * 0.26, wdt * 0.26];
+    const colsZ = dpt >= 22 ? [-dpt * 0.3, 0, dpt * 0.3] : [-dpt * 0.26, dpt * 0.26];
+
+    for (let f = 0; f < floors; f++) {
+      const wy = f * 4.2 + 1.1;
+      for (const ox of colsX) {
+        if (f === 0 && doorSide === "N" && Math.abs(ox) < 2.4) continue;
+        addClosedWin(cx + ox, wy, cz - dpt / 2, "x", 0, -1);
+      }
+      for (const ox of colsX) {
+        if (f === 0 && doorSide === "S" && Math.abs(ox) < 2.4) continue;
+        addClosedWin(cx + ox, wy, cz + dpt / 2, "x", 0, 1);
+      }
+      for (const oz of colsZ) {
+        if (f === 0 && doorSide === "W" && Math.abs(oz) < 2.4) continue;
+        addClosedWin(cx - wdt / 2, wy, cz + oz, "z", -1, 0);
+      }
+      for (const oz of colsZ) {
+        if (f === 0 && doorSide === "E" && Math.abs(oz) < 2.4) continue;
+        addClosedWin(cx + wdt / 2, wy, cz + oz, "z", 1, 0);
+      }
+    }
+
+    // تجهيزات السطح (خزانات مياه ووحدات تكييف مركزية)
+    w.push("metal", new THREE.CylinderGeometry(0.95, 0.95, 1.8, 10), mat4(cx - wdt * 0.24, hgt + 0.9, cz + dpt * 0.22));
+    w.push("metal", new THREE.BoxGeometry(1.4, 0.85, 1.1), mat4(cx + wdt * 0.24, hgt + 0.42, cz - dpt * 0.2, { ry: 0.3 }));
+  };
+
   const usedBlocks = new Set([
     "-69,-69", "-23,-69", "69,-69", "23,-23", "-23,-23", "-23,23", "-69,23", "-69,69", "69,23", "69,69",
   ]);
@@ -978,51 +1084,38 @@ export function buildWorld(scene: THREE.Scene): WorldData {
       const downtown = bx > 0 && bz < 0;
       const commercial = bz > 0;
       if (commercial && bx !== 69) {
-        // حي تجاري: مبنيان متجاوران بلافتات مضيئة ومظلات
-        const h1 = 8 + rnd() * 4;
-        const h2 = 7 + rnd() * 5;
-        addBox(ctx, "facade", bx - 7.5, 0, bz, 15, h1, 26);
-        addBox(ctx, "facade", bx + 8, 0, bz + 2, 14, h2, 22);
-        ctx.colliders.push({ minX: bx - 15.5, maxX: bx, minZ: bz - 13.5, maxZ: bz + 13.5 });
-        ctx.colliders.push({ minX: bx + 0.5, maxX: bx + 15.5, minZ: bz - 9.5, maxZ: bz + 13.5 });
-        ctx.buildings.push({ x: bx - 7.5, z: bz, w: 15, d: 26 });
-        ctx.buildings.push({ x: bx + 8, z: bz + 2, w: 14, d: 22 });
-        // خزانات ومكيفات على السطح
-        w.push("metal", new THREE.CylinderGeometry(1.1, 1.1, 2, 10), mat4(bx - 10, h1 + 1, bz + 6));
-        w.push("metal", new THREE.BoxGeometry(1.4, 0.9, 1.1), mat4(bx + 10, h2 + 0.45, bz - 2, { ry: 0.4 }));
+        // حي تجاري: مبنيان متجاوران بطابقين ونوافذ ثلاثية الأبعاد وأبواب مغلقة ولافتات ومظلات
+        buildClosedBuilding(bx - 7.5, bz, 14, 22, 2, "brick", "brick", "wood", "N", true);
+        buildClosedBuilding(bx + 8.0, bz, 14, 20, 2, "concrete", "concrete", "metal", "N", false);
         // مظلات قماشية فوق الواجهات
-        w.push("fabric2", new THREE.BoxGeometry(8, 0.08, 1.6), mat4(bx - 7.5, 3.4, bz - 13.6, { rx: 0.25 }));
-        w.push("fabric2", new THREE.BoxGeometry(7, 0.08, 1.6), mat4(bx + 8, 3.3, bz - 11.7, { rx: 0.25, ry: 0.06 }));
+        w.push("fabric2", new THREE.BoxGeometry(8, 0.08, 1.6), mat4(bx - 7.5, 3.55, bz - 11.8, { rx: 0.25 }));
+        w.push("fabric2", new THREE.BoxGeometry(7, 0.08, 1.6), mat4(bx + 8.0, 3.55, bz - 10.8, { rx: 0.25 }));
         // لافتات عربية مضيئة
-        const s1 = shopSign(bx - 7.5, 4.4, bz - 13.2, Math.PI, ["صيدلية النور", "بقالة الأمانة", "مكتبة الأمل"][Math.floor(rnd() * 3)]);
-        const s2 = shopSign(bx + 8, 4.2, bz - 11.2, Math.PI, ["مقهى الشرق", "مصورات المدينة", "حلاق الشارع"][Math.floor(rnd() * 3)]);
+        const s1 = shopSign(bx - 7.5, 4.45, bz - 11.35, 0, ["صيدلية النور", "بقالة الأمانة", "مكتبة الأمل"][Math.floor(rnd() * 3)]);
+        const s2 = shopSign(bx + 8.0, 4.45, bz - 10.35, 0, ["مقهى الشرق", "مصورات المدينة", "حلاق الشارع"][Math.floor(rnd() * 3)]);
         s1.userData.noHit = true;
         s2.userData.noHit = true;
         scene.add(s1, s2);
       } else if (downtown) {
-        // وسط المدينة: أبراج أعلى بواجهة داكنة
-        const hgt = 20 + rnd() * 12;
-        addBox(ctx, "facadeTower", bx, 0, bz, 26, hgt, 26);
-        ctx.buildings.push({ x: bx, z: bz, w: 26, d: 26 });
-        ctx.colliders.push({ minX: bx - 14, maxX: bx + 14, minZ: bz - 14, maxZ: bz + 14 });
-        // هوائي سطح
-        w.push("metal", new THREE.CylinderGeometry(0.08, 0.12, 5, 6), mat4(bx + 4, hgt + 2.5, bz - 4));
-        w.push("redEmissive", new THREE.SphereGeometry(0.14, 6, 6), mat4(bx + 4, hgt + 5, bz - 4));
+        // وسط المدينة: مبنى إداري/طبي مغلق من 3 طوابق بتفاصيل معمارية كاملة
+        buildClosedBuilding(bx, bz, 24, 20, 3, "concrete", "concrete", "hospital", "S", true);
+        w.push("metal", new THREE.CylinderGeometry(0.08, 0.12, 4.5, 6), mat4(bx + 4, 12.6 + 2.25, bz - 4));
+        w.push("redEmissive", new THREE.SphereGeometry(0.14, 6, 6), mat4(bx + 4, 12.6 + 4.5, bz - 4));
       } else {
-        // سكني: مبانٍ متوسطة بتنويع
-        const wdt = 24 + rnd() * 4;
-        const dpt = 24 + rnd() * 4;
-        const hgt = 9 + rnd() * 10;
-        addBox(ctx, rnd() < 0.5 ? "facadeOld" : "facade", bx, 0, bz, wdt, hgt, dpt);
-        ctx.buildings.push({ x: bx, z: bz, w: wdt, d: dpt });
-        ctx.colliders.push({ minX: bx - wdt / 2 - 1, maxX: bx + wdt / 2 + 1, minZ: bz - dpt / 2 - 1, maxZ: bz + dpt / 2 + 1 });
-        w.push("metal", new THREE.CylinderGeometry(0.9, 0.9, 1.8, 10), mat4(bx + wdt / 4, hgt + 0.9, bz - dpt / 4));
-        if (rnd() < 0.6) w.push("metal", new THREE.BoxGeometry(1.3, 0.8, 1), mat4(bx - wdt / 4, hgt + 0.4, bz + dpt / 4, { ry: 0.3 }));
-        if (rnd() < 0.4) {
-          // مبنى منهار الزاوية
-          w.push("rubble", new THREE.BoxGeometry(8, 3, 6), mat4(bx + wdt / 2 - 2, 1.5, bz + dpt / 2 + 2.5, { ry: 0.5, rz: 0.12 }));
-          debrisPile(ctx, bx + wdt / 2 + 2, bz + dpt / 2 + 4, 7, 6);
-        }
+        // أحياء سكنية/إدارية: مبانٍ من طابقين أو 3 طوابق بتصميم مماثل للمباني القابلة للدخول
+        const isThreeFloor = bx < 0;
+        buildClosedBuilding(
+          bx,
+          bz,
+          24,
+          20,
+          isThreeFloor ? 3 : 2,
+          isThreeFloor ? "concrete" : "brick",
+          isThreeFloor ? "concrete" : "brick",
+          isThreeFloor ? "metal" : "wood",
+          bx < 0 ? "E" : "W",
+          true,
+        );
       }
     }
   }
@@ -1073,32 +1166,52 @@ export function buildWorld(scene: THREE.Scene): WorldData {
   debrisPile(ctx, -34, 92, 9, 7);
   debrisPile(ctx, 68, 0, 7, 9);
 
-  // ── سيارات: مواقف + حوادث ──
+  // ── سيارات: حوادث وحطام سيارات مدمرة ومهجورة (موزعة بدقة على المسارات والتقاطعات دون أي تداخل مع الأرصفة أو الحواجز) ──
   const cars: [number, number, number, CarVariantLike][] = [
-    [3.4, -60, 0, "sedan"], [-3.4, -55, Math.PI, "taxi"], [3.4, -30, 0.06, "wreck"],
-    [-3.6, 10, 0, "sedan"], [3.4, 45, Math.PI, "sedan"], [-3.4, 70, 0.04, "van"],
-    [-45, 3.4, Math.PI / 2, "sedan"], [-60, -3.4, Math.PI / 2 + 0.05, "wreck"],
-    [25, 3.4, Math.PI / 2, "taxi"], [55, -3.4, Math.PI / 2, "sedan"], [80, 3.4, Math.PI / 2 + 0.03, "van"],
-    [48.4, -60, 0, "sedan"], [43.6, -25, Math.PI, "sedan"], [48.4, 15, 0.05, "wreck"], [43.6, 60, Math.PI, "sedan"],
-    [-25, -48.4, 0, "van"], [20, -43.6, Math.PI + 0.05, "sedan"], [-60, -43.6, 0, "sedan"], [70, -48.4, 0.03, "sedan"],
-    [-20, 48.4, Math.PI, "sedan"], [30, 43.6, 0, "wreck"], [70, 43.6, 0.04, "van"], [-70, 43.6, 0, "sedan"],
-    [-48.4, 60, Math.PI, "taxi"], [-43.6, -60, 0, "sedan"], [-48.4, 15, Math.PI + 0.04, "sedan"],
-    [0, 0, 0.7, "wreck"], [-46, 46, 2.2, "sedan"], [46, -46, 1.1, "van"], [0, -23, 2.8, "sedan"],
-    [65, -35, 0.15, "police"], [-15, 15, 1.6, "ambulance"],
+    // الشارع الأوسط العمودي (x = 0)
+    [3.1, -62, 0.08, "wreck"], [-3.1, -53, Math.PI - 0.06, "taxi"], [3.0, -28, -0.14, "wreck"],
+    [-2.8, -19, 2.75, "wreck"], [0, 0, 0.72, "wreck"], [-3.1, 13, -0.10, "wreck"],
+    [3.1, 43, Math.PI + 0.12, "wreck"], [-3.1, 55, 0.06, "van"],
+    // الشارع الأوسط الأفقي (z = 0)
+    [-44, 3.1, Math.PI / 2 - 0.08, "wreck"], [-60, -3.1, -Math.PI / 2 + 0.10, "wreck"],
+    [25, 3.1, Math.PI / 2 + 0.05, "taxi"], [54, -3.1, -Math.PI / 2 - 0.08, "wreck"], [80, 3.1, Math.PI / 2 + 0.04, "van"],
+    // الشارع الشرقي العمودي (x = 46)
+    [48.2, -62, 0.06, "sedan"], [43.8, -24, Math.PI - 0.10, "wreck"], [48.2, 15, 0.08, "wreck"], [43.8, 60, Math.PI + 0.05, "sedan"],
+    // الشارع الغربي العمودي (x = -46)
+    [-43.8, -60, -0.08, "wreck"], [-48.2, 15, Math.PI + 0.06, "sedan"], [-48.2, 60, Math.PI - 0.08, "taxi"],
+    // الشارع الشمالي الأفقي (z = -46) — محاذاة صحيحة على محور X (Math.PI / 2) لمنع التداخل مع الأرصفة
+    [-60, -43.8, Math.PI / 2 + 0.08, "wreck"], [-25, -48.2, -Math.PI / 2 + 0.05, "van"],
+    [20, -43.8, Math.PI / 2 - 0.10, "sedan"], [70, -48.2, -Math.PI / 2 - 0.06, "wreck"],
+    // الشارع الجنوبي الأفقي (z = +46) — محاذاة صحيحة على محور X (Math.PI / 2)
+    [-70, 43.8, Math.PI / 2 - 0.06, "sedan"], [-20, 48.2, -Math.PI / 2 + 0.08, "wreck"],
+    [30, 43.8, Math.PI / 2 + 0.12, "wreck"], [70, 43.8, Math.PI / 2 - 0.05, "van"],
+    // تقاطعات رئيسية وحوادث مركبات طوارئ
+    [-46, 46, 2.15, "wreck"], [46, -46, 1.10, "van"],
+    [65, -35, 0.15, "police"], [-15, 15, 1.60, "ambulance"],
   ];
   for (const [cx, cz, cr, variant] of cars) {
     car(w, cx, cz, cr, variant, rnd());
   }
   // حافلة محترقة تسد الشارع الرئيسي
-  busWreck(w, 0, -40, 0.3);
+  busWreck(w, 0, -40, 0.26);
   // حرائق سيارات (ضوءان فقط حفاظاً على الأداء)
   addFire(ctx, 0.8, 0.8, 0.75);
-  addFire(ctx, 48.4, 14.2, 0.7);
+  addFire(ctx, 48.2, 14.2, 0.7);
 
-  // جثث مغطاة وآثار دماء
+  // أكوام حطام شوارع متناثرة قرب الحوادث وعلى جوانب الطرقات (مرتكزة بالكامل على الأرض y=0 دون غلتشات)
+  const streetRubbleSpots: [number, number, number][] = [
+    [3.8, -35, 0.4], [-3.8, -6, 1.2], [4.0, 22, 2.1], [-38, -3.6, 0.8],
+    [38, 3.6, 1.7], [42.2, -16, 2.5], [-42.2, 26, 0.9], [-12, -42.5, 1.4],
+    [12, 42.5, 2.8], [58, -42.5, 0.6], [-58, 42.5, 1.9], [3.6, 82, 1.1],
+  ];
+  streetRubbleSpots.forEach(([rx, rz, rry], idx) => {
+    streetRubbleCluster(w, rx, rz, rry, idx + 1);
+  });
+
+  // جثث بشرية مفصلية كاملة وآثار دماء في الشوارع وقرب الحوادث
   const corpseSpots: [number, number][] = [
     [30, 30], [-30, -30], [50, 8], [-8, 50], [15, -55], [-55, 15], [80, -10], [-80, 10],
-    [26, 62], [-60, -60], [40, -26], [-26, 40],
+    [26, 62], [-60, -60], [40, -26], [-26, 40], [3.2, -45], [-3.5, 4], [44, 18], [-44, -55],
   ];
   corpseSpots.forEach(([x, z], i) => {
     if (i % 3 === 0) bodyBag(w, x, z, rnd() * Math.PI * 2);
@@ -1355,6 +1468,8 @@ export function buildWorld(scene: THREE.Scene): WorldData {
     // الالتقاطات: التسجيل الشخصي (doc_1) على مكتب الغرفة الداخلية الأرضية وعلى مكتب غرفة النوم العلوية معاً!
     noteProp(ctx, "apt_rec", "doc_1", cx - 4.8, cz + 4.2, 0.82);
     noteProp(ctx, "apt_rec_up", "doc_1", cx - 3.2, cz - 1.8, 4.2 + 0.82);
+    pickupProp(ctx, "apt_stick_1", "item", cx + 1.8, cz + 4.8, "التقاط عصا خشبية", { weapon: "crowbar" }, 0.12);
+    pickupProp(ctx, "apt_stick_2", "item", cx + 3.2, cz + 2.2, "التقاط عصا خشبية", { weapon: "crowbar" }, 4.2 + 0.12);
     pickupProp(ctx, "apt_band", "item", cx - 1.8, cz + 6.0, "التقاط ضمادة", { item: "bandage", qty: 1 }, 4.2 + 0.92);
     pickupProp(ctx, "apt_battery", "item", cx - 7.5, cz - 4.0, "التقاط بطارية", { item: "battery", qty: 1 }, 1.0);
 
@@ -1431,6 +1546,7 @@ export function buildWorld(scene: THREE.Scene): WorldData {
     fluoro(ctx, cx - 4, cz + 5, 0xd8e8d0, 1.0, 8, 14);
 
     pickupProp(ctx, "gun_pistol", "item", cx + 1, cz - 3, "التقاط مسدس الخدمة", { weapon: "pistol" }, 1.25);
+    pickupProp(ctx, "gun_stick", "item", cx - 5.5, cz - 4.5, "التقاط عصا خشبية", { weapon: "crowbar" }, 0.12);
     pickupProp(ctx, "gun_ammo1", "item", cx - 0.5, cz - 3.2, "التقاط ذخيرة مسدس", { item: "pistol_ammo", qty: 24 }, 1.25);
     pickupProp(ctx, "gun_shotgun", "item", cx + 6.5, cz + 0.4, "التقاط بندقية الصيد", { weapon: "shotgun" }, 0.95);
     pickupProp(ctx, "gun_shells", "item", cx + 6.8, cz + 1.8, "التقاط خرطوش", { item: "shotgun_ammo", qty: 8 }, 0.95);
@@ -1577,6 +1693,7 @@ export function buildWorld(scene: THREE.Scene): WorldData {
     pickupProp(ctx, "pol_key", "item", cx - 5.2, cz - 5.3, "التقاط مفتاح برج الإذاعة", { item: "key_tower", qty: 1 }, 4.2 + 0.92);
     pickupProp(ctx, "pol_ammo", "item", cx - 7.0, cz - 5.5, "التقاط ذخيرة مسدس", { item: "pistol_ammo", qty: 24 }, 4.2 + 0.92);
     pickupProp(ctx, "pol_med", "item", cx - 9.6, cz + 4.8, "التقاط علبة إسعاف", { item: "medkit", qty: 1 }, 0.95);
+    pickupProp(ctx, "pol_stick", "item", cx - 7.5, cz - 5.5, "التقاط عصا خشبية", { weapon: "crowbar" }, 0.12);
     pickupProp(ctx, "pol_shells", "item", cx - 4.5, cz + 7.5, "التقاط خرطوش", { item: "shotgun_ammo", qty: 6 }, 0.14);
     pickupProp(ctx, "pol_lockerkey", "item", cx - 6.0, cz - 1.5, "التقاط مفتاح خزانة الأسلحة", { item: "key_locker", qty: 1 }, 1.22);
     ctx.interactables.push({ id: "pol_locker", kind: "item", x: cx - 7.5, z: cz + 7.0, y: 1.0, radius: 2, prompt: "خزانة الأسلحة — تحتاج مفتاح الترسانة", data: { locker: true }, used: false });
@@ -1679,6 +1796,7 @@ export function buildWorld(scene: THREE.Scene): WorldData {
     });
     fluoro(ctx, cx + 1, cz, 0xd0a860, 1.0, 12, 6, 0);
     fluoro(ctx, cx + 1, cz - 1, 0x6ac070, 1.15, 13, 5, 4.2);
+    pickupProp(ctx, "tower_stick", "item", cx - 2.5, cz + 4.2, "التقاط عصا خشبية", { weapon: "crowbar" }, 0.12);
 
     addDoorAt(ctx, "door_tower", cx - 3, cz - 7, "x", 1.8, "metal", 0);
     ctx.buildings.push({ x: cx, z: cz, w: 16, d: 14, name: "برج الإذاعة", poi: true });
@@ -1945,6 +2063,8 @@ export function buildWorld(scene: THREE.Scene): WorldData {
     noteProp(ctx, "hos_doc5", "doc_5", cx + 14.4, cz - 6.5, 4.2 + 0.92); // الطابق الثاني: جناح العمليات
     pickupProp(ctx, "hos_blue", "item", cx - 9.5, cz + 9.5, "التقاط بطاقة وصول زرقاء", { item: "keycard_blue", qty: 1 }, 4.2 + 0.92); // الطابق الثاني: مكتب د. ليلى
     pickupProp(ctx, "hos_med1", "item", cx - 14.8, cz + 2.5, "التقاط علبة إسعاف", { item: "medkit", qty: 1 }, 0.95);
+    pickupProp(ctx, "hos_stick1", "item", cx - 6.5, cz - 6.5, "التقاط عصا خشبية", { weapon: "crowbar" }, 0.12);
+    pickupProp(ctx, "hos_stick2", "item", cx + 2.0, cz - 4.5, "التقاط عصا خشبية", { weapon: "crowbar" }, 4.2 + 0.12);
     pickupProp(ctx, "hos_med2", "item", cx + 11.5, cz - 7.5, "التقاط علبة إسعاف", { item: "medkit", qty: 1 }, 0.95);
     pickupProp(ctx, "hos_bat", "item", cx + 14.5, cz + 5.5, "التقاط بطارية", { item: "battery", qty: 1 }, 0.95);
     pickupProp(ctx, "hos_band", "item", cx - 7.5, cz - 8.5, "التقاط ضمادتين", { item: "bandage", qty: 2 }, 4.2 + 0.65);
@@ -2094,6 +2214,7 @@ export function buildWorld(scene: THREE.Scene): WorldData {
     noteProp(ctx, "fac_doc", "doc_2", cx + 10, cz - 6.5, 0.82);
     pickupProp(ctx, "fac_red", "item", cx - 11.5, cz - 6.5, "التقاط بطاقة وصول حمراء", { item: "keycard_red", qty: 1 }, 0.78);
     pickupProp(ctx, "fac_ammo", "item", cx - 4, cz + 6, "التقاط ذخيرة مسدس", { item: "pistol_ammo", qty: 20 }, 0.14);
+    pickupProp(ctx, "fac_stick", "item", cx + 3.5, cz + 5.5, "التقاط عصا خشبية", { weapon: "crowbar" }, 0.12);
     pickupProp(ctx, "fac_band", "item", cx + 5, cz + 6, "التقاط ضمادة", { item: "bandage", qty: 1 }, 0.14);
     pickupProp(ctx, "fac_f2_shells", "item", cx + 8.5, cz + 4.5, "التقاط خرطوش من مكتب التحكم العلوي", { item: "shotgun_ammo", qty: 6 }, 4.2 + 0.92);
 
@@ -2197,6 +2318,7 @@ export function buildWorld(scene: THREE.Scene): WorldData {
     pickupProp(ctx, "ware_food1", "item", cx - 6.5, cz + 3.5, "التقاط طعام معلب", { item: "food", qty: 2 }, 0.95);
     pickupProp(ctx, "ware_food2", "item", cx + 0.5, cz + 3.5, "التقاط طعام معلب", { item: "food", qty: 1 }, 0.95);
     pickupProp(ctx, "ware_ammo", "item", cx - 2.5, cz - 4.5, "التقاط ذخيرة مسدس", { item: "pistol_ammo", qty: 16 }, 0.95);
+    pickupProp(ctx, "ware_stick", "item", cx - 4.5, cz - 6.5, "التقاط عصا خشبية", { weapon: "crowbar" }, 0.12);
     pickupProp(ctx, "ware_bat", "item", cx + 8.5, cz - 4, "التقاط بطاريتين", { item: "battery", qty: 2 }, 0.14);
 
     addDoorAt(ctx, "door_warehouse", cx, cz - 9, "x", 2.4, "double", 0);
@@ -2289,6 +2411,7 @@ export function buildWorld(scene: THREE.Scene): WorldData {
     bloodDecal(ctx, cx, cz + 2, 1.8);
 
     pickupProp(ctx, "gas_fuel", "item", cx + 4.2, cz + 12.5, "التقاط جالون وقود", { item: "fuel", qty: 1 }, 0.14);
+    pickupProp(ctx, "gas_stick", "item", cx + 1.5, cz + 8.5, "التقاط عصا خشبية", { weapon: "crowbar" }, 0.12);
     pickupProp(ctx, "gas_food", "item", cx - 3.8, cz + 8.2, "التقاط طعام معلب", { item: "food", qty: 1 }, 1.2);
     pickupProp(ctx, "gas_band", "item", cx - 0.5, cz + 13.8, "التقاط ضمادة", { item: "bandage", qty: 1 }, 0.9);
 
@@ -2300,70 +2423,149 @@ export function buildWorld(scene: THREE.Scene): WorldData {
     ctx.triggers.push({ id: "trig_gas", x: cx, z: cz, radius: 10, once: true });
   }
 
-  // ── 9) مجمع كيبريس المسوّر (1) — الركن الشمالي الغربي (-69,-69) ──
-  // مجمع أبحاث منظم عالي الحراسة: ساحة معبدة، نقطة تفتيش أمنية، ومبنى البوابة المدرعة للمختبر السفلي
+  // ── 9) مجمع كيبريس الإداري والعلمي (1) — الركن الشمالي الغربي (-69,-69) — مبنى ضخم من 3 طوابق بحجم المستشفى ──
+  // يضم: ردهة أمنية، مكاتب موظفين، قاعات خوادم متعددة، مكتب الإدارة الرئيسي في الطابق الثالث، ومدخلاً داخلياً يقود إلى المختبر تحت الأرض
   {
     const cx = -69, cz = -69;
-    // أرضية إسمنتية منظمة للمجمع مع مسارات أمنية مرسومة
-    w.push("concrete", new THREE.BoxGeometry(43.6, 0.06, 43.6), mat4(cx, 0.01, cz));
-    w.push("tile", new THREE.BoxGeometry(8.0, 0.03, 26.0), mat4(cx + 7.5, 0.045, cz, { ry: Math.PI / 2 }));
-    w.push("hazard", new THREE.BoxGeometry(5.6, 0.035, 0.6), mat4(cx, 0.048, cz - 1.2));
+    const CW = 32, CD = 26;
+    const w2 = propCtxOf(ctx, 4.2);
+    const w3 = propCtxOf(ctx, 8.4);
 
-    // السور المحيطي المسلح (فتحة بوابة رئيسية على الجدار الشرقي باتجاه طريق المختبر)
-    wallWithGaps(ctx, "concrete", cx - 22, cz - 22, cx + 22, cz - 22);
-    wallWithGaps(ctx, "concrete", cx - 22, cz + 22, cx + 22, cz + 22);
-    wallWithGaps(ctx, "concrete", cx - 22, cz - 22, cx - 22, cz + 22);
-    wallWithGaps(ctx, "concrete", cx + 22, cz - 22, cx + 22, cz + 22, [{ at: 22, width: 6.4 }]);
+    roomFloor(ctx, cx, cz, CW, CD);
+    w.push("tile", new THREE.BoxGeometry(CW - 0.4, 0.04, CD - 0.4), mat4(cx, 0.06, cz));
+    roomRoof(ctx, cx, cz, CW, CD, "roof", 12.6);
+    buildingExteriorTrim(w, cx, cz, CW, CD, 12.6, "concrete");
 
-    // بوابة المجمع الشرقية + كشك الحراسة الخارجي
-    addBox(ctx, "concrete", cx + 22, 0, cz - 3.8, 1.4, 5.6, 1.4);
-    addBox(ctx, "concrete", cx + 22, 0, cz + 3.8, 1.4, 5.6, 1.4);
-    addBox(ctx, "metal", cx + 22, 5.6, cz, 1.8, 0.6, 9.2, false);
-    const gateSign = shopSign(cx + 22.4, 4.8, cz, -Math.PI / 2, "مجمع كيبريس للأبحاث الحيوية — KYPRIS CORP");
-    gateSign.userData.noHit = true;
-    scene.add(gateSign);
+    // لافتات المجمع الكبرى المضيئة وأروقة الدخول (المدخل الشرقي الرئيسي + المدخل الجنوبي)
+    const compSignE = shopSign(cx + CW / 2 + 0.25, 11.4, cz, Math.PI / 2, "مجمع كيبريس للأبحاث والإدارة — KYPRIS COMPLEX");
+    compSignE.userData.noHit = true;
+    scene.add(compSignE);
+    const compSignS = shopSign(cx, 11.4, cz + CD / 2 + 0.25, Math.PI, "مؤسسة كيبريس للأبحاث الحيوية — KYPRIS CORP");
+    compSignS.userData.noHit = true;
+    scene.add(compSignS);
 
-    // جناح التفتيش الأمني المنظم وسط الساحة (Security Checkpoint Pavilion)
-    w.push("tile", new THREE.BoxGeometry(11.6, 0.04, 8.6), mat4(cx + 6.5, 0.045, cz));
-    for (const [ox, oz] of [[-5.2, -3.8], [5.2, -3.8], [-5.2, 3.8], [5.2, 3.8]] as const) {
-      addBox(ctx, "concrete", cx + 6.5 + ox, 0, cz + oz, 0.55, 4.2, 0.55);
+    entrancePorch(w, cx + CW / 2, cz, 7.6, 3.6, 4.0, "E", "concrete");
+    entrancePorch(w, cx, cz + CD / 2, 7.6, 3.6, 4.0, "S", "concrete");
+
+    // ──────────────── الطابق الأرضي (y = 0..4.2): بهو الاستقبال، مكاتب الموظفين، غرفة الخوادم الأرضية، ومدخل المختبر الداخلي ────────────────
+    // الجدار الشمالي الخارجي
+    wallWithGaps(ctx, "concrete", cx - CW / 2, cz - CD / 2, cx + CW / 2, cz - CD / 2, [
+      { at: 6, width: 2.2, sill: 1.2, top: 3.0 },
+      { at: 26, width: 2.2, sill: 1.2, top: 3.0 },
+    ]);
+    realisticWindow(w, cx - 10, 1.2, cz - CD / 2, 2.2, 1.8, "x", "metal");
+    realisticWindow(w, cx + 10, 1.2, cz - CD / 2, 2.2, 1.8, "x", "metal");
+
+    // الجدار الجنوبي الخارجي (يضم المدخل الجنوبي المزدوج)
+    wallWithGaps(ctx, "concrete", cx - CW / 2, cz + CD / 2, cx + CW / 2, cz + CD / 2, [
+      { at: 6, width: 2.2, sill: 1.2, top: 3.0 },
+      { at: CW / 2, width: 2.6 },
+      { at: CW - 6, width: 2.2, sill: 1.2, top: 3.0 },
+    ]);
+    realisticDoorFrame(w, cx, 0, cz + CD / 2, 2.6, 2.6, "x", "metal");
+    realisticWindow(w, cx - 10, 1.2, cz + CD / 2, 2.2, 1.8, "x", "metal");
+    realisticWindow(w, cx + 10, 1.2, cz + CD / 2, 2.2, 1.8, "x", "metal");
+
+    // الجدار الغربي الخارجي
+    wallWithGaps(ctx, "concrete", cx - CW / 2, cz - CD / 2, cx - CW / 2, cz + CD / 2, [
+      { at: 6, width: 2.2, sill: 1.2, top: 3.0 },
+      { at: 13, width: 2.2, sill: 1.2, top: 3.0 },
+      { at: 20, width: 2.2, sill: 1.2, top: 3.0 },
+    ]);
+    realisticWindow(w, cx - CW / 2, 1.2, cz - 7, 2.2, 1.8, "z", "metal");
+    realisticWindow(w, cx - CW / 2, 1.2, cz, 2.2, 1.8, "z", "metal");
+    realisticWindow(w, cx - CW / 2, 1.2, cz + 7, 2.2, 1.8, "z", "metal");
+
+    // الجدار الشرقي الخارجي (يضم المدخل الشرقي الرئيسي المزدوج)
+    wallWithGaps(ctx, "concrete", cx + CW / 2, cz - CD / 2, cx + CW / 2, cz + CD / 2, [
+      { at: 6, width: 2.2, sill: 1.2, top: 3.0 },
+      { at: 13, width: 2.6 },
+      { at: 20, width: 2.2, sill: 1.2, top: 3.0 },
+    ]);
+    realisticWindow(w, cx + CW / 2, 1.2, cz - 7, 2.2, 1.8, "z", "metal");
+    realisticDoorFrame(w, cx + CW / 2, 0, cz, 2.6, 2.6, "z", "metal");
+    realisticWindow(w, cx + CW / 2, 1.2, cz + 7, 2.2, 1.8, "z", "metal");
+
+    // 1. بهو الاستقبال ونقطة التفتيش الأمنية الداخلية (Main Security Atrium)
+    turnstile(w, cx + 11.2, cz - 1.5, Math.PI / 2);
+    turnstile(w, cx + 11.2, cz + 1.5, Math.PI / 2);
+    counter(w, cx + 7.2, cz - 2.2, -Math.PI / 2, 3.4);
+    officeChair(w, cx + 8.4, cz - 2.2, Math.PI / 2);
+    desk(w, cx + 9.2, cz + 5.2, 0, true);
+    officeChair(w, cx + 9.2, cz + 3.9, Math.PI);
+    bench(w, cx + 13.2, cz + 8.5, Math.PI);
+    bench(w, cx + 7.5, cz + 10.5, Math.PI);
+    elevatorDoors(w, cx + 5.8, 0, cz + 12.6, "x");
+    wallPicture(w, cx + 11.0, 1.8, cz + 12.6, 2.2, 1.2, "x", "map");
+
+    // 2. جناح مكاتب الموظفين والأرشيف الإداري الأرضي (Ground Floor Staff Offices — الجناح الغربي الجنوبي)
+    wallWithGaps(ctx, "concrete", cx - 4.5, cz - 4.5, cx - 4.5, cz + CD / 2, [
+      { at: 4.0, width: 2.2, sill: 1.1, top: 2.8 },
+      { at: 10.5, width: 1.8 },
+    ]);
+    realisticWindow(w, cx - 4.5, 1.1, cz - 0.5, 2.2, 1.7, "z", "metal");
+    realisticDoorFrame(w, cx - 4.5, 0, cz + 6.0, 1.8, 2.5, "z", "wood");
+    w.push("woodFloor", new THREE.BoxGeometry(11.1, 0.045, 17.1), mat4(cx - 10.2, 0.03, cz + 4.2));
+    desk(w, cx - 12.5, cz - 1.2, 0, true);
+    officeChair(w, cx - 12.5, cz - 2.5, Math.PI);
+    desk(w, cx - 8.2, cz - 1.2, 0, true);
+    officeChair(w, cx - 8.2, cz - 2.5, Math.PI);
+    desk(w, cx - 12.5, cz + 4.8, Math.PI, true);
+    officeChair(w, cx - 12.5, cz + 6.1, 0);
+    desk(w, cx - 8.2, cz + 9.2, Math.PI, true);
+    officeChair(w, cx - 8.2, cz + 10.5, 0);
+    bookshelfFull(w, cx - 14.8, cz + 1.8, Math.PI / 2, 2.6, 501);
+    cabinet(w, cx - 12.5, cz + 11.8, Math.PI, "metal");
+    cabinet(w, cx - 10.5, cz + 11.8, Math.PI, "metal");
+    vending(w, cx - 6.2, cz + 11.6, Math.PI);
+    deadPlant(w, cx - 6.0, cz - 3.2);
+
+    // 3. قاعة الخوادم والشبكات الأرضية (Ground Floor Server Room — الركن الشمالي الشرقي)
+    wallWithGaps(ctx, "concrete", cx + 4.5, cz - 4.5, cx + CW / 2, cz - 4.5, [
+      { at: 5.5, width: 1.8 },
+      { at: 9.2, width: 2.0, sill: 1.1, top: 2.8 },
+    ]);
+    realisticDoorFrame(w, cx + 10.0, 0, cz - 4.5, 1.8, 2.5, "x", "metal");
+    realisticWindow(w, cx + 13.7, 1.1, cz - 4.5, 2.0, 1.7, "x", "metal");
+    wallWithGaps(ctx, "concrete", cx + 4.5, cz - CD / 2, cx + 4.5, cz - 4.5);
+    w.push("labFloor", new THREE.BoxGeometry(11.1, 0.045, 8.1), mat4(cx + 10.2, 0.03, cz - 8.7));
+    for (const sz of [cz - 11.2, cz - 8.8, cz - 6.4]) {
+      serverRack(w, cx + 14.4, sz, -Math.PI / 2);
+      serverRack(w, cx + 6.2, sz, Math.PI / 2);
     }
-    addBox(ctx, "concrete", cx + 6.5, 4.2, cz, 12.2, 0.45, 9.0, false);
-    turnstile(w, cx + 6.5, cz - 1.8, Math.PI / 2);
-    turnstile(w, cx + 6.5, cz + 1.8, Math.PI / 2);
-    desk(w, cx + 8.5, cz + 2.8, -Math.PI / 2, true);
-    controlPanel(w, cx + 4.2, cz - 2.8, 0);
-    bench(w, cx + 9.5, cz - 2.8, 0);
+    controlPanel(w, cx + 10.2, cz - 11.6, 0);
+    wallPipes(w, cx + 15.5, 3.2, cz - 8.8, -Math.PI / 2, 7);
 
-    // مبنى المدخل المدرع للمختبر تحت الأرض (Armored Bunker Headhouse) شمال الساحة
-    const bx = cx, bz = cz - 8.5;
-    roomFloor(ctx, bx, bz, 16, 11, "labFloor");
-    roomRoof(ctx, bx, bz, 16, 11, "roof", 5.2);
-    buildingExteriorTrim(w, bx, bz, 16, 11, 5.2, "concrete");
-    // واجهة المبنى المدرع الجنوبية مفتوحة برواق عريض يؤدي مباشرة إلى البوابة الفولاذية (lab_door عند cx, cz - 3.2)
-    wallWithGaps(ctx, "concrete", bx - 8, bz + 5.5, bx + 8, bz + 5.5, [{ at: 8, width: 4.4 }], 0, 5.2);
-    wallWithGaps(ctx, "concrete", bx - 8, bz - 5.5, bx + 8, bz - 5.5, [], 0, 5.2);
-    wallWithGaps(ctx, "concrete", bx - 8, bz - 5.5, bx - 8, bz + 5.5, [{ at: 5.5, width: 2.2, sill: 1.2, top: 3.0 }], 0, 5.2);
-    realisticWindow(w, bx - 8, 1.2, bz, 2.2, 1.8, "z", "metal");
-    wallWithGaps(ctx, "concrete", bx + 8, bz - 5.5, bx + 8, bz + 5.5, [{ at: 5.5, width: 2.2, sill: 1.2, top: 3.0 }], 0, 5.2);
-    realisticWindow(w, bx + 8, 1.2, bz, 2.2, 1.8, "z", "metal");
+    // 4. المدخل الداخلي المدرع المؤدي إلى المختبر تحت الأرض (Internal Lab Bunker Vault — الجناح الشمالي الأوسط والغربي)
+    // حاجز أمني يفصل البهو عن قاعة بوابة المختبر مع رواق مفتوح عريض (4.4م)
+    wallWithGaps(ctx, "concrete", cx - CW / 2, cz - 4.5, cx + 4.5, cz - 4.5, [
+      { at: 5.0, width: 2.2, sill: 1.1, top: 2.8 },
+      { at: 14.0, width: 4.4 },
+    ]);
+    realisticWindow(w, cx - 11.0, 1.1, cz - 4.5, 2.2, 1.7, "x", "metal");
+    realisticDoorFrame(w, cx - 2.0, 0, cz - 4.5, 4.4, 3.2, "x", "metal");
+    w.push("labFloor", new THREE.BoxGeometry(20.1, 0.045, 8.1), mat4(cx - 5.7, 0.03, cz - 8.7));
+    w.push("hazard", new THREE.BoxGeometry(4.8, 0.05, 0.55), mat4(cx - 2.0, 0.04, cz - 6.8));
 
-    const bunkerSign = shopSign(cx, 4.3, cz - 2.7, 0, "المختبر المركزي تحت الأرض — القطاع B4");
+    const bunkerSign = shopSign(cx - 2.0, 3.55, cz - 4.15, Math.PI, "مدخل المختبر تحت الأرض — القطاع B4");
     bunkerSign.userData.noHit = true;
     scene.add(bunkerSign);
 
-    // قارئا بطاقات التصريح المزدوج على جانبي البوابة الفولاذية
-    for (const sx of [-2.65, 2.65]) {
-      addBox(ctx, "labMetal", cx + sx, 0, cz - 2.6, 0.55, 1.45, 0.45);
-      w.push(sx < 0 ? "screenGlow" : "redEmissive", new THREE.BoxGeometry(0.32, 0.22, 0.02), mat4(cx + sx, 1.18, cz - 2.36));
-    }
-    // تجهيزات داخل مبنى المدخل المدرع
-    serverRack(w, cx - 6.2, cz - 6.5, Math.PI / 2);
-    serverRack(w, cx + 6.2, cz - 6.5, -Math.PI / 2);
-    shelfStocked(w, cx - 5.5, cz - 12.2, 0, 3.2, true);
-    shelfStocked(w, cx + 5.5, cz - 12.2, 0, 3.2, true);
+    // جدار الاحتواء الفولاذي الداخلي عند cz - 8.8 الذي تفتح فيه بوابة المختبر المدرعة (عند cx - 2.0, cz - 8.8)
+    wallWithGaps(ctx, "metal", cx - CW / 2, cz - 8.8, cx + 4.5, cz - 8.8, [{ at: 14.0, width: 4.2 }]);
+    elevatorDoors(w, cx - 2.0, 0, cz - 12.6, "x");
+    bioIncubator(w, cx - 6.5, cz - 11.0);
+    bioIncubator(w, cx + 2.2, cz - 11.0);
+    shelfStocked(w, cx - 14.6, cz - 6.6, Math.PI / 2, 3.0, true);
+    cratesStack(w, cx - 11.5, cz - 11.2);
 
-    // بوابة المختبر الفولاذية الضخمة (عند cx, cz - 3.2 تماماً كما يتوقع المحرك)
+    // قارئا بطاقات التصريح المزدوج على جانبي البوابة الفولاذية داخل المبنى
+    for (const sx of [-2.65, 2.65]) {
+      addBox(ctx, "labMetal", cx - 2.0 + sx, 0, cz - 8.2, 0.55, 1.45, 0.45);
+      w.push(sx < 0 ? "screenGlow" : "redEmissive", new THREE.BoxGeometry(0.32, 0.22, 0.02), mat4(cx - 2.0 + sx, 1.18, cz - 7.95));
+    }
+
+    // بوابة المختبر الفولاذية الضخمة داخل الطابق الأرضي للمجمع (عند cx - 2.0, cz - 8.8)
     const doorGroup = new THREE.Group();
     const doorMesh = new THREE.Mesh(
       new THREE.BoxGeometry(4.2, 3.4, 0.4),
@@ -2376,38 +2578,296 @@ export function buildWorld(scene: THREE.Scene): WorldData {
     );
     doorStripe.position.y = 1.7;
     doorGroup.add(doorMesh, doorStripe);
-    doorGroup.position.set(cx, 0, cz - 3.2);
+    doorGroup.position.set(cx - 2.0, 0, cz - 8.8);
     scene.add(doorGroup);
     doorGroupRef = doorGroup;
-    ctx.colliders.push({ minX: cx - 2.1, maxX: cx + 2.1, minZ: cz - 3.5, maxZ: cz - 2.9 });
-    addFlickerLight(ctx, cx, 3.6, cz - 2.2, 0xc22a1e, 1.3, 10, 2);
-    ctx.interactables.push({ id: "lab_door", kind: "gate", x: cx, z: cz - 3.2, radius: 2.8, prompt: "بوابة المختبر — بطاقتا وصول", used: false });
+    ctx.colliders.push({ minX: cx - 4.1, maxX: cx + 0.1, minZ: cz - 9.1, maxZ: cz - 8.5, minY: 0, maxY: 3.8 });
+    addFlickerLight(ctx, cx - 2.0, 3.6, cz - 7.5, 0xc22a1e, 1.3, 11, 2);
+    ctx.interactables.push({
+      id: "lab_door",
+      kind: "gate",
+      x: cx - 2.0,
+      z: cz - 8.8,
+      y: 1.2,
+      radius: 2.8,
+      prompt: "بوابة المختبر تحت الأرض — بطاقتا وصول",
+      used: false,
+    });
 
-    // محطة توليد الطاقة الفرعية في الركن الجنوبي الغربي للساحة
-    addBox(ctx, "metal", cx - 14, 0, cz + 14, 11, 6.5, 9);
-    ctx.colliders.push({ minX: cx - 19.5, maxX: cx - 8.5, minZ: cz + 9.5, maxZ: cz + 18.5 });
-    ctx.buildings.push({ x: cx - 14, z: cz + 14, w: 11, d: 9 });
-    wallPipes(w, cx - 8.4, 2.6, cz + 14, Math.PI / 2, 7);
+    // الدرج المركزي الأول: من الطابق الأرضي (0) إلى الطابق الثاني (4.2)
+    // يمتد من cz+0.0 إلى cz+7.0 وعرضه من cx-2.2 إلى cx+0.6
+    addWalkableStairs(ctx, cx - 0.8, 0, cz + 3.5, 2.8, 4.2, 7.0, "+z");
 
-    // مركبات وحواجز عسكرية منظمة في الساحة
-    car(w, cx - 3, cz + 13.5, 0.25, "ambulance", rnd());
-    sandbagWall(w, cx + 16.5, cz - 4.2, 0, 3.4);
-    sandbagWall(w, cx + 16.5, cz + 4.2, 0, 3.4);
-    cratesStack(w, cx - 11, cz + 4.5);
-    barrel(w, cx - 12.5, cz + 6.5, "greenMetal");
-    addFire(ctx, cx + 13.5, cz - 6.5, 0.9);
-    coveredBody(w, cx + 2.5, cz + 6.5, 0.8);
-    bloodDecal(ctx, cx + 2.5, cz + 5.5, 2.0);
-    emergencyLight(ctx, cx + 22, 3.6, cz, 0xc22a1e);
-    addFlickerLight(ctx, cx + 6.5, 3.9, cz, 0xd0a860, 1.1, 14, 3.4);
+    // ──────────────── الطابق الثاني (y = 4.2..8.4): مكاتب الأقسام الإدارية وقاعات الخوادم الرئيسية ────────────────
+    floorSlabWithHole(ctx, cx, cz, CW, CD, 4.2, cx - 2.3, cx + 3.7, cz - 0.1, cz + 7.1, "tile");
+    railingSection(w2, cx - 2.3, cz - 0.1, cx - 2.3, cz + 7.1, "chrome");
+    railingSection(w2, cx - 2.3, cz - 0.1, cx + 0.7, cz - 0.1, "chrome");
+    railingSection(w2, cx + 3.7, cz - 0.1, cx + 3.7, cz + 7.1, "chrome");
+    elevatorDoors(w2, cx + 5.8, 0, cz + 12.6, "x");
 
-    pickupProp(ctx, "metro_ammo", "item", cx + 8.5, cz + 2.8, "التقاط ذخيرة مسدس", { item: "pistol_ammo", qty: 14 }, 0.82);
-    ctx.buildings.push({ x: cx, z: cz, w: 46, d: 46, name: "مجمع كيبريس — المختبر", poi: true });
-    ctx.spawns.push({ kind: "walker", x: cx - 8, z: cz + 6, wander: 6 });
-    ctx.spawns.push({ kind: "runner", x: cx + 12, z: cz - 8, wander: 7 });
-    ctx.spawns.push({ kind: "walker", x: cx + 26, z: cz, wander: 8 });
-    ctx.spawns.push({ kind: "spitter", x: cx + 30, z: cz + 12, wander: 9 });
-    ctx.triggers.push({ id: "trig_metro", x: cx + 24, z: cz, radius: 15, once: true });
+    // الجدران الخارجية للطابق الثاني مع نوافذ زجاجية
+    wallWithGaps(ctx, "concrete", cx - CW / 2, cz - CD / 2, cx + CW / 2, cz - CD / 2, [
+      { at: 6, width: 2.2, sill: 1.1, top: 3.0 },
+      { at: 16, width: 2.6, sill: 1.1, top: 3.0 },
+      { at: 26, width: 2.2, sill: 1.1, top: 3.0 },
+    ], 4.2);
+    realisticWindow(w2, cx - 10, 1.1, cz - CD / 2, 2.2, 1.9, "x", "metal");
+    realisticWindow(w2, cx, 1.1, cz - CD / 2, 2.6, 1.9, "x", "metal");
+    realisticWindow(w2, cx + 10, 1.1, cz - CD / 2, 2.2, 1.9, "x", "metal");
+
+    wallWithGaps(ctx, "concrete", cx - CW / 2, cz + CD / 2, cx + CW / 2, cz + CD / 2, [
+      { at: 6, width: 2.2, sill: 1.1, top: 3.0 },
+      { at: 16, width: 2.2, sill: 1.1, top: 3.0 },
+      { at: 26, width: 2.2, sill: 1.1, top: 3.0 },
+    ], 4.2);
+    realisticWindow(w2, cx - 10, 1.1, cz + CD / 2, 2.2, 1.9, "x", "metal");
+    realisticWindow(w2, cx, 1.1, cz + CD / 2, 2.2, 1.9, "x", "metal");
+    realisticWindow(w2, cx + 10, 1.1, cz + CD / 2, 2.2, 1.9, "x", "metal");
+
+    wallWithGaps(ctx, "concrete", cx - CW / 2, cz - CD / 2, cx - CW / 2, cz + CD / 2, [
+      { at: 6, width: 2.2, sill: 1.1, top: 3.0 },
+      { at: 20, width: 2.2, sill: 1.1, top: 3.0 },
+    ], 4.2);
+    realisticWindow(w2, cx - CW / 2, 1.1, cz - 7, 2.2, 1.9, "z", "metal");
+    realisticWindow(w2, cx - CW / 2, 1.1, cz + 7, 2.2, 1.9, "z", "metal");
+
+    wallWithGaps(ctx, "concrete", cx + CW / 2, cz - CD / 2, cx + CW / 2, cz + CD / 2, [
+      { at: 6, width: 2.2, sill: 1.1, top: 3.0 },
+      { at: 20, width: 2.2, sill: 1.1, top: 3.0 },
+    ], 4.2);
+    realisticWindow(w2, cx + CW / 2, 1.1, cz - 7, 2.2, 1.9, "z", "metal");
+    realisticWindow(w2, cx + CW / 2, 1.1, cz + 7, 2.2, 1.9, "z", "metal");
+
+    // 1. الجناح الغربي للطابق الثاني: مكاتب الأقسام الإدارية والباحثين (Corporate & Research Offices)
+    wallWithGaps(ctx, "concrete", cx - 4.5, cz - CD / 2, cx - 4.5, cz + CD / 2, [
+      { at: 6.5, width: 1.8 },
+      { at: 13.0, width: 2.4, sill: 1.1, top: 2.8 },
+      { at: 19.5, width: 1.8 },
+    ], 4.2);
+    realisticDoorFrame(w2, cx - 4.5, 0, cz - 6.5, 1.8, 2.5, "z", "wood");
+    realisticWindow(w2, cx - 4.5, 1.1, cz, 2.4, 1.7, "z", "wood");
+    realisticDoorFrame(w2, cx - 4.5, 0, cz + 6.5, 1.8, 2.5, "z", "wood");
+    // قاطع داخلي بفتحة ممر بين مكاتب الشمال ومكاتب الجنوب
+    wallWithGaps(ctx, "concrete", cx - CW / 2, cz, cx - 4.5, cz, [{ at: 5.8, width: 2.0 }], 4.2);
+    realisticDoorFrame(w2, cx - 10.2, 0, cz, 2.0, 2.5, "x", "wood");
+    w2.push("woodFloor", new THREE.BoxGeometry(11.1, 0.045, 25.4), mat4(cx - 10.2, 0.03, cz));
+
+    // تأثيث مكاتب الشمال والجنوب في الطابق الثاني (6 مكاتب مجهزة + خزائن ومكتبات)
+    desk(w2, cx - 12.5, cz - 9.2, 0, true);
+    officeChair(w2, cx - 12.5, cz - 10.5, Math.PI);
+    desk(w2, cx - 8.0, cz - 9.2, 0, true);
+    officeChair(w2, cx - 8.0, cz - 10.5, Math.PI);
+    desk(w2, cx - 12.5, cz - 4.0, Math.PI, true);
+    officeChair(w2, cx - 12.5, cz - 2.7, 0);
+    bookshelfFull(w2, cx - 14.8, cz - 6.5, Math.PI / 2, 2.8, 502);
+    cabinet(w2, cx - 7.5, cz - 12.0, 0, "wood2");
+
+    desk(w2, cx - 12.5, cz + 4.2, 0, true);
+    officeChair(w2, cx - 12.5, cz + 2.9, Math.PI);
+    desk(w2, cx - 8.0, cz + 4.2, 0, true);
+    officeChair(w2, cx - 8.0, cz + 2.9, Math.PI);
+    desk(w2, cx - 12.5, cz + 9.2, Math.PI, true);
+    officeChair(w2, cx - 12.5, cz + 10.5, 0);
+    sofa(w2, cx - 7.8, cz + 9.8, Math.PI, 2.1);
+    coffeeTable(w2, cx - 7.8, cz + 8.0, 0);
+    bookshelfFull(w2, cx - 14.8, cz + 7.2, Math.PI / 2, 2.8, 503);
+    wallPicture(w2, cx - 10.2, 1.75, cz + 12.6, 2.2, 1.2, "x", "art");
+
+    // 2. الجناح الشرقي للطابق الثاني: مركز الخوادم الرئيسي (Main Data Center & Server Hall)
+    wallWithGaps(ctx, "concrete", cx + 5.5, cz - CD / 2, cx + 5.5, cz + CD / 2, [
+      { at: 6.5, width: 1.8 },
+      { at: 13.0, width: 2.4, sill: 1.1, top: 2.8 },
+      { at: 19.5, width: 1.8 },
+    ], 4.2);
+    realisticDoorFrame(w2, cx + 5.5, 0, cz - 6.5, 1.8, 2.5, "z", "metal");
+    realisticWindow(w2, cx + 5.5, 1.1, cz, 2.4, 1.7, "z", "metal");
+    realisticDoorFrame(w2, cx + 5.5, 0, cz + 6.5, 1.8, 2.5, "z", "metal");
+    w2.push("labFloor", new THREE.BoxGeometry(10.1, 0.045, 25.4), mat4(cx + 10.7, 0.03, cz));
+
+    for (const sz of [cz - 10.2, cz - 6.8, cz - 3.4, cz + 3.4, cz + 6.8, cz + 10.2]) {
+      serverRack(w2, cx + 14.4, sz, -Math.PI / 2);
+      serverRack(w2, cx + 7.4, sz, Math.PI / 2);
+    }
+    controlPanel(w2, cx + 10.8, cz - 11.6, 0);
+    controlPanel(w2, cx + 10.8, cz, 0);
+    controlPanel(w2, cx + 10.8, cz + 11.6, Math.PI);
+    wallPipes(w2, cx + 15.5, 3.2, cz, -Math.PI / 2, 18);
+
+    // 3. مكتب التنسيق الأمني شمال البهو في الطابق الثاني
+    wallWithGaps(ctx, "concrete", cx - 4.5, cz - 5.5, cx + 5.5, cz - 5.5, [{ at: 5.0, width: 1.8 }], 4.2);
+    realisticDoorFrame(w2, cx + 0.5, 0, cz - 5.5, 1.8, 2.5, "x", "metal");
+    desk(w2, cx + 0.5, cz - 9.8, Math.PI, true);
+    officeChair(w2, cx + 0.5, cz - 8.5, 0);
+    lockerRow(w2, cx - 3.2, cz - 11.8, 0, 3);
+
+    // الدرج المركزي الثاني: من الطابق الثاني (4.2) إلى الطابق الثالث (8.4)
+    // يمتد من cz+7.0 نزولاً بالاتجاه -z إلى cz+0.0 وعرضه من cx+0.9 إلى cx+3.5
+    addWalkableStairs(ctx, cx + 2.2, 4.2, cz + 3.5, 2.6, 4.2, 7.0, "-z");
+
+    // ──────────────── الطابق الثالث (y = 8.4..12.6): مكتب الإدارة الرئيسي في الأعلى، قاعة مجلس الإدارة، وخوادم القيادة ────────────────
+    floorSlabWithHole(ctx, cx, cz, CW, CD, 8.4, cx + 0.8, cx + 3.7, cz - 0.1, cz + 7.1, "tile");
+    railingSection(w3, cx + 0.8, cz - 0.1, cx + 0.8, cz + 7.1, "chrome");
+    railingSection(w3, cx + 3.7, cz - 0.1, cx + 3.7, cz + 7.1, "chrome");
+    railingSection(w3, cx + 0.8, cz + 7.1, cx + 3.7, cz + 7.1, "chrome");
+    elevatorDoors(w3, cx + 5.8, 0, cz + 12.6, "x");
+
+    // الجدران الخارجية للطابق الثالث مع نوافذ بانورامية
+    wallWithGaps(ctx, "concrete", cx - CW / 2, cz - CD / 2, cx + CW / 2, cz - CD / 2, [
+      { at: 6, width: 2.4, sill: 1.0, top: 3.0 },
+      { at: 16, width: 2.8, sill: 1.0, top: 3.0 },
+      { at: 26, width: 2.4, sill: 1.0, top: 3.0 },
+    ], 8.4);
+    realisticWindow(w3, cx - 10, 1.0, cz - CD / 2, 2.4, 2.0, "x", "wood");
+    realisticWindow(w3, cx, 1.0, cz - CD / 2, 2.8, 2.0, "x", "wood");
+    realisticWindow(w3, cx + 10, 1.0, cz - CD / 2, 2.4, 2.0, "x", "metal");
+    curtainPair(w3, cx - 10, 1.0, cz - CD / 2 + 0.35, 2.4, 2.0, "x");
+    curtainPair(w3, cx, 1.0, cz - CD / 2 + 0.35, 2.8, 2.0, "x");
+
+    wallWithGaps(ctx, "concrete", cx - CW / 2, cz + CD / 2, cx + CW / 2, cz + CD / 2, [
+      { at: 8, width: 2.4, sill: 1.0, top: 3.0 },
+      { at: 24, width: 2.4, sill: 1.0, top: 3.0 },
+    ], 8.4);
+    realisticWindow(w3, cx - 8, 1.0, cz + CD / 2, 2.4, 2.0, "x", "wood");
+    realisticWindow(w3, cx + 8, 1.0, cz + CD / 2, 2.4, 2.0, "x", "metal");
+
+    wallWithGaps(ctx, "concrete", cx - CW / 2, cz - CD / 2, cx - CW / 2, cz + CD / 2, [
+      { at: 6, width: 2.4, sill: 1.0, top: 3.0 },
+      { at: 20, width: 2.4, sill: 1.0, top: 3.0 },
+    ], 8.4);
+    realisticWindow(w3, cx - CW / 2, 1.0, cz - 7, 2.4, 2.0, "z", "wood");
+    realisticWindow(w3, cx - CW / 2, 1.0, cz + 7, 2.4, 2.0, "z", "wood");
+    curtainPair(w3, cx - CW / 2 + 0.35, 1.0, cz - 7, 2.4, 2.0, "z");
+
+    wallWithGaps(ctx, "concrete", cx + CW / 2, cz - CD / 2, cx + CW / 2, cz + CD / 2, [
+      { at: 6, width: 2.4, sill: 1.0, top: 3.0 },
+      { at: 20, width: 2.4, sill: 1.0, top: 3.0 },
+    ], 8.4);
+    realisticWindow(w3, cx + CW / 2, 1.0, cz - 7, 2.4, 2.0, "z", "metal");
+    realisticWindow(w3, cx + CW / 2, 1.0, cz + 7, 2.4, 2.0, "z", "metal");
+
+    // 1. مكتب الإدارة الرئيسي في الأعلى (Main Executive Administration Office — الجناح الشمالي البانورامي للطابق الثالث)
+    wallWithGaps(ctx, "concrete", cx - CW / 2, cz - 2.5, cx + 5.5, cz - 2.5, [
+      { at: 6.0, width: 2.4, sill: 1.1, top: 2.8 },
+      { at: 14.5, width: 2.2 },
+      { at: 19.0, width: 2.0, sill: 1.1, top: 2.8 },
+    ], 8.4);
+    realisticWindow(w3, cx - 10.0, 1.1, cz - 2.5, 2.4, 1.7, "x", "wood");
+    realisticDoorFrame(w3, cx - 1.5, 0, cz - 2.5, 2.2, 2.55, "x", "wood");
+    realisticWindow(w3, cx + 3.0, 1.1, cz - 2.5, 2.0, 1.7, "x", "wood");
+
+    const adminSign = shopSign(cx - 1.5, 8.4 + 3.35, cz - 2.15, Math.PI, "مكتب الإدارة الرئيسي — EXECUTIVE DIRECTOR");
+    adminSign.userData.noHit = true;
+    scene.add(adminSign);
+
+    w3.push("woodFloor", new THREE.BoxGeometry(21.1, 0.045, 10.1), mat4(cx - 5.2, 0.03, cz - 7.7));
+    // المكتب الرئاسي الفاخر لمدير مؤسسة كيبريس في صدر القاعة
+    desk(w3, cx - 1.5, cz - 9.8, Math.PI, true);
+    officeChair(w3, cx - 1.5, cz - 8.4, 0);
+    microscope(w3, cx - 0.3, 0.85, cz - 9.8);
+    bookshelfFull(w3, cx - 6.2, cz - 12.1, 0, 3.2, 504);
+    bookshelfFull(w3, cx + 2.8, cz - 12.1, 0, 2.8, 505);
+    // جناح الضيافة التنفيذي في مكتب الإدارة الرئيسي
+    sofa(w3, cx - 11.2, cz - 9.6, 0, 2.4);
+    sofa(w3, cx - 11.2, cz - 5.6, Math.PI, 2.4);
+    coffeeTable(w3, cx - 11.2, cz - 7.6, 0);
+    cabinet(w3, cx - 14.8, cz - 11.2, Math.PI / 2, "wood2");
+    wallPicture(w3, cx - 11.2, 1.8, cz - 12.6, 2.4, 1.3, "x", "art");
+    wallPicture(w3, cx + 5.1, 1.8, cz - 7.5, 2.2, 1.2, "z", "map");
+
+    // خزانة حفظ التقدم في مكتب الإدارة الرئيسي بالطابق الثالث
+    addBox(ctx, "metal", cx - 14.8, 8.4, cz - 4.2, 0.85, 2.2, 1.1);
+    ctx.interactables.push({
+      id: "complex_safe",
+      kind: "checkpoint",
+      x: cx - 14.8,
+      z: cz - 4.2,
+      y: 9.4,
+      radius: 2.2,
+      prompt: "خزانة الإدارة العليا — حفظ التقدم",
+      used: false,
+    });
+
+    // 2. قاعة اجتماعات مجلس الإدارة ومكاتب المستشارين (Executive Boardroom — جنوب غرب الطابق الثالث)
+    wallWithGaps(ctx, "concrete", cx - 2.5, cz - 2.5, cx - 2.5, cz + CD / 2, [
+      { at: 4.5, width: 2.2, sill: 1.1, top: 2.8 },
+      { at: 11.5, width: 1.8 },
+    ], 8.4);
+    realisticWindow(w3, cx - 2.5, 1.1, cz + 2.0, 2.2, 1.7, "z", "wood");
+    realisticDoorFrame(w3, cx - 2.5, 0, cz + 9.0, 1.8, 2.5, "z", "wood");
+    w3.push("woodFloor", new THREE.BoxGeometry(13.1, 0.045, 15.1), mat4(cx - 9.2, 0.03, cz + 5.2));
+    diningTable(w3, cx - 9.5, cz + 2.2, Math.PI / 2);
+    diningTable(w3, cx - 9.5, cz + 4.2, Math.PI / 2);
+    desk(w3, cx - 12.8, cz + 9.8, Math.PI, true);
+    officeChair(w3, cx - 12.8, cz + 11.1, 0);
+    desk(w3, cx - 6.8, cz + 9.8, Math.PI, true);
+    officeChair(w3, cx - 6.8, cz + 11.1, 0);
+    bookshelfFull(w3, cx - 14.8, cz + 3.2, Math.PI / 2, 3.0, 506);
+
+    // 3. غرفة خوادم القيادة العليا (Executive Core Server Vault — الجناح الشرقي للطابق الثالث)
+    wallWithGaps(ctx, "concrete", cx + 5.5, cz - CD / 2, cx + 5.5, cz + CD / 2, [
+      { at: 6.0, width: 2.2, sill: 1.1, top: 2.8 },
+      { at: 12.2, width: 1.8 },
+      { at: 19.5, width: 2.2, sill: 1.1, top: 2.8 },
+    ], 8.4);
+    realisticWindow(w3, cx + 5.5, 1.1, cz - 7.0, 2.2, 1.7, "z", "metal");
+    realisticDoorFrame(w3, cx + 5.5, 0, cz - 0.8, 1.8, 2.5, "z", "metal");
+    realisticWindow(w3, cx + 5.5, 1.1, cz + 6.5, 2.2, 1.7, "z", "metal");
+    w3.push("labFloor", new THREE.BoxGeometry(10.1, 0.045, 25.4), mat4(cx + 10.7, 0.03, cz));
+    for (const sz of [cz - 9.5, cz - 5.5, cz + 4.5, cz + 8.5]) {
+      serverRack(w3, cx + 14.4, sz, -Math.PI / 2);
+      serverRack(w3, cx + 7.4, sz, Math.PI / 2);
+    }
+    bioIncubator(w3, cx + 10.8, cz - 8.5);
+    controlPanel(w3, cx + 10.8, cz + 11.2, Math.PI);
+
+    // إضاءة الطوابق الثلاثة في المجمع وآثار الصراع
+    emergencyLight(ctx, cx + 8, 3.8, cz, 0xc22a1e);
+    emergencyLight(ctx, cx, 4.2 + 3.8, cz - 3, 0xd0a860);
+    emergencyLight(ctx, cx - 1.5, 8.4 + 3.8, cz - 6, 0x2fae4e);
+    fluoro(ctx, cx + 8.5, cz + 3.5, 0xd0a860, 1.15, 14, 9, 0);
+    fluoro(ctx, cx - 10.2, cz + 3.5, 0xd8e8d0, 1.05, 12, 11, 0);
+    fluoro(ctx, cx - 10.2, cz - 5.5, 0xd0a860, 1.1, 13, 10, 4.2);
+    fluoro(ctx, cx + 10.8, cz, 0x70e090, 1.2, 14, 14, 4.2);
+    fluoro(ctx, cx - 4.5, cz - 7.5, 0xd0a860, 1.25, 14, 8, 8.4);
+    fluoro(ctx, cx + 10.8, cz - 2.0, 0x70e090, 1.1, 13, 12, 8.4);
+
+    coveredBody(w, cx + 4.5, cz + 5.5, 0.8);
+    bloodDecal(ctx, cx + 4.5, cz + 5.0, 2.1, 0);
+    bloodDecal(ctx, cx - 9.5, cz + 2.0, 1.8, 4.2);
+    bloodDecal(ctx, cx - 3.5, cz - 7.5, 2.0, 8.4);
+
+    // الالتقاطات الموزعة عبر طوابق المجمع الثلاثة (مكاتب، خوادم، ومكتب الإدارة الرئيسي في الأعلى)
+    pickupProp(ctx, "metro_ammo", "item", cx + 9.2, cz + 5.2, "التقاط ذخيرة مسدس", { item: "pistol_ammo", qty: 14 }, 0.88);
+    pickupProp(ctx, "metro_stick", "item", cx - 8.2, cz + 9.2, "التقاط عصا خشبية", { weapon: "crowbar" }, 0.12);
+    pickupProp(ctx, "complex_f1_bat", "item", cx + 10.2, cz - 11.4, "التقاط بطارية من غرفة الخوادم", { item: "battery", qty: 1 }, 0.92);
+    pickupProp(ctx, "complex_f2_ammo", "item", cx - 12.5, cz - 9.2, "التقاط ذخيرة مسدس من المكاتب", { item: "pistol_ammo", qty: 16 }, 4.2 + 0.88);
+    pickupProp(ctx, "complex_f2_band", "item", cx - 7.8, cz + 8.0, "التقاط ضمادتين", { item: "bandage", qty: 2 }, 4.2 + 0.55);
+    pickupProp(ctx, "complex_f2_shells", "item", cx + 10.8, cz, "التقاط خرطوش من قاعة الخوادم", { item: "shotgun_ammo", qty: 6 }, 4.2 + 0.92);
+    noteProp(ctx, "complex_admin_doc", "doc_1", cx - 1.5, cz - 9.8, 8.4 + 0.82);
+    pickupProp(ctx, "complex_f3_med", "item", cx - 11.2, cz - 7.6, "التقاط علبة إسعاف من مكتب الإدارة الرئيسي", { item: "medkit", qty: 1 }, 8.4 + 0.55);
+    pickupProp(ctx, "complex_f3_shells", "item", cx - 2.6, cz - 9.8, "التقاط خرطوش من مكتب الإدارة الرئيسي", { item: "shotgun_ammo", qty: 8 }, 8.4 + 0.88);
+    pickupProp(ctx, "complex_f3_bat", "item", cx + 10.8, cz + 11.0, "التقاط بطارية من خوادم الإدارة العليا", { item: "battery", qty: 1 }, 8.4 + 0.92);
+
+    // أبواب المجمع عبر الطوابق الثلاثة
+    addDoorAt(ctx, "door_complex_east", cx + CW / 2, cz, "z", 2.6, "double", 0);
+    addDoorAt(ctx, "door_complex_south", cx, cz + CD / 2, "x", 2.6, "double", 0);
+    addDoorAt(ctx, "door_complex_f1_offices", cx - 4.5, cz + 6.0, "z", 1.8, "wood", 0);
+    addDoorAt(ctx, "door_complex_f1_servers", cx + 10.0, cz - 4.5, "x", 1.8, "metal", 0);
+    addDoorAt(ctx, "door_complex_f2_office_n", cx - 4.5, cz - 6.5, "z", 1.8, "wood", 4.2);
+    addDoorAt(ctx, "door_complex_f2_office_s", cx - 4.5, cz + 6.5, "z", 1.8, "wood", 4.2);
+    addDoorAt(ctx, "door_complex_f2_server_n", cx + 5.5, cz - 6.5, "z", 1.8, "metal", 4.2);
+    addDoorAt(ctx, "door_complex_f2_server_s", cx + 5.5, cz + 6.5, "z", 1.8, "metal", 4.2);
+    addDoorAt(ctx, "door_complex_f2_sec", cx + 0.5, cz - 5.5, "x", 1.8, "metal", 4.2);
+    addDoorAt(ctx, "door_complex_admin", cx - 1.5, cz - 2.5, "x", 2.2, "double", 8.4);
+    addDoorAt(ctx, "door_complex_f3_board", cx - 2.5, cz + 9.0, "z", 1.8, "wood", 8.4);
+    addDoorAt(ctx, "door_complex_f3_servers", cx + 5.5, cz - 0.8, "z", 1.8, "metal", 8.4);
+
+    ctx.buildings.push({ x: cx, z: cz, w: CW, d: CD, name: "مجمع كيبريس — المختبر", poi: true });
+    ctx.spawns.push({ kind: "walker", x: cx + 6, z: cz + 4, wander: 5 });
+    ctx.spawns.push({ kind: "walker", x: cx - 10, z: cz + 4, wander: 4 });
+    ctx.spawns.push({ kind: "runner", x: cx + 20, z: cz - 6, wander: 7 });
+    ctx.spawns.push({ kind: "spitter", x: cx + 4, z: cz + 18, wander: 8 });
+    ctx.triggers.push({ id: "trig_metro", x: cx + 18, z: cz, radius: 16, once: true });
   }
 
   // ═══════════ ميناء بلاك ووتر (7) — الجنوب على النهر ═══════════
@@ -2665,6 +3125,7 @@ export function buildWorld(scene: THREE.Scene): WorldData {
     barrier(w, gateX + 17, gateZ + 1.2, -0.15);
     car(w, 12, 106, 0.35, "truck", rnd());
     pickupProp(ctx, "harbor_ammo", "item", gateX - 14, gateZ + 4, "التقاط خرطوش", { item: "shotgun_ammo", qty: 6 }, 0.14);
+    pickupProp(ctx, "harbor_stick", "item", gateX + 6.5, gateZ + 5.0, "التقاط عصا خشبية", { weapon: "crowbar" }, 0.12);
     pickupProp(ctx, "harbor_med", "item", gateX + 16, gateZ + 2, "التقاط علبة إسعاف", { item: "medkit", qty: 1 }, 0.14);
     emergencyLight(ctx, gateX, 4, gateZ - 6, 0x2fae4e);
     coveredBody(w, gateX - 5, gateZ - 6, 1.2);
@@ -2734,7 +3195,7 @@ export function buildWorld(scene: THREE.Scene): WorldData {
 
   // ═══════════ المختبر تحت الأرض (x=600) — تصميم هندسي منظم من 3 قطاعات متصلة ═══════════
   const LX = 600, LZ = 0;
-  let labBossGate = { mesh: null as unknown as THREE.Mesh, colliderId: "lab_arena_gate" };
+  const labBossGate = { mesh: null as unknown as THREE.Mesh, colliderId: "lab_arena_gate" };
   let corePos = new THREE.Vector3(LX, 1, LZ - 31);
   {
     const cx = LX, cz = LZ;
@@ -2845,6 +3306,7 @@ export function buildWorld(scene: THREE.Scene): WorldData {
     ctx.interactables.push({ id: "core", kind: "core", x: cx, z: cz - 31, radius: 2.8, prompt: "النواة — كيميرا", used: false });
     noteProp(ctx, "lab_doc", "doc_6", cx - 3.6, cz + 19.5, 0.80);
     pickupProp(ctx, "lab_med", "item", cx + 3.6, cz + 19.5, "التقاط علبة إسعاف", { item: "medkit", qty: 1 }, 0.80);
+    pickupProp(ctx, "lab_stick", "item", cx + 3.8, cz + 15.0, "التقاط عصا خشبية", { weapon: "crowbar" }, 0.12);
     pickupProp(ctx, "lab_ammo", "item", cx - 8.2, cz - 16, "التقاط خرطوش", { item: "shotgun_ammo", qty: 8 }, 0.14);
     pickupProp(ctx, "lab_bat", "item", cx + 8.2, cz - 16, "التقاط بطارية", { item: "battery", qty: 1 }, 0.14);
     ctx.interactables.push({ id: "lab_exit", kind: "exit", x: cx, z: cz + 22, radius: 2.4, prompt: "الصعود إلى السطح", data: { labExit: true }, used: false });
@@ -2947,19 +3409,10 @@ const clockHandsRef: THREE.Object3D[] = [];
 type CarVariantLike = "sedan" | "wreck" | "taxi" | "police" | "ambulance" | "van" | "truck";
 
 function debrisPile(ctx: BuildCtx, x: number, z: number, w2: number, d: number) {
-  const rnd2 = seededRandom(Math.floor((x * 31 + z * 17) | 0) || 7);
-  const rndLocal = (a: number, b: number) => a + rnd2() * (b - a);
-  for (let i = 0; i < Math.floor((w2 * d) / 6); i++) {
-    const bw = rndLocal(1.2, 3.6);
-    const bh = rndLocal(0.6, 2.4);
-    const bd = rndLocal(1.2, 3.4);
-    const m = new THREE.Matrix4().compose(
-      new THREE.Vector3(x + rndLocal(-w2 / 2.2, w2 / 2.2), bh / 2 + rndLocal(0, 0.8), z + rndLocal(-d / 2.2, d / 2.2)),
-      new THREE.Quaternion().setFromEuler(new THREE.Euler(rndLocal(-0.2, 0.2), rndLocal(0, Math.PI), rndLocal(-0.2, 0.2))),
-      new THREE.Vector3(bw, bh, bd),
-    );
-    pushStatic(ctx, "rubble", new THREE.BoxGeometry(1, 1, 1), m);
-  }
+  // تحديد اتجاه الشارع تلقائياً ليمتد الحاجز الخرساني والركام عبر عرض الشارع بالكامل دون مكعبات طائرة
+  const isHorizontalRoad = [0, 46, -46, 92, -92].includes(z) && ![0, 46, -46, 92, -92].includes(x);
+  const ry = isHorizontalRoad ? Math.PI / 2 : 0;
+  streetDebrisBarricade(propCtxOf(ctx), x, z, ry, x * 31 + z * 17);
   ctx.colliders.push({ minX: x - w2 / 2, maxX: x + w2 / 2, minZ: z - d / 2, maxZ: z + d / 2 });
   ctx.blockedRoads.push({ x, z, w: w2 + 2, d: d + 2 });
 }

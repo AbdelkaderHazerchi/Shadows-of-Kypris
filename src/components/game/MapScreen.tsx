@@ -340,19 +340,22 @@ export default function MapScreen() {
   }, []);
 
   return (
-    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/88 p-4 backdrop-blur-sm">
-      <div className="kypris-panel w-[min(880px,94vw)] rounded p-6">
+    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/75 p-4 backdrop-blur-md">
+      <div className="kypris-panel kypris-hud-corner w-[min(900px,95vw)] rounded-md p-6">
         {/* Header */}
-        <div className="mb-4 flex items-center justify-between border-b border-stone-800 pb-3">
-          <h2 className="font-title text-2xl font-bold text-stone-100">
-            {ui.title} <span className="text-stone-500">— {ui.subtitle}</span>
-          </h2>
+        <div className="mb-4 flex items-center justify-between border-b border-stone-800/80 pb-3">
+          <div className="flex items-center gap-2.5">
+            <span className="h-2 w-2 rounded-full bg-amber-500" />
+            <h2 className="font-title text-2xl font-bold text-stone-100">
+              {ui.title} <span className="text-stone-400">— {ui.subtitle}</span>
+            </h2>
+          </div>
           <button
             onClick={close}
             className="kypris-btn rounded p-1.5 text-stone-400 hover:text-stone-100"
             aria-label="Close"
           >
-            <X className="h-4 w-4" strokeWidth={1.5} />
+            <X className="h-4 w-4" strokeWidth={1.75} />
           </button>
         </div>
 

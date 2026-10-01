@@ -139,7 +139,11 @@ export interface HudState {
   stamina: number;
   battery: number;
   flashlightOn: boolean;
+  crouching: boolean;
+  hidden: boolean;
   equipped: WeaponId | null;
+  stickHits: number;
+  stickMaxHits: number;
   pistolMag: number;
   shotgunMag: number;
   pistolAmmo: number;
@@ -204,7 +208,9 @@ export interface SaveData {
   shotgunAmmo: number;
   pistolMag: number;
   shotgunMag: number;
-  weapons: { pistol: boolean; shotgun: boolean };
+  stickHits?: number;
+  stickMaxHits?: number;
+  weapons: { crowbar?: boolean; pistol: boolean; shotgun: boolean };
   equipped: WeaponId | null;
   inventory: (InvSlot | null)[];
   flags: GameFlags;

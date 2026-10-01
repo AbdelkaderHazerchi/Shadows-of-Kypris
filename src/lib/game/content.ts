@@ -104,6 +104,10 @@ export interface MessagesBundle {
   cpLabEntry: string;
   cpAfterCore: string;
   cpDeal: string;
+  stickBroken: string;
+  stickLow: string;
+  stickPickedUp: (hits: number) => string;
+  stickAlreadyHave: string;
 }
 
 export interface UIBundle {
@@ -132,6 +136,9 @@ export interface UIBundle {
     reloading: string;
     reloadPrompt: string;
     crowbarShort: string;
+    unarmedLabel: string;
+    crouchingLabel: string;
+    hiddenLabel: string;
   };
   pause: {
     title: string;
@@ -169,6 +176,7 @@ export interface UIBundle {
     dropBtn: string;
     selectSlotHint: string;
     crowbarCard: string;
+    crowbarUnowned: string;
     pistolCard: string;
     pistolUnowned: string;
     shotgunCard: string;
@@ -494,15 +502,15 @@ const EN_ITEMS: Record<ItemId, ItemDef> = {
 const EN_WEAPONS: Record<WeaponId, WeaponDef> = {
   crowbar: {
     id: "crowbar",
-    name: "Steel Crowbar",
+    name: "Wooden Stick",
     melee: true,
-    damage: 26,
+    damage: 30,
     magSize: 0,
-    fireRate: 0.55,
+    fireRate: 0.52,
     reloadTime: 0,
-    headMult: 1.4,
-    range: 2.4,
-    noise: 4,
+    headMult: 1.45,
+    range: 2.45,
+    noise: 3,
   },
   pistol: {
     id: "pistol",
@@ -796,18 +804,21 @@ const EN_BUNDLE: LocalizedBundle = {
   controls: [
     { key: "W A S D", action: "Move" },
     { key: "Shift", action: "Sprint (consumes Stamina)" },
+    { key: "Ctrl / C", action: "Crouch & Hide behind cover" },
     { key: "Mouse", action: "Look / Aim" },
-    { key: "Left Click", action: "Fire Weapon / Swing Crowbar" },
+    { key: "Left Click", action: "Fire Weapon / Swing Stick" },
     { key: "R", action: "Reload Firearm" },
     { key: "E", action: "Interact (Doors, Pickups, Survivors)" },
     { key: "F", action: "Toggle Flashlight (uses Battery)" },
-    { key: "1 / 2 / 3", action: "Crowbar / Pistol / Shotgun" },
+    { key: "1 / 2 / 3", action: "Wooden Stick / Pistol / Shotgun" },
     { key: "Tab", action: "Inventory & Supplies" },
     { key: "M", action: "City Map" },
     { key: "J", action: "Mission Log" },
     { key: "Esc", action: "Pause Menu" },
   ],
   tips: [
+    "Hold Ctrl (or press C) to crouch behind desks, cars, or crates — monsters cannot spot you while hidden behind cover.",
+    "You wake up unarmed. Search your apartment and the city for Wooden Sticks — each stick wears down and splinters after 7–11 strikes.",
     "Your flashlight drains battery… spare cells are precious, use darkness wisely.",
     "Headshots deal critical damage and can drop a Walker instantly.",
     "Fire with discipline — gunshots echo through the fog and draw nearby creatures.",
@@ -815,7 +826,6 @@ const EN_BUNDLE: LocalizedBundle = {
     "Acid Spitters attack from range — strafe sideways and close the distance fast.",
     "Sprinting drains Stamina. Always save a breath for escaping, not just fighting.",
     "Survivors need specific supplies before they can head to the harbor — check your Mission Log (J).",
-    "Juggernauts and bosses can't be brute-forced with bullets alone — use pillars and corridors.",
     "Documents aren't filler… reading all 6 unlocks the True Ending and guides your next step.",
   ],
   objectives: EN_OBJECTIVES,
@@ -876,7 +886,7 @@ const EN_BUNDLE: LocalizedBundle = {
     lockerAlreadyOpened: "You already unlocked this weapons locker",
     pickedUp: (name: string, qty?: number) => `Picked up: ${name}${qty && qty > 1 ? ` ×${qty}` : ""}`,
     gotFirearmHint: "Firearm secured… remember your journal note about heading east of the Plaza to the Police Station",
-    switchWeaponHint: "Press 2 / 3 to switch firearms — 1 for Steel Crowbar",
+    switchWeaponHint: "Press 2 / 3 to switch firearms — 1 for Wooden Stick",
     doc1Hint: "Your journal laid out the plan: secure a firearm from the Arms Shop south of the Plaza before venturing deeper",
     doc4WithKeyHint: "You have the dispatch and the broadcast key… head to the Radio Tower on the northeast hill",
     doc4NoKeyHint: "The military dispatch notes that the brass broadcast studio key is on the desk in this office",
@@ -930,6 +940,10 @@ const EN_BUNDLE: LocalizedBundle = {
     cpLabEntry: "Lab Entrance",
     cpAfterCore: "After Core",
     cpDeal: "The Bargain",
+    stickBroken: "Your Wooden Stick splintered and broke! Search for another one to defend yourself.",
+    stickLow: "Your Wooden Stick is cracking — it will break soon!",
+    stickPickedUp: (hits: number) => `Picked up: Wooden Stick (Durability: ${hits} strikes)`,
+    stickAlreadyHave: "You already carry a sturdy Wooden Stick.",
   },
   zones: EN_ZONES,
   ui: {
@@ -957,7 +971,10 @@ const EN_BUNDLE: LocalizedBundle = {
       radioStaticNear: "PROXIMITY STATIC",
       reloading: "Reloading…",
       reloadPrompt: "Reload",
-      crowbarShort: "Crowbar",
+      crowbarShort: "Wooden Stick",
+      unarmedLabel: "Unarmed",
+      crouchingLabel: "Crouching",
+      hiddenLabel: "Hidden in Cover",
     },
     pause: {
       title: "PAUSED",
@@ -982,7 +999,7 @@ const EN_BUNDLE: LocalizedBundle = {
       pistolAmmo: "9mm Pistol Reserve",
       shotgunAmmo: "12-Gauge Reserve",
       equipped: "Equipped",
-      meleeDesc: "Close-quarters melee",
+      meleeDesc: "Breakable melee (7–11 hits)",
       pistolDesc: "12-round mag",
       shotgunDesc: "6-shell tube",
       kindConsumable: "Consumable",
@@ -994,7 +1011,8 @@ const EN_BUNDLE: LocalizedBundle = {
       readBtn: "Read",
       dropBtn: "Discard",
       selectSlotHint: "Select an inventory slot to inspect its details…",
-      crowbarCard: "Crowbar",
+      crowbarCard: "Wooden Stick",
+      crowbarUnowned: "Stick — None / Broken",
       pistolCard: "9mm Pistol",
       pistolUnowned: "Pistol — Not Found",
       shotgunCard: "Shotgun",
@@ -1317,15 +1335,15 @@ const AR_ITEMS: Record<ItemId, ItemDef> = {
 const AR_WEAPONS: Record<WeaponId, WeaponDef> = {
   crowbar: {
     id: "crowbar",
-    name: "عُقلة حديدية",
+    name: "عصا خشبية",
     melee: true,
-    damage: 26,
+    damage: 30,
     magSize: 0,
-    fireRate: 0.55,
+    fireRate: 0.52,
     reloadTime: 0,
-    headMult: 1.4,
-    range: 2.4,
-    noise: 4,
+    headMult: 1.45,
+    range: 2.45,
+    noise: 3,
   },
   pistol: {
     id: "pistol",
@@ -1550,18 +1568,21 @@ const AR_BUNDLE: LocalizedBundle = {
   controls: [
     { key: "W A S D", action: "الحركة" },
     { key: "Shift", action: "الجري (يستهلك اللياقة)" },
-    { key: "الماوس", action: "النظر حولك" },
-    { key: "زر الماوس الأيسر", action: "إطلاق النار / ضربة العتلة" },
+    { key: "Ctrl / C", action: "الانخفاض والاختباء خلف ساتر" },
+    { key: "الماوس", action: "النظر والتصويب" },
+    { key: "زر الماوس الأيسر", action: "إطلاق النار / الضرب بالعصا" },
     { key: "R", action: "إعادة التلقيم" },
     { key: "E", action: "التفاعل (أبواب، التقاط، حديث)" },
     { key: "F", action: "الكشّاف (يستهلك البطارية)" },
-    { key: "1 / 2 / 3", action: "العُقلة / المسدس / البندقية" },
+    { key: "1 / 2 / 3", action: "العصا الخشبية / المسدس / البندقية" },
     { key: "Tab", action: "الحقيبة والمؤن" },
     { key: "M", action: "خريطة المدينة" },
     { key: "J", action: "سجل المهام" },
     { key: "Esc", action: "إيقاف مؤقت" },
   ],
   tips: [
+    "اضغط Ctrl (أو C) للانخفاض والاختباء وراء المكاتب أو السيارات أو الصناديق — الوحش لا يراك وأنت مختبئ خلف ساتر.",
+    "تبدأ اللعبة أعزل بلا سلاح — ابحث في منزلك وفي أرجاء المدينة عن عصيّ خشبية لحماية نفسك، وانتبه فهي تهترئ وتنكسر بعد 7 إلى 11 ضربة.",
     "الكشّاف ينفد… البطاريات كنز، لا تبددها.",
     "الطلقة في الرأس تُنهي المتجول من ضربة واحدة.",
     "أطلق النار بحكمة — الصوت يجذب الموج من المتجولين.",
@@ -1569,7 +1590,6 @@ const AR_BUNDLE: LocalizedBundle = {
     "نافثو الحمض يهاجمون من بعيد — تحرك جانبياً واقترب بسرعة.",
     "الجري يستهلك اللياقة. احفظ بعض النَفَس للهرب لا للقتال.",
     "الناجون قد يطلبون مساعدة قبل التوجه للميناء — راجع سجل المهام (J).",
-    "الوحوش العملاقة لا تُقهر بالرصاص وحده — استغل الأعمدة والممرات.",
     "الوثائق ليست حشواً… بعضها يفتح نهايات لن تراها إلا بها.",
   ],
   objectives: AR_OBJECTIVES,
@@ -1627,7 +1647,7 @@ const AR_BUNDLE: LocalizedBundle = {
     lockerAlreadyOpened: "فتحت هذه الخزانة سابقاً",
     pickedUp: (name: string, qty?: number) => `التقطت: ${name}${qty && qty > 1 ? ` ×${qty}` : ""}`,
     gotFirearmHint: "حصلتَ على سلاح ناري… تذكّر ما ورد في يومياتك حول التوجه شرق الساحة نحو المقر الأمني",
-    switchWeaponHint: "اضغط 2/3 لتبديل الأسلحة — 1 للعُقلة",
+    switchWeaponHint: "اضغط 2/3 لتبديل الأسلحة — 1 للعصا الخشبية",
     doc1Hint: "يومياتك أوضحت خطتك: أمّن سلاحاً نارياً من متجر العتاد جنوب الساحة قبل التوغل في المدينة",
     doc4WithKeyHint: "البرقية ومفتاح البث بحوزتك… اتجه إلى محطة الإذاعة في التل الشمالي الشرقي",
     doc4NoKeyHint: "البرقية تشير إلى حفظ مفتاح غرفة البث النحاسي على الطاولة في هذا المكتب",
@@ -1681,6 +1701,10 @@ const AR_BUNDLE: LocalizedBundle = {
     cpLabEntry: "مدخل المختبر",
     cpAfterCore: "بعد النواة",
     cpDeal: "الصفقة",
+    stickBroken: "تهشّمت العصا الخشبية وانكسرت! ابحث عن عصا أخرى لحماية نفسك.",
+    stickLow: "عصاك الخشبية تتشقق وتوشك على الانكسار!",
+    stickPickedUp: (hits: number) => `التقطت: عصا خشبية (المتانة: ${hits} ضربات)`,
+    stickAlreadyHave: "لديك عصا خشبية سليمة بالفعل.",
   },
   zones: AR_ZONES,
   ui: {
@@ -1708,7 +1732,10 @@ const AR_BUNDLE: LocalizedBundle = {
       radioStaticNear: "تشويش راديو قريب",
       reloading: "إعادة التلقيم…",
       reloadPrompt: "أعد التلقيم",
-      crowbarShort: "عُقلة",
+      crowbarShort: "عصا خشبية",
+      unarmedLabel: "أعزل",
+      crouchingLabel: "منخفض",
+      hiddenLabel: "مختبئ خلف ساتر",
     },
     pause: {
       title: "إيقاف مؤقت",
@@ -1733,7 +1760,7 @@ const AR_BUNDLE: LocalizedBundle = {
       pistolAmmo: "ذخيرة المسدس",
       shotgunAmmo: "خرطوش البندقية",
       equipped: "مجهّز",
-      meleeDesc: "قتال قريب المدى",
+      meleeDesc: "عصا قابلة للكسر (7–11 ضربة)",
       pistolDesc: "12 طلقة",
       shotgunDesc: "6 خرطوش",
       kindConsumable: "مستهلك",
@@ -1745,7 +1772,8 @@ const AR_BUNDLE: LocalizedBundle = {
       readBtn: "قراءة",
       dropBtn: "إفلات",
       selectSlotHint: "اختر خانة لعرض تفاصيلها…",
-      crowbarCard: "العُقلة",
+      crowbarCard: "عصا خشبية",
+      crowbarUnowned: "عصا خشبية — غير متوفرة",
       pistolCard: "المسدس",
       pistolUnowned: "المسدس — غير مقتنى",
       shotgunCard: "البندقية",

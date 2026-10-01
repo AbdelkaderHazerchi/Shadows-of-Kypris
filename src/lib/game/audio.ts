@@ -55,13 +55,13 @@ class AudioEngine {
   private noiseBuf: AudioBuffer | null = null;
   private ambNodes: { stop: () => void }[] = [];
   private ambTimer: ReturnType<typeof setTimeout> | null = null;
+  private musicTimer: ReturnType<typeof setTimeout> | null = null;
   private currentAmbient: AmbientProfile | null = null;
   private threatGains: GainNode[] = [];
   private hbTimer: ReturnType<typeof setInterval> | null = null;
   private volumes = { master: 0.8, music: 0.7, sfx: 0.9 };
   private started = false;
   // طبقات بيئية مجدولة (5-c)
-  private sirenTimer: ReturnType<typeof setTimeout> | null = null;
   private heliNodes: { gain: GainNode; nodes: (OscillatorNode | AudioBufferSourceNode)[] } | null = null;
   private fireTimer: ReturnType<typeof setInterval> | null = null;
   private fireLevel = 0;
@@ -116,7 +116,7 @@ class AudioEngine {
     return bus ?? this.sfxBus;
   }
 
-  private noiseSource(dur: number, rate = 1): AudioBufferSourceNode | null {
+  private noiseSource(_dur: number, rate = 1): AudioBufferSourceNode | null {
     if (!this.ctx || !this.noiseBuf) return null;
     const src = this.ctx.createBufferSource();
     src.buffer = this.noiseBuf;
@@ -144,7 +144,6 @@ class AudioEngine {
     const ctx = this.ctx;
     const t0 = ctx.currentTime + 0.01;
     const vol = opts.volume ?? 1;
-    const rate = opts.rate ?? 1;
     let dest: AudioNode = this.out();
     if (opts.pan) {
       const p = this.panner(opts.pan);
@@ -242,7 +241,7 @@ class AudioEngine {
         });
         break;
       case "dryfire":
-        S((g) => {
+        S(() => {
           const o = ctx.createOscillator();
           o.type = "square";
           o.frequency.value = 1800 + Math.random() * 400;
@@ -257,7 +256,7 @@ class AudioEngine {
         break;
       case "reload_start":
       case "reload_end":
-        S((g) => {
+        S(() => {
           for (let i = 0; i < 3; i++) {
             const o = ctx.createOscillator();
             o.type = "square";
@@ -319,7 +318,7 @@ class AudioEngine {
         break;
       }
       case "pickup":
-        S((g) => {
+        S(() => {
           const o = ctx.createOscillator();
           o.type = "sine";
           o.frequency.setValueAtTime(520, t0);
@@ -349,7 +348,7 @@ class AudioEngine {
         });
         break;
       case "heal":
-        S((g) => {
+        S(() => {
           const o = ctx.createOscillator();
           o.type = "sine";
           o.frequency.setValueAtTime(300, t0);
@@ -415,7 +414,7 @@ class AudioEngine {
         break;
       }
       case "door_locked":
-        S((g) => {
+        S(() => {
           for (let i = 0; i < 4; i++) {
             const o = ctx.createOscillator();
             o.type = "square";
@@ -432,7 +431,7 @@ class AudioEngine {
         });
         break;
       case "ui_click":
-        S((g) => {
+        S(() => {
           const o = ctx.createOscillator();
           o.type = "triangle";
           o.frequency.value = 640;
@@ -446,7 +445,7 @@ class AudioEngine {
         });
         break;
       case "stinger_discover":
-        S((g) => {
+        S(() => {
           [196, 207.65, 233.08, 466].forEach((fr, i) => {
             const o = ctx.createOscillator();
             o.type = i === 3 ? "triangle" : "sawtooth";
@@ -466,7 +465,7 @@ class AudioEngine {
         });
         break;
       case "stinger_danger":
-        S((g) => {
+        S(() => {
           const o = ctx.createOscillator();
           o.type = "sawtooth";
           o.frequency.setValueAtTime(55, t0);
@@ -487,7 +486,7 @@ class AudioEngine {
       case "growl":
       case "growl_far": {
         const far = name === "growl_far";
-        S((g) => {
+        S(() => {
           const o = ctx.createOscillator();
           o.type = "sawtooth";
           const base = 60 + Math.random() * 55;
@@ -516,7 +515,7 @@ class AudioEngine {
         break;
       }
       case "roar":
-        S((g) => {
+        S(() => {
           const o = ctx.createOscillator();
           o.type = "sawtooth";
           o.frequency.setValueAtTime(140, t0);
@@ -586,7 +585,7 @@ class AudioEngine {
         });
         break;
       case "radio_beep":
-        S((g) => {
+        S(() => {
           const o = ctx.createOscillator();
           o.type = "sine";
           o.frequency.value = 1180;
@@ -600,7 +599,7 @@ class AudioEngine {
         });
         break;
       case "generator":
-        S((g) => {
+        S(() => {
           const o = ctx.createOscillator();
           o.type = "square";
           o.frequency.setValueAtTime(30, t0);
@@ -647,7 +646,7 @@ class AudioEngine {
         });
         break;
       case "metal_creak":
-        S((g) => {
+        S(() => {
           const o = ctx.createOscillator();
           o.type = "sawtooth";
           o.frequency.setValueAtTime(180 + Math.random() * 120, t0);
@@ -667,7 +666,7 @@ class AudioEngine {
         });
         break;
       case "alarm":
-        S((g) => {
+        S(() => {
           for (let i = 0; i < 4; i++) {
             const o = ctx.createOscillator();
             o.type = "square";
@@ -730,7 +729,7 @@ class AudioEngine {
         break;
       case "thud":
         // ارتطام ثقيل — جيب 55Hz + نقرة ضجيج
-        S((g) => {
+        S(() => {
           const o = ctx.createOscillator();
           o.type = "sine";
           o.frequency.setValueAtTime(58, t0);
@@ -759,7 +758,7 @@ class AudioEngine {
         break;
       case "pump":
         // مضخة البندقية — نقرتان معدنيتان سريعتان
-        S((g) => {
+        S(() => {
           for (let i = 0; i < 2; i++) {
             const tt = t0 + i * 0.11;
             const o = ctx.createOscillator();
@@ -820,42 +819,6 @@ class AudioEngine {
       clearInterval(this.hbTimer);
       this.hbTimer = null;
     }
-  }
-
-  // ── صفارة مدينة بعيدة (أجواء الشارع) ──
-  private scheduleSiren() {
-    if (this.sirenTimer) clearTimeout(this.sirenTimer);
-    this.sirenTimer = setTimeout(() => {
-      this.sirenTimer = null;
-      if (this.currentAmbient !== "city") return;
-      this.playSiren();
-      this.scheduleSiren();
-    }, 50000 + Math.random() * 40000);
-  }
-
-  private playSiren() {
-    if (!this.ctx || !this.started) return;
-    const ctx = this.ctx;
-    const t0 = ctx.currentTime + 0.1;
-    const o = ctx.createOscillator();
-    o.type = "sine";
-    o.frequency.setValueAtTime(600, t0);
-    o.frequency.linearRampToValueAtTime(900, t0 + 3);
-    o.frequency.linearRampToValueAtTime(600, t0 + 6);
-    const f = ctx.createBiquadFilter();
-    f.type = "lowpass";
-    f.frequency.value = 1100;
-    const g = ctx.createGain();
-    const peak = 0.05 * this.volumes.master;
-    g.gain.setValueAtTime(0.0001, t0);
-    g.gain.linearRampToValueAtTime(peak, t0 + 1.5);
-    g.gain.setValueAtTime(peak, t0 + 4.5);
-    g.gain.linearRampToValueAtTime(0.0001, t0 + 6);
-    o.connect(f);
-    f.connect(g);
-    g.connect(this.ambBus);
-    o.start(t0);
-    o.stop(t0 + 6.2);
   }
 
   // ── مروحية الإخلاء (حلقة مستمرة) ──
@@ -957,7 +920,7 @@ class AudioEngine {
     }
   }
 
-  // ── ambient beds ──
+  // ── ambient beds & calm mysterious music (موسيقى غامضة هادئة) ──
   startAmbient(profile: AmbientProfile) {
     if (!this.ctx || !this.started) return;
     if (this.currentAmbient === profile) return;
@@ -965,26 +928,55 @@ class AudioEngine {
     this.currentAmbient = profile;
     const ctx = this.ctx;
 
-    const mkDrone = (freqs: number[], gainV: number, lfoF: number, type: OscillatorType = "sine") => {
+    // 1) شبكة صدى ناعمة (Warm Stereo-like Echo/Reverb Tail) لإعطاء عمق غامض وهادئ للنغمات
+    const echoIn = ctx.createGain();
+    echoIn.gain.value = 1;
+    echoIn.connect(this.musicBus);
+
+    const delay = ctx.createDelay(2.0);
+    delay.delayTime.value = 0.52;
+    const delayFilter = ctx.createBiquadFilter();
+    delayFilter.type = "lowpass";
+    delayFilter.frequency.value = 820;
+    const feedback = ctx.createGain();
+    feedback.gain.value = 0.36;
+    const wetGain = ctx.createGain();
+    wetGain.gain.value = 0.42;
+
+    echoIn.connect(delay);
+    delay.connect(delayFilter);
+    delayFilter.connect(feedback);
+    feedback.connect(delay);
+    delayFilter.connect(wetGain);
+    wetGain.connect(this.musicBus);
+
+    // 2) وسادة موسيقية دافئة وعميقة (Velvety Sub-Pad)
+    const mkCalmPad = (freqs: number[], gainV: number, lfoF: number) => {
+      const padFilter = ctx.createBiquadFilter();
+      padFilter.type = "lowpass";
+      padFilter.frequency.value = 260;
       const g = ctx.createGain();
       g.gain.value = gainV;
-      g.connect(this.ambBus);
+      padFilter.connect(g);
+      g.connect(echoIn);
+
       const nodes: (OscillatorNode | AudioBufferSourceNode)[] = [];
       freqs.forEach((f, i) => {
         const o = ctx.createOscillator();
-        o.type = type;
-        o.frequency.value = f * (1 + i * 0.003);
+        o.type = i % 2 === 0 ? "sine" : "triangle";
+        o.frequency.value = f * (1 + (i - 1) * 0.0018);
         const og = ctx.createGain();
         og.gain.value = 1 / freqs.length;
         o.connect(og);
-        og.connect(g);
+        og.connect(padFilter);
         o.start();
         nodes.push(o);
       });
       const lfo = ctx.createOscillator();
+      lfo.type = "sine";
       lfo.frequency.value = lfoF;
       const lg = ctx.createGain();
-      lg.gain.value = gainV * 0.4;
+      lg.gain.value = gainV * 0.25;
       lfo.connect(lg);
       lg.connect(g.gain);
       lfo.start();
@@ -993,7 +985,8 @@ class AudioEngine {
       return { nodes, g };
     };
 
-    const mkWind = (gainV: number, cutoff: number, rate: number) => {
+    // 3) نسمة هواء ليلية خافتة وناعمة جداً
+    const mkGentleBreeze = (gainV: number, cutoff: number, rate: number) => {
       if (!this.noiseBuf) return { nodes: [] as AudioBufferSourceNode[], g: ctx.createGain() };
       const src = ctx.createBufferSource();
       src.buffer = this.noiseBuf;
@@ -1005,9 +998,9 @@ class AudioEngine {
       const g = ctx.createGain();
       g.gain.value = gainV;
       const lfo = ctx.createOscillator();
-      lfo.frequency.value = 0.07 + Math.random() * 0.05;
+      lfo.frequency.value = 0.05;
       const lg = ctx.createGain();
-      lg.gain.value = gainV * 0.55;
+      lg.gain.value = gainV * 0.35;
       lfo.connect(lg);
       lg.connect(g.gain);
       src.connect(f);
@@ -1021,94 +1014,148 @@ class AudioEngine {
       return { nodes: [src, lfo] as (AudioBufferSourceNode | OscillatorNode)[], g };
     };
 
-    // threat layer (persistent, gain 0)
+    // 4) عازف الألحان الغامضة الهادئة (Felt Piano / Celesta Mystery Arpeggiator)
+    const startMysteryMelody = (scale: number[], baseGain: number, minGapMs: number, maxGapMs: number) => {
+      let stepIdx = 0;
+      const playNextNote = () => {
+        if (this.currentAmbient !== profile || !this.ctx) return;
+        const now = this.ctx.currentTime + 0.02;
+        // اختيار النغمة بانتقال متدرج هادئ مع تنويع بسيط
+        const pick =
+          Math.random() < 0.72
+            ? scale[stepIdx % scale.length]
+            : scale[Math.floor(Math.random() * scale.length)];
+        stepIdx++;
+
+        const noteGain = this.ctx.createGain();
+        const peak = baseGain * (0.82 + Math.random() * 0.32);
+        noteGain.gain.setValueAtTime(0.0001, now);
+        noteGain.gain.linearRampToValueAtTime(peak, now + 0.22);
+        noteGain.gain.exponentialRampToValueAtTime(0.0001, now + 3.8);
+
+        const filter = this.ctx.createBiquadFilter();
+        filter.type = "lowpass";
+        filter.frequency.setValueAtTime(980, now);
+        filter.frequency.exponentialRampToValueAtTime(320, now + 3.6);
+
+        // النغمة الأساسية (Sine) + توافقية خافتة دافئة (Triangle)
+        const oscMain = this.ctx.createOscillator();
+        oscMain.type = "sine";
+        oscMain.frequency.value = pick;
+
+        const oscSub = this.ctx.createOscillator();
+        oscSub.type = "triangle";
+        oscSub.frequency.value = pick * 0.5;
+        const subG = this.ctx.createGain();
+        subG.gain.value = 0.28;
+
+        const oscHarm = this.ctx.createOscillator();
+        oscHarm.type = "sine";
+        oscHarm.frequency.value = pick * 2.0;
+        const harmG = this.ctx.createGain();
+        harmG.gain.setValueAtTime(0.08, now);
+        harmG.gain.exponentialRampToValueAtTime(0.001, now + 1.2);
+
+        oscMain.connect(filter);
+        oscSub.connect(subG);
+        subG.connect(filter);
+        oscHarm.connect(harmG);
+        harmG.connect(filter);
+
+        filter.connect(noteGain);
+        noteGain.connect(echoIn);
+
+        oscMain.start(now);
+        oscSub.start(now);
+        oscHarm.start(now);
+        oscMain.stop(now + 4.0);
+        oscSub.stop(now + 4.0);
+        oscHarm.stop(now + 4.0);
+
+        this.musicTimer = setTimeout(
+          playNextNote,
+          minGapMs + Math.random() * (maxGapMs - minGapMs),
+        );
+      };
+      this.musicTimer = setTimeout(playNextNote, 600);
+    };
+
+    // 5) طبقة التوتر عند اقتراب الخطر (صامتة تماماً عندما يكون التهديد 0، ومُرشَّحة بعمق)
     const tg = ctx.createGain();
     tg.gain.value = 0;
-    tg.connect(this.musicBus);
-    [110, 116.54, 155.56].forEach((f) => {
+    const threatFilter = ctx.createBiquadFilter();
+    threatFilter.type = "lowpass";
+    threatFilter.frequency.value = 180;
+    tg.connect(threatFilter);
+    threatFilter.connect(this.musicBus);
+    [55, 82.41, 110].forEach((f, idx) => {
       const o = ctx.createOscillator();
-      o.type = "sawtooth";
+      o.type = idx === 0 ? "sine" : "triangle";
       o.frequency.value = f;
       const og = ctx.createGain();
-      og.gain.value = 0.33;
+      og.gain.value = 0.3;
       o.connect(og);
       og.connect(tg);
       o.start();
       this.ambNodes.push({ stop: () => o.stop() });
     });
-    const pulse = ctx.createOscillator();
-    pulse.type = "sine";
-    pulse.frequency.value = 2.2;
-    const pg = ctx.createGain();
-    pg.gain.value = 0.25;
-    pulse.connect(pg);
-    pg.connect(tg.gain);
-    pulse.start();
-    this.ambNodes.push({ stop: () => pulse.stop() });
     this.threatGains = [tg];
-
-    const scheduleCreaks = (minGap: number, maxGap: number, sfx: SfxName, vol: number) => {
-      const loop = () => {
-        this.ambTimer = setTimeout(
-          () => {
-            if (this.currentAmbient === profile) this.play(sfx, { volume: vol, pan: Math.random() * 1.6 - 0.8 });
-            loop();
-          },
-          minGap + Math.random() * (maxGap - minGap),
-        );
-      };
-      loop();
-    };
 
     switch (profile) {
       case "menu":
-        mkDrone([55, 58.27], 0.12, 0.05);
-        mkWind(0.1, 300, 0.4);
-        scheduleCreaks(5000, 11000, "metal_creak", 0.5);
+        // مقام ري الصغير الهادئ والغامض (D Aeolian)
+        mkCalmPad([73.42, 110.0, 146.83, 174.61], 0.065, 0.04);
+        mkGentleBreeze(0.03, 220, 0.35);
+        startMysteryMelody(
+          [293.66, 349.23, 329.63, 220.0, 261.63, 220.0, 196.0, 146.83],
+          0.075,
+          2400,
+          3800,
+        );
         break;
       case "city":
-        mkDrone([49, 51.9], 0.1, 0.04);
-        mkWind(0.16, 420, 0.5);
-        mkDrone([98], 0.05, 0.03, "triangle");
-        scheduleCreaks(6000, 14000, "metal_creak", 0.7);
-        scheduleCreaks(9000, 20000, "growl_far", 1);
-        scheduleCreaks(15000, 30000, "thunder", 0.7);
-        this.scheduleSiren();
+        // موسيقى استكشاف ليلية غامضة وهادئة (A Aeolian / Dorian)
+        mkCalmPad([55.0, 82.41, 110.0, 130.81], 0.06, 0.035);
+        mkGentleBreeze(0.04, 240, 0.4);
+        startMysteryMelody(
+          [220.0, 261.63, 329.63, 293.66, 246.94, 196.0, 220.0, 164.81],
+          0.072,
+          2500,
+          4100,
+        );
         break;
       case "indoor":
-        mkDrone([62, 65.4], 0.09, 0.06);
-        mkWind(0.07, 200, 0.35);
-        scheduleCreaks(7000, 15000, "metal_creak", 0.8);
-        scheduleCreaks(8000, 18000, "growl_far", 0.9);
+        // عزف داخلي هادئ وحميمي (E Minor)
+        mkCalmPad([82.41, 123.47, 164.81, 196.0], 0.055, 0.03);
+        mkGentleBreeze(0.02, 170, 0.3);
+        startMysteryMelody(
+          [329.63, 246.94, 293.66, 220.0, 196.0, 246.94, 164.81, 146.83],
+          0.068,
+          2700,
+          4400,
+        );
         break;
-      case "lab": {
-        mkDrone([60, 120.5], 0.11, 0.08, "square");
-        mkWind(0.06, 180, 0.3);
-        const beepLoop = () => {
-          this.ambTimer = setTimeout(() => {
-            if (this.currentAmbient === "lab" && this.ctx) {
-              const t0 = this.ctx.currentTime + 0.01;
-              const o = this.ctx.createOscillator();
-              o.type = "sine";
-              o.frequency.value = 1400 + Math.random() * 1200;
-              const g = this.ctx.createGain();
-              this.env(g, t0, 0.01, 0.05, 0.2);
-              o.connect(g);
-              g.connect(this.ambBus);
-              o.start(t0);
-              o.stop(t0 + 0.3);
-            }
-            beepLoop();
-          }, 3000 + Math.random() * 7000);
-        };
-        beepLoop();
-        scheduleCreaks(9000, 18000, "growl_far", 1);
+      case "lab":
+        // أجواء غامضة وعميقة داخل المختبر بدون صفير مزعج (C Minor)
+        mkCalmPad([65.41, 98.0, 130.81, 155.56], 0.065, 0.04);
+        mkGentleBreeze(0.025, 180, 0.3);
+        startMysteryMelody(
+          [261.63, 311.13, 392.0, 293.66, 233.08, 196.0, 207.65, 130.81],
+          0.07,
+          2400,
+          3900,
+        );
         break;
-      }
       case "harbor":
-        mkDrone([45], 0.09, 0.03);
-        mkWind(0.22, 700, 0.6);
-        scheduleCreaks(5000, 10000, "metal_creak", 0.9);
+        // هدوء الميناء الليلي الغامض (D Minor / F Major7)
+        mkCalmPad([73.42, 110.0, 174.61, 220.0], 0.06, 0.03);
+        mkGentleBreeze(0.055, 280, 0.45);
+        startMysteryMelody(
+          [220.0, 293.66, 349.23, 392.0, 329.63, 261.63, 233.08, 220.0],
+          0.072,
+          2500,
+          4000,
+        );
         break;
     }
   }
@@ -1117,7 +1164,7 @@ class AudioEngine {
     if (!this.ctx || this.threatGains.length === 0) return;
     const v = Math.max(0, Math.min(1, t));
     this.threatGains.forEach((g) =>
-      g.gain.setTargetAtTime(v * 0.14, this.ctx!.currentTime, 0.4),
+      g.gain.setTargetAtTime(v * 0.12, this.ctx!.currentTime, 0.4),
     );
   }
 
@@ -1135,9 +1182,9 @@ class AudioEngine {
       clearTimeout(this.ambTimer);
       this.ambTimer = null;
     }
-    if (this.sirenTimer) {
-      clearTimeout(this.sirenTimer);
-      this.sirenTimer = null;
+    if (this.musicTimer) {
+      clearTimeout(this.musicTimer);
+      this.musicTimer = null;
     }
     this.currentAmbient = null;
   }

@@ -246,6 +246,8 @@ export function makePropMaterials(t: PropTextures): Record<string, THREE.Materia
     trunk: std({ color: 0x241d15, roughness: 0.98 }),
     deadLeaf: std({ color: 0x2a2318, roughness: 1 }),
     canvasTop: std({ color: 0x2c2c24, roughness: 0.95 }),
+    corpseSkin: std({ map: t.clothDark, color: 0x7c8072, roughness: 0.92, metalness: 0.02 }),
+    bone: std({ color: 0xc8bfa8, roughness: 0.82 }),
     // قمة البرج — نفس مادة القرميد لكن أفتح قليلاً ليلمح في الضباب
   };
 }
@@ -325,12 +327,14 @@ class PB {
 export type CarVariant = "sedan" | "wreck" | "taxi" | "police" | "ambulance" | "van" | "truck";
 
 /**
- * سيارة مفصلة: هيكل + كابينة زجاج + عجلات + مصدّات + مصابيح.
+ * سيارة مفصلة وسليمة بنيوياً (بدون أي تداخل هندسي أو Z-fighting):
+ * شاسيه سفلي مع أقواس عجلات حقيقية، محرك ثلاثي الأبعاد مكشوف للسيارات المدمرة،
+ * مقصورة داخلية بمقاعد ولوحة قيادة، أعمدة سقف (A/B/C Pillars)، ومصدات ومرايا.
  * الطول على محور Z المحلي (المقدمة نحو +Z بعد الدوران ry).
  */
 export function car(w: PropCtx, x: number, z: number, ry = 0, variant: CarVariant = "sedan", seed = Math.random()) {
   const p = new PB(w).group(x, 0, z, ry);
-  const rnd = seededRandom(Math.floor(seed * 1e9));
+  const rnd = seededRandom(Math.floor(seed * 1e9) || 17);
   const bodyBucket =
     variant === "police" ? "carPolice" :
     variant === "taxi" ? "carTaxi" :
@@ -341,85 +345,337 @@ export function car(w: PropCtx, x: number, z: number, ry = 0, variant: CarVarian
   const burned = variant === "wreck";
 
   if (variant === "truck") {
-    // شاحنة عسكرية (الميناء)
-    p.boxB(bodyBucket, 0, 0.55, -1.2, 2.3, 1.5, 4.6);           // كابينة+حمصة
-    p.boxB(bodyBucket, 0, 0.75, 2.2, 2.4, 1.9, 3.6);            // صندوق حمولة
-    p.boxB("canvasTop", 0, 2.65, 2.2, 2.3, 0.1, 3.4);           // غطاء قماشي
-    p.boxB("chrome", 0, 0.3, 3.9, 2.2, 0.35, 0.2);              // مصدّ أمامي
-    for (const [wx, wz] of [[-1.15, 2.9], [1.15, 2.9], [-1.15, -1.5], [1.15, -1.5], [-1.15, -2.6], [1.15, -2.6]] as const) {
-      p.cyl("rubber", wx, 0.52, wz, 0.52, 0.52, 0.34, { rx: Math.PI / 2 });
+    // شاحنة عسكرية ثقيلة بسليمة بنيوية كاملة (أقواس عجلات، شاسيه، كابينة، وصندوق خلفي)
+    const wheelR = 0.48;
+    // شاسيه فولاذي مركزي على طول الشاحنة
+    p.boxB("metal", 0, 0.34, 0.4, 1.35, 0.28, 7.6);
+    // خزانا وقود جانبيان
+    p.cyl("greenMetal", -1.02, 0.52, 0.5, 0.24, 0.24, 1.3, { rx: Math.PI / 2, seg: 10 });
+    p.cyl("greenMetal", 1.02, 0.52, 0.5, 0.24, 0.24, 1.3, { rx: Math.PI / 2, seg: 10 });
+    // مقدمة المحرك والكابينة الأمامية (z = +1.4 .. +4.1)
+    p.boxB(bodyBucket, 0, 0.62, 3.35, 2.24, 0.88, 1.5); // غطاء المحرك
+    p.boxB("metal", 0, 0.70, 4.12, 1.65, 0.65, 0.06);   // شبك المبرد الأمامي
+    p.boxB("chrome", 0, 0.36, 4.22, 2.34, 0.26, 0.18);  // المصد الأمامي الفولاذي
+    p.boxB("lampGlow", -0.82, 0.82, 4.13, 0.24, 0.16, 0.05);
+    p.boxB("lampGlow", 0.82, 0.82, 4.13, 0.24, 0.16, 0.05);
+    // مقصورة القيادة وأعمدة الزجاج
+    p.boxB(bodyBucket, 0, 0.62, 1.95, 2.30, 0.92, 1.30);
+    p.boxB("glassDark", 0, 1.56, 2.52, 2.04, 0.56, 0.08);
+    p.boxB(bodyBucket, -1.08, 1.54, 2.52, 0.12, 0.62, 0.12);
+    p.boxB(bodyBucket, 1.08, 1.54, 2.52, 0.12, 0.62, 0.12);
+    p.boxB(bodyBucket, -1.08, 1.54, 1.38, 0.12, 0.62, 0.14);
+    p.boxB(bodyBucket, 1.08, 1.54, 1.38, 0.12, 0.62, 0.14);
+    p.boxB(bodyBucket, 0, 2.16, 1.95, 2.32, 0.12, 1.34);
+    // صندوق الحمولة الخلفي المغطى بالقماش العسكري (z = -3.6 .. +1.2)
+    p.boxB("wood2", 0, 0.64, -1.2, 2.42, 0.18, 4.7);
+    p.boxB(bodyBucket, -1.16, 0.82, -1.2, 0.10, 0.85, 4.65);
+    p.boxB(bodyBucket, 1.16, 0.82, -1.2, 0.10, 0.85, 4.65);
+    p.boxB(bodyBucket, 0, 0.82, -3.50, 2.22, 0.85, 0.10);
+    p.boxB("canvasTop", 0, 1.67, -1.2, 2.38, 1.08, 4.62);
+    // 6 عجلات ثقيلة مع محاور وجنوط منفصلة دون تداخل
+    for (const wz of [3.1, -1.3, -2.6]) {
+      p.cyl("metal", 0, wheelR, wz, 0.07, 0.07, 2.1, { rz: Math.PI / 2, seg: 8 });
+      for (const side of [-1, 1] as const) {
+        const wx = side * 1.12;
+        p.cyl("rubber", wx, wheelR, wz, wheelR, wheelR, 0.32, { rz: Math.PI / 2, seg: 12 });
+        p.cyl("chrome", wx + side * 0.02, wheelR, wz, 0.24, 0.24, 0.34, { rz: Math.PI / 2, seg: 10 });
+      }
     }
-    p.hit(0, 0, 3.2, 8.4);
+    p.hit(0, 0, 2.9, 8.2);
     return;
   }
 
-  const L = variant === "van" || variant === "ambulance" ? 5.2 : 4.5;
-  const W = variant === "van" || variant === "ambulance" ? 2.1 : 1.86;
-  const wheelR = 0.34;
+  const isVan = variant === "van" || variant === "ambulance";
+  const L = isVan ? 5.0 : 4.56;
+  const W = isVan ? 2.06 : 1.88;
+  const wheelR = 0.33;
+  const halfW = W / 2;
+  const halfL = L / 2;
+  const fAxleZ = L * 0.30;
+  const rAxleZ = -L * 0.30;
 
-  // هيكل سفلي + غطاء محرك وصندوق
-  p.boxB(bodyBucket, 0, wheelR * 0.55, 0, W, 0.55, L);
-  if (variant === "van" || variant === "ambulance") {
-    p.boxB(bodyBucket, 0, wheelR * 0.55 + 0.55, -0.15, W, 1.05, L - 0.5);
-    p.boxB("glassDark", 0, wheelR * 0.55 + 1.15, 1.6, W - 0.3, 0.5, 0.1);
+  // إمالة طفيفة واقعية للسيارات المدمرة (إطار مثقوب/تعليق منهار من جهة واحدة مع بقاء العجلات ملامسة للأرض)
+  const flatFrontL = burned && rnd() < 0.65;
+  const bodyDrop = burned ? 0.05 : 0;
+  const baseY = 0.20 - bodyDrop;
+  const beltY = baseY + 0.56; // ارتفاع خط الأبواب والغطاء (~0.76م)
+
+  // 1) الشاسيه السفلي وأقواس العجلات المفتوحة (لا يوجد أي صندوق يقطع العجلات!)
+  p.boxB("plastic", 0, baseY, 0, W - 0.56, 0.52, L - 0.16); // بطن الشاسيه الداخلي بين العجلات
+  // القسم الأمامي أمام العجلات الأمامية
+  p.boxB(bodyBucket, 0, baseY, (fAxleZ + 0.40 + halfL) / 2, W - 0.04, 0.56, halfL - (fAxleZ + 0.40));
+  // القسم الأوسط (عتبات الأبواب السفلية) بين العجلتين الأمامية والخلفية
+  p.boxB(bodyBucket, 0, baseY, 0, W, 0.56, (fAxleZ - 0.40) * 2);
+  // القسم الخلفي خلف العجلات الخلفية
+  p.boxB(bodyBucket, 0, baseY, (-halfL + (rAxleZ - 0.40)) / 2, W - 0.04, 0.56, halfL + (rAxleZ - 0.40));
+  // الرفارف العلوية فوق أقواس العجلات الأمامية والخلفية
+  p.boxB(bodyBucket, 0, baseY + 0.38, fAxleZ, W, 0.18, 0.82);
+  p.boxB(bodyBucket, 0, baseY + 0.38, rAxleZ, W, 0.18, 0.82);
+
+  // 2) العجلات الأربع والمحاور الفولاذية والجنوط
+  const wheelPositions: [number, number, boolean][] = [
+    [-halfW + 0.14, fAxleZ, flatFrontL],
+    [halfW - 0.14, fAxleZ, false],
+    [-halfW + 0.14, rAxleZ, false],
+    [halfW - 0.14, rAxleZ, burned && !flatFrontL && rnd() < 0.5],
+  ];
+  p.cyl("metal", 0, wheelR - bodyDrop * 0.5, fAxleZ, 0.045, 0.045, W - 0.36, { rz: Math.PI / 2, seg: 8 });
+  p.cyl("metal", 0, wheelR - bodyDrop * 0.5, rAxleZ, 0.045, 0.045, W - 0.36, { rz: Math.PI / 2, seg: 8 });
+
+  for (const [wx, wz, isFlat] of wheelPositions) {
+    const side = wx > 0 ? 1 : -1;
+    if (burned && isFlat && rnd() < 0.35) {
+      // عجلة مخلوعة ملقاة بشكل مسطح ومستقر على الأسفلت بجانب السيارة + قرص فرامل مكشوف
+      p.cyl("metal", wx, baseY + 0.16, wz, 0.19, 0.19, 0.10, { rz: Math.PI / 2, seg: 10 });
+      p.cyl("rubber", wx + side * 0.48, 0.12, wz + 0.15, wheelR, wheelR, 0.24, { seg: 12 });
+      p.cyl("chrome", wx + side * 0.48, 0.125, wz + 0.15, 0.18, 0.18, 0.25, { seg: 10 });
+    } else {
+      const rEff = isFlat ? wheelR * 0.82 : wheelR;
+      const tiltZ = isFlat ? side * 0.16 : 0;
+      p.cyl("rubber", wx, rEff, wz, rEff, rEff, 0.24, { rz: Math.PI / 2 + tiltZ, seg: 12 });
+      p.cyl("chrome", wx + side * 0.015, rEff, wz, rEff * 0.56, rEff * 0.56, 0.245, { rz: Math.PI / 2 + tiltZ, seg: 10 });
+      p.cyl("plastic", wx + side * 0.025, rEff, wz, 0.07, 0.07, 0.25, { rz: Math.PI / 2 + tiltZ, seg: 8 });
+    }
+  }
+
+  // 3) المصدات الأمامية والخلفية وشبك المبرد والمصابيح
+  const frontBumpTilt = burned ? (rnd() - 0.5) * 0.08 : 0;
+  p.boxB(burned ? "carBurned" : "chrome", 0, baseY - 0.02, halfL + 0.06, W + 0.04, 0.20, 0.14, { rz: frontBumpTilt });
+  p.boxB(burned ? "carBurned" : "chrome", 0, baseY - 0.02, -halfL - 0.06, W + 0.04, 0.20, 0.14);
+  // شبك المبرد الأمامي (Grille)
+  p.boxB("plastic", 0, baseY + 0.22, halfL + 0.01, W * 0.52, 0.26, 0.04);
+  for (let gy = 0; gy < 3; gy++) {
+    p.boxB(burned ? "metal" : "chrome", 0, baseY + 0.25 + gy * 0.075, halfL + 0.025, W * 0.48, 0.025, 0.03);
+  }
+  // المصابيح الأمامية والخلفية
+  for (const side of [-1, 1] as const) {
+    const lx = side * (halfW - 0.26);
+    p.boxB(burned ? "glassDark" : "lampGlow", lx, baseY + 0.28, halfL + 0.015, 0.28, 0.15, 0.04);
+    p.boxB(burned ? "plastic" : "medRed", lx, baseY + 0.28, -halfL - 0.015, 0.30, 0.14, 0.04);
+  }
+  // أنبوب العادم الخلفي
+  p.cyl("metal", -halfW + 0.35, baseY - 0.04, -halfL - 0.08, 0.035, 0.035, 0.28, { rx: Math.PI / 2, seg: 8 });
+
+  if (isVan) {
+    // ── مقصورة الفان / سيارة الإسعاف (بهيكل كبسولة أمامية ومقاعد وصندوق خلفي سليم بنيوياً) ──
+    // غطاء المحرك الأمامي القصير المائل قليلاً
+    p.boxB(bodyBucket, 0, beltY, halfL - 0.36, W - 0.06, 0.14, 0.70);
+    // التابلوه ومقعدا السائق والراكب في الكابينة الأمامية
+    p.boxB("plastic", 0, beltY - 0.02, halfL - 0.82, W - 0.24, 0.24, 0.28);
+    p.boxB("fabric", -0.46, beltY - 0.16, halfL - 1.18, 0.44, 0.12, 0.44);
+    p.boxB("fabric", -0.46, beltY - 0.04, halfL - 1.36, 0.42, 0.44, 0.10);
+    p.boxB("fabric", 0.46, beltY - 0.16, halfL - 1.18, 0.44, 0.12, 0.44);
+    p.boxB("fabric", 0.46, beltY - 0.04, halfL - 1.36, 0.42, 0.44, 0.10);
+
+    // أعمدة الكابينة الأمامية والزجاج الأمامي والنوافذ الجانبية
+    const cabTopH = 1.06;
+    const colX = halfW - 0.08;
+    p.boxB(bodyBucket, -colX, beltY, halfL - 0.78, 0.10, cabTopH, 0.12);
+    p.boxB(bodyBucket, colX, beltY, halfL - 0.78, 0.10, cabTopH, 0.12);
+    p.boxB(bodyBucket, -colX, beltY, halfL - 1.56, 0.12, cabTopH, 0.14);
+    p.boxB(bodyBucket, colX, beltY, halfL - 1.56, 0.12, cabTopH, 0.14);
+    p.boxB("glassDark", 0, beltY + 0.08, halfL - 0.76, W - 0.28, cabTopH - 0.16, 0.04);
+    p.boxB("glassDark", -(colX - 0.01), beltY + 0.08, halfL - 1.17, 0.03, cabTopH - 0.20, 0.64);
+    p.boxB("glassDark", colX - 0.01, beltY + 0.08, halfL - 1.17, 0.03, cabTopH - 0.20, 0.64);
+
+    // صندوق الفان/الإسعاف الخلفي (يمتد من خلف الكابينة حتى المؤخرة دون أي تداخل)
+    const boxZ1 = -halfL + 0.04;
+    const boxZ2 = halfL - 1.62;
+    const boxLen = boxZ2 - boxZ1;
+    const boxCenterZ = (boxZ1 + boxZ2) / 2;
+    p.boxB(bodyBucket, 0, beltY, boxCenterZ, W - 0.04, cabTopH, boxLen);
+    // السقف الموحد على طول الفان
+    p.boxB(bodyBucket, 0, beltY + cabTopH, -0.36, W - 0.08, 0.08, L - 0.80);
+    // نافذتا البابين الخلفيين ومفصلاتهما
+    p.boxB("glassDark", -0.42, beltY + 0.34, boxZ1 - 0.01, 0.58, 0.46, 0.03);
+    p.boxB("glassDark", 0.42, beltY + 0.34, boxZ1 - 0.01, 0.58, 0.46, 0.03);
+    p.boxB("chrome", -0.08, beltY + 0.12, boxZ1 - 0.015, 0.03, 0.16, 0.02);
+    p.boxB("chrome", 0.08, beltY + 0.12, boxZ1 - 0.015, 0.03, 0.16, 0.02);
+
+    // مرايا الفان الجانبية
+    for (const side of [-1, 1] as const) {
+      p.boxB("plastic", side * (halfW + 0.06), beltY + 0.18, halfL - 0.86, 0.12, 0.22, 0.08);
+    }
+
+    if (variant === "ambulance") {
+      // شريط الإسعاف الأحمر الجانبي + شارات الطوارئ + منارة الطوارئ السقفية
+      p.boxB("medRed", -(halfW + 0.008), baseY + 0.36, -0.2, 0.02, 0.24, L * 0.72);
+      p.boxB("medRed", halfW + 0.008, baseY + 0.36, -0.2, 0.02, 0.24, L * 0.72);
+      p.boxB("medRed", -(halfW - 0.005), beltY + 0.36, boxCenterZ, 0.02, 0.48, 0.14);
+      p.boxB("medRed", -(halfW - 0.005), beltY + 0.53, boxCenterZ, 0.02, 0.14, 0.48);
+      p.boxB("medRed", halfW - 0.005, beltY + 0.36, boxCenterZ, 0.02, 0.48, 0.14);
+      p.boxB("medRed", halfW - 0.005, beltY + 0.53, boxCenterZ, 0.02, 0.14, 0.48);
+      p.boxB("white", 0, beltY + cabTopH + 0.08, 0.8, 1.12, 0.10, 0.32);
+      p.boxB("redEmissive", -0.36, beltY + cabTopH + 0.10, 0.8, 0.34, 0.12, 0.28);
+      p.boxB("redEmissive", 0.36, beltY + cabTopH + 0.10, 0.8, 0.34, 0.12, 0.28);
+    }
   } else {
-    p.boxB(bodyBucket, 0, wheelR * 0.55 + 0.55, 0.6, W - 0.15, 0.32, L * 0.32); // غطاء محرك منخفض
-    // كابينة
-    p.boxB(bodyBucket, 0, wheelR * 0.55 + 0.55, -0.45, W - 0.14, 0.62, L * 0.42);
-    // زجاج أمامي/خلفي وجوانب
-    p.boxB("glassDark", 0, wheelR * 0.55 + 0.95, -0.45 + L * 0.21, W - 0.2, 0.44, 0.06, { rx: -0.28 });
-    p.boxB("glassDark", 0, wheelR * 0.55 + 0.95, -0.45 - L * 0.21, W - 0.2, 0.4, 0.06, { rx: 0.32 });
-    p.boxB("glassDark", -(W - 0.12) / 2, wheelR * 0.55 + 0.92, -0.45, 0.05, 0.4, L * 0.36);
-    p.boxB("glassDark", (W - 0.12) / 2, wheelR * 0.55 + 0.92, -0.45, 0.05, 0.4, L * 0.36);
-    // سقف
-    p.boxB(bodyBucket, 0, wheelR * 0.55 + 1.18, -0.45, W - 0.12, 0.07, L * 0.4);
-  }
-  // شرطة: شريط أبيض + منارة؛ إسعاف: شريط أحمر
-  if (variant === "police") {
-    p.boxB("white", 0, wheelR * 0.55 + 0.62, 0, W + 0.02, 0.22, L * 0.55);
-    p.boxB("redEmissive", -0.32, wheelR * 0.55 + 1.28, -0.45, 0.4, 0.12, 0.3);
-    p.boxB("screenGlowAmber", 0.32, wheelR * 0.55 + 1.28, -0.45, 0.4, 0.12, 0.3);
-  }
-  if (variant === "ambulance") {
-    p.boxB("medRed", 0, wheelR * 0.55 + 0.62, 0, W + 0.02, 0.3, L * 0.7);
-    p.boxB("white", 0, wheelR * 0.55 + 1.28, -0.15, 0.8, 0.12, 0.5);
-  }
-  if (variant === "taxi") p.boxB("white", 0, wheelR * 0.55 + 1.24, -0.45, 0.9, 0.14, 0.4);
+    // ── سيارة سيدان / شرطة / تاكسي / حطام محترق (Wreck) ──
+    const hoodZ1 = 0.72;
+    const hoodZ2 = halfL - 0.04;
+    const hoodLen = hoodZ2 - hoodZ1;
+    const hoodCenterZ = (hoodZ1 + hoodZ2) / 2;
+    const trunkZ1 = -halfL + 0.04;
+    const trunkZ2 = -0.92;
+    const trunkLen = trunkZ2 - trunkZ1;
+    const trunkCenterZ = (trunkZ1 + trunkZ2) / 2;
 
-  // مصدّات + مصابيح
-  p.boxB(burned ? "carBurned" : "chrome", 0, 0.34, L / 2 - 0.05, W - 0.1, 0.22, 0.14);
-  p.boxB(burned ? "carBurned" : "chrome", 0, 0.34, -L / 2 + 0.05, W - 0.1, 0.22, 0.14);
-  if (!burned) {
-    p.boxB("lampGlow", -(W / 2 - 0.3), 0.78, L / 2 - 0.02, 0.24, 0.12, 0.06);
-    p.boxB("lampGlow", W / 2 - 0.3, 0.78, L / 2 - 0.02, 0.24, 0.12, 0.06);
-    p.boxB("medRed", -(W / 2 - 0.28), 0.8, -L / 2 + 0.02, 0.2, 0.1, 0.05);
-    p.boxB("medRed", W / 2 - 0.28, 0.8, -L / 2 + 0.02, 0.2, 0.1, 0.05);
+    if (burned) {
+      // 1) حوض المحرك الثلاثي الأبعاد المكشوف تحت الغطاء المخلوع (متصل بالشاسيه ولا يطفو أبداً)
+      p.boxB("plastic", 0, beltY - 0.04, hoodCenterZ, W - 0.20, 0.05, hoodLen - 0.04);
+      // الجدران الجانبية لحوض المحرك (Inner Fender Aprons)
+      p.boxB("carBurned", -(halfW - 0.12), beltY, hoodCenterZ, 0.08, 0.18, hoodLen - 0.08);
+      p.boxB("carBurned", halfW - 0.12, beltY, hoodCenterZ, 0.08, 0.18, hoodLen - 0.08);
+      // كتلة المحرك الأسطوانية ورأس السلندر وغطاء الصمامات وفلتر الهواء
+      p.boxB("metal", 0, beltY + 0.01, 1.38, 0.58, 0.26, 0.66);
+      p.boxB("chrome", 0, beltY + 0.27, 1.38, 0.44, 0.08, 0.58);
+      p.cyl("plastic", 0.06, beltY + 0.38, 1.34, 0.19, 0.19, 0.08, { seg: 10 });
+      // المبرد الأمامي (Radiator) والبطارية وخراطيم التبريد
+      p.boxB("labMetal", 0, beltY + 0.01, hoodZ2 - 0.14, W - 0.48, 0.28, 0.10);
+      p.boxB("carBurned", -0.50, beltY + 0.01, 1.54, 0.26, 0.20, 0.32);
+      p.cyl("metal", 0.20, beltY + 0.20, 1.68, 0.035, 0.035, 0.50, { rx: Math.PI / 2, rz: 0.28, seg: 8 });
+      // مفصلتا غطاء المحرك الخلفيتان + قضيب تثبيت الغطاء المائل (متصلة فعلياً بالحوض والغطاء)
+      p.boxB("metal", -0.62, beltY + 0.01, hoodZ1 + 0.08, 0.05, 0.10, 0.08);
+      p.boxB("metal", 0.62, beltY + 0.01, hoodZ1 + 0.08, 0.05, 0.10, 0.08);
+      p.cyl("metal", -0.58, beltY + 0.20, hoodZ2 - 0.24, 0.018, 0.018, 0.38, { rx: -0.15, seg: 6 });
+      // غطاء المحرك المنفرج للأعلى من عند مفصلات الزجاج الأمامي (يرتكز خلفياً على المفصلات وأمامياً على القضيب)
+      p.boxB("carBurned", 0, beltY + 0.19, hoodCenterZ, W - 0.12, 0.045, hoodLen - 0.04, {
+        rx: -0.22,
+        rz: (rnd() - 0.5) * 0.06,
+      });
+    } else {
+      // غطاء محرك سليم مع خط انسيابي أوسط
+      p.boxB(bodyBucket, 0, beltY, hoodCenterZ, W - 0.08, 0.09, hoodLen);
+      p.boxB(bodyBucket, 0, beltY + 0.09, hoodCenterZ, W * 0.52, 0.03, hoodLen - 0.12);
+    }
+
+    // صندوق الأمتعة الخلفي (في بعض السيارات المحترقة ينفتح قليلاً مع مفصلات داخلية متصلة)
+    if (burned && rnd() < 0.5) {
+      p.boxB("plastic", 0, beltY - 0.03, trunkCenterZ, W - 0.20, 0.04, trunkLen - 0.06);
+      p.boxB("metal", -0.52, beltY + 0.01, trunkZ2 - 0.06, 0.04, 0.09, 0.06);
+      p.boxB("metal", 0.52, beltY + 0.01, trunkZ2 - 0.06, 0.04, 0.09, 0.06);
+      p.boxB(bodyBucket, 0, beltY + 0.11, trunkCenterZ, W - 0.10, 0.05, trunkLen - 0.04, { rx: 0.18 });
+    } else {
+      p.boxB(bodyBucket, 0, beltY, trunkCenterZ, W - 0.08, 0.10, trunkLen);
+    }
+
+    // 2) المقصورة الداخلية (لوحة القيادة، المقود، والمقاعد الأمامية والخلفية)
+    p.boxB("plastic", 0, beltY - 0.02, 0.56, W - 0.24, 0.24, 0.32); // التابلوه الأمامي
+    p.cyl("metal", -0.38, beltY + 0.14, 0.38, 0.025, 0.025, 0.22, { rx: 0.95, seg: 6 }); // عمود المقود
+    p.cyl("plastic", -0.38, beltY + 0.20, 0.28, 0.15, 0.15, 0.03, { rx: 0.95, seg: 10 }); // عجلة القيادة
+    for (const sx of [-0.40, 0.40]) {
+      p.boxB(burned ? "carBurned" : "fabric", sx, beltY - 0.18, 0.06, 0.44, 0.12, 0.46);
+      p.boxB(burned ? "carBurned" : "fabric", sx, beltY - 0.06, -0.14, 0.42, 0.42, 0.10, { rx: -0.12 });
+    }
+    p.boxB(burned ? "carBurned" : "fabric", 0, beltY - 0.06, -0.68, W - 0.32, 0.38, 0.24);
+
+    // 3) أعمدة السقف الستة (A, B, C Pillars) والسقف العلوي — متصلة بدقة رياضية عند الحواف
+    const roofH = 0.54;
+    const roofY = beltY + roofH;
+    const colX = halfW - 0.11;
+    // أعمدة A الأمامية المائلة (القاعدة عند z=0.72 والقمة تلتقي بحافة السقف عند z=0.54)
+    p.boxB(bodyBucket, -colX, beltY - 0.01, 0.63, 0.09, roofH + 0.05, 0.10, { rx: -0.34 });
+    p.boxB(bodyBucket, colX, beltY - 0.01, 0.63, 0.09, roofH + 0.05, 0.10, { rx: -0.34 });
+    // أعمدة B الوسطى الرأسية
+    p.boxB(bodyBucket, -colX, beltY, -0.10, 0.10, roofH + 0.02, 0.12);
+    p.boxB(bodyBucket, colX, beltY, -0.10, 0.10, roofH + 0.02, 0.12);
+    // أعمدة C الخلفية المائلة (القاعدة عند z=-0.92 والقمة تلتقي بحافة السقف عند z=-0.74)
+    p.boxB(bodyBucket, -colX, beltY - 0.01, -0.83, 0.11, roofH + 0.05, 0.13, { rx: 0.34 });
+    p.boxB(bodyBucket, colX, beltY - 0.01, -0.83, 0.11, roofH + 0.05, 0.13, { rx: 0.34 });
+    // لوح السقف العلوي (يمتد من z=-0.76 إلى z=+0.56 ليغطي قمم الأعمدة الستة بإحكام)
+    p.boxB(bodyBucket, 0, roofY, -0.10, W - 0.18, 0.07, 1.32);
+
+    // 4) الزجاج الأمامي والخلفي والجانبي (في السيارات المدمرة يكون الزجاج مهشماً مع بقايا حواف زجاجية متصلة بالإطار)
+    if (!burned) {
+      p.boxB("glassDark", 0, beltY + 0.02, 0.63, W - 0.30, roofH - 0.02, 0.035, { rx: -0.34 });
+      p.boxB("glassDark", 0, beltY + 0.02, -0.83, W - 0.30, roofH - 0.02, 0.035, { rx: 0.34 });
+      p.boxB("glassDark", -(colX - 0.01), beltY + 0.03, 0.22, 0.03, roofH - 0.06, 0.54);
+      p.boxB("glassDark", colX - 0.01, beltY + 0.03, 0.22, 0.03, roofH - 0.06, 0.54);
+      p.boxB("glassDark", -(colX - 0.01), beltY + 0.03, -0.44, 0.03, roofH - 0.06, 0.54);
+      p.boxB("glassDark", colX - 0.01, beltY + 0.03, -0.44, 0.03, roofH - 0.06, 0.54);
+    } else {
+      // شظايا زجاج سفلية متبقية ومرتكزة مباشرة على حافة الإطار السفلي للزجاج الأمامي والخلفي
+      p.boxB("glassWindow", -0.30, beltY + 0.01, 0.70, 0.46, 0.11, 0.03, { rx: -0.34 });
+      p.boxB("glassWindow", 0.26, beltY + 0.01, -0.90, 0.42, 0.10, 0.03, { rx: 0.34 });
+    }
+
+    // المرايا الجانبية المتصلة بالأبواب ومقابض الأبواب ولوحتا الأرقام
+    for (const side of [-1, 1] as const) {
+      p.boxB(bodyBucket, side * (halfW + 0.04), beltY + 0.03, 0.46, 0.12, 0.08, 0.08);
+      p.boxB("chrome", side * (halfW + 0.01), beltY - 0.10, 0.06, 0.02, 0.035, 0.14);
+      p.boxB("chrome", side * (halfW + 0.01), beltY - 0.10, -0.52, 0.02, 0.035, 0.14);
+    }
+    p.boxB("white", 0, baseY + 0.02, halfL + 0.135, 0.36, 0.11, 0.015);
+    p.boxB("white", 0, baseY + 0.02, -halfL - 0.135, 0.36, 0.11, 0.015);
+
+    // إضافات سيارات الشرطة والتاكسي
+    if (variant === "police") {
+      p.boxB("white", -(halfW + 0.008), baseY + 0.26, -0.05, 0.02, 0.26, 1.55);
+      p.boxB("white", halfW + 0.008, baseY + 0.26, -0.05, 0.02, 0.26, 1.55);
+      p.boxB("chrome", 0, roofY + 0.07, -0.05, 1.08, 0.04, 0.22);
+      p.boxB("redEmissive", -0.30, roofY + 0.11, -0.05, 0.42, 0.09, 0.20);
+      p.boxB("screenGlowAmber", 0.30, roofY + 0.11, -0.05, 0.42, 0.09, 0.20);
+    } else if (variant === "taxi") {
+      p.boxB("screenGlowAmber", 0, roofY + 0.07, -0.05, 0.72, 0.16, 0.28);
+    }
   }
-  // عجلات (المركبات المحترقة قد تفقد عجلة)
-  for (const [wx, wz] of [[-W / 2 + 0.1, L * 0.31], [W / 2 - 0.1, L * 0.31], [-W / 2 + 0.1, -L * 0.31], [W / 2 - 0.1, -L * 0.31]] as const) {
-    if (burned && rnd() < 0.2) continue;
-    p.cyl("rubber", wx, wheelR, wz, wheelR, wheelR, 0.24, { rx: Math.PI / 2, seg: 10 });
-    p.cyl("chrome", wx + (wx > 0 ? 0.13 : -0.13), wheelR, wz, 0.12, 0.12, 0.03, { rx: Math.PI / 2, seg: 8 });
-  }
-  // محترقة: غطاء محرك مفتوح + انهيار سقف
-  if (burned) {
-    p.boxB("carBurned", 0.6, wheelR * 0.55 + 1.0, 0.95, W - 0.5, 0.05, L * 0.3, { rz: 0.9, rx: -0.3 });
-    if (rnd() < 0.5) p.boxB("rubble", 0, wheelR * 0.55 + 1.24, -0.45, W - 0.2, 0.1, L * 0.35, { ry: 0.1 });
-  }
-  p.hit(0, 0, W + 0.7, L + 0.6);
+
+  p.hit(0, 0, W + 0.55, L + 0.5);
 }
 
-/** حافلة محترقة تسد الشارع */
+/** حافلة ركاب محترقة ومهشمة تسد الشارع الرئيسي — مبنية بهيكل وأعمدة نوافذ ومقاعد داخلية دون أي تداخل */
 export function busWreck(w: PropCtx, x: number, z: number, ry = 0) {
   const p = new PB(w).group(x, 0, z, ry);
-  p.boxB("carBurned", 0, 0.75, 0, 2.5, 1.7, 9.5);
-  p.boxB("glassDark", 0, 2.25, 0, 2.4, 0.9, 8.6);
-  p.boxB("carBurned", 0, 2.62, 0, 2.5, 0.12, 9.3);
-  for (const [wx, wz] of [[-1.2, 3.1], [1.2, 3.1], [-1.2, -3.1], [1.2, -3.1]] as const) {
-    p.cyl("rubber", wx, 0.52, wz, 0.52, 0.52, 0.3, { rx: Math.PI / 2 });
+  const W = 2.54;
+  const L = 9.6;
+  const wheelR = 0.48;
+  const baseY = 0.36;
+  const beltY = 1.38;
+  const roofY = 2.48;
+
+  // 1) الشاسيه الفولاذي السفلي وأقواس العجلات الست
+  p.boxB("metal", 0, baseY, 0, W - 0.56, 0.96, L - 0.2);
+  p.boxB("carBurned", 0, baseY, 4.15, W, 1.02, 1.25);  // المقدمة أمام العجلات الأمامية
+  p.boxB("carBurned", 0, baseY, 0.45, W, 1.02, 4.70);  // الوسط بين العجلات الأمامية والخلفية
+  p.boxB("carBurned", 0, baseY, -4.25, W, 1.02, 1.05); // المؤخرة خلف العجلات الخلفية
+  // الرفارف العلوية فوق العجلات
+  p.boxB("carBurned", 0, baseY + 0.68, 3.10, W, 0.34, 0.90);
+  p.boxB("carBurned", 0, baseY + 0.68, -2.80, W, 0.34, 1.90);
+
+  // العجلات الست والمحاور
+  for (const wz of [3.10, -2.25, -3.35]) {
+    p.cyl("metal", 0, wheelR, wz, 0.06, 0.06, W - 0.3, { rz: Math.PI / 2, seg: 8 });
+    for (const side of [-1, 1] as const) {
+      p.cyl("rubber", side * (W / 2 - 0.15), wheelR, wz, wheelR, wheelR, 0.30, { rz: Math.PI / 2, seg: 12 });
+      p.cyl("chrome", side * (W / 2 - 0.13), wheelR, wz, 0.24, 0.24, 0.31, { rz: Math.PI / 2, seg: 10 });
+    }
   }
-  p.boxB("rubble", 0, 0.1, 4.9, 2.6, 0.5, 1.4);
-  p.hit(0, 0, 3.2, 10.4);
+
+  // 2) الأرضية الداخلية وصفوف مقاعد الركاب المحترقة
+  p.boxB("plastic", 0, beltY - 0.18, 0, W - 0.16, 0.10, L - 0.24);
+  for (let sz = -3.4; sz <= 2.6; sz += 1.2) {
+    p.boxB("carBurned", -0.78, beltY - 0.08, sz, 0.68, 0.48, 0.46);
+    p.boxB("carBurned", 0.78, beltY - 0.08, sz, 0.68, 0.48, 0.46);
+  }
+
+  // 3) أعمدة نوافذ الحافلة والواجهة الأمامية والخلفية والسقف
+  p.boxB("carBurned", 0, beltY, -L / 2 + 0.08, W - 0.04, roofY - beltY, 0.14); // الجدار الخلفي
+  p.boxB("carBurned", -0.82, beltY, L / 2 - 0.08, 0.86, roofY - beltY, 0.12);
+  p.boxB("carBurned", 0.82, beltY, L / 2 - 0.08, 0.86, roofY - beltY, 0.12);
+  p.boxB("glassDark", 0, beltY + 0.06, L / 2 - 0.06, W - 0.36, roofY - beltY - 0.22, 0.04);
+  for (let pz = -4.5; pz <= 4.5; pz += 1.5) {
+    p.boxB("carBurned", -(W / 2 - 0.06), beltY, pz, 0.10, roofY - beltY, 0.16);
+    p.boxB("carBurned", W / 2 - 0.06, beltY, pz, 0.10, roofY - beltY, 0.16);
+  }
+  // لوح السقف العلوي ووحدتا التكييف المركزيتان
+  p.boxB("carBurned", 0, roofY, 0, W - 0.02, 0.14, L - 0.08);
+  p.boxB("metal", 0, roofY + 0.14, 1.8, 1.45, 0.24, 1.8);
+  p.boxB("metal", 0, roofY + 0.14, -1.8, 1.45, 0.24, 1.8);
+  // مصدات أمامية وخلفية ثقيلة
+  p.boxB("chrome", 0, 0.32, L / 2 + 0.08, W + 0.06, 0.26, 0.18);
+  p.boxB("chrome", 0, 0.32, -L / 2 - 0.08, W + 0.06, 0.26, 0.18);
+
+  p.hit(0, 0, 3.1, 10.2);
 }
 
 // ═══════════════ دعائم الشارع ═══════════════
@@ -1039,20 +1295,205 @@ export function wallPipes(w: PropCtx, x: number, y: number, z: number, ry = 0, l
   p.cyl("metal", 0, -0.35, 0.3, 0.03, 0.03, 0.3);
 }
 
-/** جثة مغطاة بملاءة — أشمل من الجثث العارية */
+/**
+ * جثة بشرية مفصلية كاملة (حوض، جذع، أضلاع، جمجمة، فك، عضد، ساعد، كف، فخذ، ساق، وحذاء)
+ * مبنية بنفس التشريح المفصلي للوحوش، مع حساب رياضي دقيق للمفاصل (Forward Kinematics) لمنع أي انفصال أو تداخل.
+ */
 export function coveredBody(w: PropCtx, x: number, z: number, ry = 0) {
   const p = new PB(w).group(x, 0, z, ry);
-  p.sph("sheet", 0, 0.17, 0, 0.34, { sx: 1.7, sy: 1, sz: 1 });
-  p.sph("sheet", 0.55, 0.15, 0.05, 0.24, { sy: 0.85 });
-  p.boxB("sheet", -0.6, 0.06, 0.12, 0.5, 0.1, 0.2, { ry: 0.3 });
-  p.boxB("sheet", -0.35, 0.05, -0.2, 0.45, 0.1, 0.2, { ry: -0.4 });
+  const seed = Math.abs(Math.floor(x * 73 + z * 37 + ry * 100)) || 13;
+  const rnd = seededRandom(seed);
+  const shirts = ["fabric", "fabric2", "greenMetal", "carBurned"] as const;
+  const shirt = shirts[seed % shirts.length];
+  const pants = seed % 2 === 0 ? "plastic" : "fabric";
+
+  // 1) الحوض والبطن والقفص الصدري (مرتكزة بالكامل على الأرض y=0.02 بدون أي طيران أو غوص)
+  p.boxB(pants, 0, 0.02, -0.12, 0.34, 0.19, 0.24);
+  p.boxB("corpseSkin", 0, 0.03, 0.06, 0.31, 0.16, 0.18);
+  p.boxB(shirt, 0, 0.02, 0.36, 0.42, 0.22, 0.48);
+
+  // جرح صدري غائر وأضلاع عظمية بارزة على سطح الصدر مباشرة (y=0.24) كما لدى الوحوش
+  p.boxB("medRed", 0.05, 0.24, 0.35, 0.16, 0.022, 0.22);
+  for (let i = 0; i < 3; i++) {
+    p.boxB("bone", 0.02, 0.255, 0.26 + i * 0.085, 0.24 - i * 0.02, 0.022, 0.024);
+  }
+
+  // 2) الرقبة والجمجمة والفك والأسنان والشعر — مرتبطة بمفصل الرقبة (z=0.62)
+  const headYaw = (rnd() - 0.5) * 0.45;
+  const hs = Math.sin(headYaw);
+  const hc = Math.cos(headYaw);
+  p.boxB("corpseSkin", 0, 0.05, 0.62, 0.12, 0.12, 0.12);
+  p.boxB("corpseSkin", hs * 0.14, 0.02, 0.62 + hc * 0.14, 0.22, 0.21, 0.24, { ry: headYaw });
+  p.boxB("corpseSkin", hs * 0.04, 0.02, 0.62 + hc * 0.04, 0.16, 0.09, 0.14, { ry: headYaw }); // الفك
+  p.boxB("bone", hs * 0.06, 0.09, 0.62 + hc * 0.06, 0.12, 0.025, 0.03, { ry: headYaw });      // الأسنان
+  p.boxB("trunk", hs * 0.16, 0.16, 0.62 + hc * 0.16, 0.23, 0.08, 0.23, { ry: headYaw });      // الشعر
+
+  // 3) الذراع اليسرى المفصلية (كتف -> عضد -> مرفق -> ساعد -> كف)
+  const shLX = -0.24, shLZ = 0.50;
+  const aL1 = 0.42 + rnd() * 0.35; // زاوية العضد الأيسر
+  const uLen = 0.28, fLen = 0.26;
+  const elLX = shLX - Math.sin(aL1) * uLen;
+  const elLZ = shLZ + Math.cos(aL1) * uLen;
+  p.boxB(shirt, (shLX + elLX) / 2, 0.03, (shLZ + elLZ) / 2, 0.11, 0.11, uLen + 0.03, { ry: aL1 });
+  const aL2 = aL1 - (0.35 + rnd() * 0.35); // انثناء المرفق الأيسر
+  const wrLX = elLX - Math.sin(aL2) * fLen;
+  const wrLZ = elLZ + Math.cos(aL2) * fLen;
+  p.boxB("corpseSkin", (elLX + wrLX) / 2, 0.02, (elLZ + wrLZ) / 2, 0.09, 0.09, fLen + 0.02, { ry: aL2 });
+  p.boxB("corpseSkin", wrLX - Math.sin(aL2) * 0.05, 0.02, wrLZ + Math.cos(aL2) * 0.05, 0.09, 0.05, 0.12, { ry: aL2 });
+
+  // 4) الذراع اليمنى المفصلية (كتف -> عضد -> مرفق -> ساعد -> كف)
+  const shRX = 0.24, shRZ = 0.50;
+  const aR1 = -(0.38 + rnd() * 0.42);
+  const elRX = shRX - Math.sin(aR1) * uLen;
+  const elRZ = shRZ + Math.cos(aR1) * uLen;
+  p.boxB(shirt, (shRX + elRX) / 2, 0.03, (shRZ + elRZ) / 2, 0.11, 0.11, uLen + 0.03, { ry: aR1 });
+  const aR2 = aR1 + (0.30 + rnd() * 0.45);
+  const wrRX = elRX - Math.sin(aR2) * fLen;
+  const wrRZ = elRZ + Math.cos(aR2) * fLen;
+  p.boxB("corpseSkin", (elRX + wrRX) / 2, 0.02, (elRZ + wrRZ) / 2, 0.09, 0.09, fLen + 0.02, { ry: aR2 });
+  p.boxB("corpseSkin", wrRX - Math.sin(aR2) * 0.05, 0.02, wrRZ + Math.cos(aR2) * 0.05, 0.09, 0.05, 0.12, { ry: aR2 });
+
+  // 5) الساق اليسرى المفصلية (ورك -> فخذ -> ركبة -> ساق -> حذاء)
+  const hipLX = -0.11, hipLZ = -0.22;
+  const thLen = 0.40, shLen = 0.38;
+  const lL1 = -(0.14 + rnd() * 0.18);
+  const knLX = hipLX + Math.sin(lL1) * thLen;
+  const knLZ = hipLZ - Math.cos(lL1) * thLen;
+  p.boxB(pants, (hipLX + knLX) / 2, 0.02, (hipLZ + knLZ) / 2, 0.15, 0.15, thLen + 0.03, { ry: lL1 });
+  const lL2 = lL1 + (0.18 + rnd() * 0.25);
+  const anLX = knLX + Math.sin(lL2) * shLen;
+  const anLZ = knLZ - Math.cos(lL2) * shLen;
+  p.boxB(pants, (knLX + anLX) / 2, 0.02, (knLZ + anLZ) / 2, 0.12, 0.12, shLen + 0.02, { ry: lL2 });
+  p.boxB("rubber", anLX + Math.sin(lL2) * 0.05, 0.01, anLZ - Math.cos(lL2) * 0.05, 0.12, 0.18, 0.11, { ry: lL2 });
+
+  // 6) الساق اليمنى المفصلية (ورك -> فخذ -> ركبة -> ساق -> حذاء)
+  const hipRX = 0.11, hipRZ = -0.22;
+  const lR1 = 0.16 + rnd() * 0.22;
+  const knRX = hipRX + Math.sin(lR1) * thLen;
+  const knRZ = hipRZ - Math.cos(lR1) * thLen;
+  p.boxB(pants, (hipRX + knRX) / 2, 0.02, (hipRZ + knRZ) / 2, 0.15, 0.15, thLen + 0.03, { ry: lR1 });
+  const lR2 = lR1 - (0.22 + rnd() * 0.30);
+  const anRX = knRX + Math.sin(lR2) * shLen;
+  const anRZ = knRZ - Math.cos(lR2) * shLen;
+  p.boxB(pants, (knRX + anRX) / 2, 0.02, (knRZ + anRZ) / 2, 0.12, 0.12, shLen + 0.02, { ry: lR2 });
+  p.boxB("rubber", anRX + Math.sin(lR2) * 0.05, 0.01, anRZ - Math.cos(lR2) * 0.05, 0.12, 0.18, 0.11, { ry: lR2 });
 }
 
-/** كيس جثث */
+/** جثة بشرية مفصلية كاملة فوق مفرش إخلاء طبي ممزق */
 export function bodyBag(w: PropCtx, x: number, z: number, ry = 0) {
   const p = new PB(w).group(x, 0, z, ry);
-  p.sph("plastic", 0, 0.16, 0, 0.32, { sx: 1.8, sy: 0.95, sz: 1 });
-  p.boxB("chrome", 0, 0.1, 0.3, 0.3, 0.02, 0.06);
+  // مفرش الإخلاء البلاستيكي الأسود تحت الجثة مع سحاب معدني مفتوح
+  p.boxB("plastic", 0, 0.005, -0.05, 0.78, 0.015, 1.96, { ry: 0.04 });
+  p.boxB("chrome", 0.26, 0.02, 0.15, 0.03, 0.015, 0.95, { ry: 0.12 });
+  // الجسد المفصلي الحقيقي الكامل فوق المفرش
+  coveredBody(w, x, z, ry);
+}
+
+/**
+ * حاجز حطام شارع ضخم وواقعي يسد الطريق (مرتكز فيزيائياً على الأرض y=0 دون أي مكعبات طائرة أو متداخلة):
+ * يضم حواجز نيوجيرسي خرسانية مدرجة، كتل وأعمدة خرسانية مسلحة منهارة مع قضبان تسليح حديدية بارزة،
+ * أكياس رمل عسكرية، براميل وقود، إطارات مخلوعة، وحواجز تحذير مخططة.
+ */
+export function streetDebrisBarricade(w: PropCtx, x: number, z: number, ry = 0, seed = 1) {
+  const p = new PB(w).group(x, 0, z, ry);
+  const rnd = seededRandom(Math.abs(Math.floor(seed * 9973)) || 19);
+
+  // 1) ثلاث قواعد ركام أسفلتي وخرساني عريضة ومستقرة مباشرة على سطح الطريق (y=0)
+  p.boxB("rubble", -2.4, 0, 0.1, 3.2, 0.26, 2.8, { ry: 0.08 });
+  p.boxB("rubble", 0.1, 0, -0.2, 3.6, 0.32, 3.2, { ry: -0.06 });
+  p.boxB("rubble", 2.5, 0, 0.2, 3.0, 0.24, 2.6, { ry: 0.10 });
+
+  // 2) ثلاث حواجز نيوجيرسي خرسانية ثقيلة (Jersey Concrete Barriers) بتصميمها المدرج الحقيقي عبر عرض الشارع
+  for (const [jx, jz, jry] of [
+    [-2.75, 1.45, 0.12],
+    [0.0, 1.65, -0.05],
+    [2.75, 1.40, -0.14],
+  ] as const) {
+    // القاعدة العريضة + الجذع المتوسط + القمة + شريط التحذير + حلقتا الرفع الفولاذيتان
+    p.boxB("concrete", jx, 0, jz, 2.35, 0.28, 0.66, { ry: jry });
+    p.boxB("concrete", jx, 0.28, jz, 2.32, 0.52, 0.40, { ry: jry });
+    p.boxB("concrete", jx, 0.80, jz, 2.30, 0.26, 0.24, { ry: jry });
+    p.boxB("hazard", jx, 0.58, jz, 2.10, 0.16, 0.42, { ry: jry });
+    p.cyl("metal", jx - 0.75, 1.10, jz, 0.03, 0.03, 0.12, { seg: 6 });
+    p.cyl("metal", jx + 0.75, 1.10, jz, 0.03, 0.03, 0.12, { seg: 6 });
+  }
+
+  // 3) كتل وأعمدة خرسانية مسلحة منهارة مع قضبان حديد التسليح (Exposed Steel Rebar)
+  // كتلة جدار خرساني منهار في الوسط يرتكز على القاعدة الخرسانية
+  p.boxB("concrete", -0.3, 0.32, -0.2, 2.6, 0.95, 1.35, { ry: 0.15 });
+  p.boxB("brick", -1.9, 0.26, -0.4, 1.65, 0.72, 1.25, { ry: -0.22 });
+  p.boxB("concrete", 1.8, 0.24, -0.35, 1.9, 0.82, 1.30, { ry: 0.18 });
+
+  // عمود خرساني مسلح مكسور يرتكز بشكل مائل طبيعي على الكتلة الوسطى مع قضبان تسليح بارزة من طرفه المحطم
+  p.boxB("concrete", -0.8, 0.68, -0.15, 0.52, 0.48, 3.2, { ry: 0.28, rx: 0.16 });
+  for (const [rxOff, ryOff] of [[-0.14, 0.82], [0.14, 0.82], [-0.14, 1.02], [0.14, 1.02]] as const) {
+    p.cyl("metal", -0.8 + rxOff + 0.42, ryOff + 0.22, 1.48, 0.018, 0.018, 0.65, { rx: Math.PI / 2 - 0.16, rz: -0.28, seg: 6 });
+  }
+
+  // عمود خرساني ثانٍ مستقر على الأرض في الجهة الشرقية مع قضبان حديد تسليح
+  p.boxB("concrete", 1.65, 0.24, -1.25, 2.4, 0.46, 0.52, { ry: -0.20 });
+  for (const rzOff of [-0.14, 0.14]) {
+    p.cyl("metal", 2.95, 0.48, -1.25 + rzOff, 0.018, 0.018, 0.55, { rz: Math.PI / 2, seg: 6 });
+  }
+
+  // 4) عوارض فولاذية منهارة (I-Beams) وألواح خشبية وبراميل وإطارات سيارات
+  p.boxB("metal", 0.65, 1.27, -0.15, 0.24, 0.22, 2.8, { ry: -0.35, rx: -0.12 });
+  p.boxB("wood2", -2.2, 0.98, -0.35, 1.8, 0.08, 0.42, { ry: 0.32 });
+
+  // برميل عسكري قائم وبرميل محترق منقلب على جانبه يلامس الأرض
+  p.cyl("greenMetal", -3.35, 0.47, -0.85, 0.35, 0.35, 0.94, { seg: 12 });
+  p.cyl("carBurned", 3.15, 0.35, -0.65, 0.35, 0.35, 0.92, { rz: Math.PI / 2, ry: 0.4, seg: 12 });
+
+  // إطار سيارة مخلوع مستقر على الأرض أمام الحاجز + حاجز خشبي/معدني مخطط
+  p.cyl("rubber", -1.45, 0.12, 2.25, 0.34, 0.34, 0.24, { seg: 12 });
+  p.cyl("chrome", -1.45, 0.125, 2.25, 0.18, 0.18, 0.25, { seg: 10 });
+  p.boxB("hazard", 1.75, 0.52, 2.25, 1.65, 0.20, 0.06, { ry: -0.18 });
+  p.boxB("metal", 1.10, 0, 2.35, 0.06, 0.95, 0.36, { ry: -0.18 });
+  p.boxB("metal", 2.40, 0, 2.15, 0.06, 0.95, 0.36, { ry: -0.18 });
+
+  // 5) قطع طوب وحجارة خرسانية متناثرة على الأسفلت حول القاعدة (كلها عند y=0)
+  const scatterSpots: [number, number, number, number, number, string][] = [
+    [-3.6, 1.9, 0.45, 0.22, 0.38, "concrete"],
+    [-0.4, 2.35, 0.52, 0.18, 0.44, "rubble"],
+    [0.8, 2.4, 0.38, 0.16, 0.32, "brick"],
+    [3.5, 1.85, 0.48, 0.22, 0.40, "concrete"],
+    [-2.8, -1.75, 0.58, 0.24, 0.46, "rubble"],
+    [-0.2, -1.95, 0.64, 0.28, 0.52, "concrete"],
+    [1.2, -2.1, 0.42, 0.18, 0.36, "brick"],
+    [3.2, -1.8, 0.50, 0.20, 0.44, "rubble"],
+  ];
+  for (const [sx, sz, sw, sh, sd, bkt] of scatterSpots) {
+    p.boxB(bkt, sx, 0, sz, sw, sh, sd, { ry: rnd() * Math.PI });
+  }
+}
+
+/**
+ * كومة حطام شارع متوسطة/صغيرة قرب حوادث السيارات والأرصفة (سليمة بنيوياً ومرتكزة بالكامل على الأرض y=0):
+ * تضم كتلاً خرسانية متصدعة، طوباً متناثراً، إطار سيارة أو مصداً مخلوعاً، ومخروطاً/حاجزاً محطماً.
+ */
+export function streetRubbleCluster(w: PropCtx, x: number, z: number, ry = 0, seed = 1) {
+  const p = new PB(w).group(x, 0, z, ry);
+  const rnd = seededRandom(Math.abs(Math.floor(seed * 4099)) || 23);
+
+  // قاعدة إسفلت متصدع وكتل خرسانية وطوب على الأرض (y=0)
+  p.boxB("rubble", 0, 0, 0, 1.45, 0.14, 1.25, { ry: 0.2 });
+  p.boxB("concrete", -0.28, 0.12, -0.12, 0.68, 0.28, 0.54, { ry: 0.35 });
+  p.boxB("brick", 0.34, 0.10, 0.18, 0.48, 0.22, 0.38, { ry: -0.4 });
+  p.boxB("concrete", -0.52, 0, 0.42, 0.36, 0.16, 0.32, { ry: 0.8 });
+  p.boxB("brick", 0.58, 0, -0.34, 0.30, 0.14, 0.22, { ry: 0.5 });
+
+  // قضيب تسليح معدني أو لوح خشبي مكسور على الأرض
+  p.boxB("wood2", 0.12, 0.14, -0.42, 1.15, 0.05, 0.22, { ry: -0.25 });
+
+  if (rnd() < 0.55) {
+    // إطار سيارة مخلوع مستقر على الأرض
+    p.cyl("rubber", -0.42, 0.12, -0.35, 0.32, 0.32, 0.24, { seg: 12 });
+    p.cyl("chrome", -0.42, 0.125, -0.35, 0.17, 0.17, 0.25, { seg: 10 });
+  } else {
+    // مصد سيارة معدني مخلوع على الأرض
+    p.boxB("carBurned", -0.35, 0, 0.48, 1.35, 0.16, 0.18, { ry: 0.42 });
+  }
+  p.hit(0, 0, 1.4, 1.3);
 }
 
 // ═══════════════ تفاصيل معمارية حقيقية للمباني ═══════════════
@@ -1905,10 +2346,34 @@ export function pickupModel(data: Record<string, unknown> | undefined): THREE.Gr
   };
   const item = data?.item as string | undefined;
   const weapon = data?.weapon as string | undefined;
-  const docId = data?.docId as string | undefined;
   const qty = (data?.qty as number) ?? 1;
 
-  if (weapon === "pistol") {
+  if (weapon === "crowbar") {
+    const wood = stdMat({ color: 0x6b4c30, roughness: 0.86, metalness: 0.05 });
+    const bark = stdMat({ color: 0x47311d, roughness: 0.92, metalness: 0.04 });
+    const wrap = stdMat({ color: 0x9e927c, roughness: 0.95 });
+    const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.029, 0.78, 10), wood);
+    shaft.rotation.z = Math.PI / 2;
+    shaft.position.set(0, 0.035, 0);
+    add(shaft);
+    // مقبض ملفوف بالقماش وعقد خشبية واقعية
+    const grip = new THREE.Mesh(new THREE.CylinderGeometry(0.026, 0.028, 0.22, 10), wrap);
+    grip.rotation.z = Math.PI / 2;
+    grip.position.set(-0.18, 0.035, 0);
+    add(grip);
+    for (const kx of [-0.02, 0.14, 0.28]) {
+      const knot = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.025, 0.045, 8), bark);
+      knot.rotation.z = Math.PI / 2;
+      knot.position.set(kx, 0.036, 0);
+      add(knot);
+    }
+    const tip = new THREE.Mesh(new THREE.ConeGeometry(0.024, 0.08, 8), bark);
+    tip.rotation.z = -Math.PI / 2;
+    tip.position.set(0.42, 0.035, 0);
+    add(tip);
+    g.rotation.y = 0.35;
+    g.position.y = 0.02;
+  } else if (weapon === "pistol") {
     const dark = stdMat({ color: 0x2a2d31, roughness: 0.42, metalness: 0.75 });
     const grip = stdMat({ color: 0x191410, roughness: 0.85 });
     const slide = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.055, 0.24), dark);
