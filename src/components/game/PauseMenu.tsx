@@ -31,8 +31,8 @@ export default function PauseMenu() {
   const quitToMenu = () => getEngine()?.quitToMenu();
 
   return (
-    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 p-4 backdrop-blur-md">
-      <div className="kypris-panel kypris-hud-corner w-[min(480px,94vw)] rounded-md p-7">
+    <div className="fixed inset-0 z-40 flex items-center justify-center overflow-y-auto bg-black/70 p-4 backdrop-blur-md">
+      <div className="kypris-panel kypris-hud-corner max-h-[92vh] w-[min(560px,95vw)] overflow-y-auto rounded-md p-6">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-stone-800/80 pb-3.5">
           <div className="flex items-center gap-2.5">

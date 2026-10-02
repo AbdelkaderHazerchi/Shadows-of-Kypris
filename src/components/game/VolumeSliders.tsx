@@ -1,8 +1,10 @@
 "use client";
 
-import { Globe, Music, Speaker, Volume2 } from "lucide-react";
+import { Film, Globe, Music, Play, Speaker, Volume2 } from "lucide-react";
 import { audio } from "@/lib/game/audio";
 import { getContent } from "@/lib/game/content";
+import { CUTSCENE_DEFS, CUTSCENE_TEST_LIST, type CutsceneId } from "@/lib/game/cutscenes";
+import { getEngine } from "@/lib/game/engineRef";
 import { useGame } from "@/lib/game/state";
 import { saveSettings } from "@/lib/game/save";
 
@@ -48,6 +50,12 @@ export default function VolumeSliders() {
     saveSettings({ ...s, lang: nextLang });
   };
 
+  const onTestCutscene = (id: CutsceneId) => {
+    audio.init();
+    audio.play("ui_click");
+    getEngine()?.playCutscene(id, true);
+  };
+
   const values: Record<VolKey, number> = { master, music, sfx };
 
   return (
@@ -85,24 +93,57 @@ export default function VolumeSliders() {
       </div>
 
       {rows.map(({ key, label, Icon }) => (
-        <div key={key} className="flex items-center gap-3">
-          <Icon className="h-4 w-4 text-stone-500" strokeWidth={1.5} />
-          <span className="w-24 text-xs text-stone-400 font-ui">{label}</span>
-          <input
-            type="range"
-            min={0}
-            max={1}
-            step={0.05}
-            value={values[key]}
-            onChange={(e) => onChange(key, Number(e.target.value))}
-            className={sliderClass}
-            aria-label={label}
-          />
-          <span dir="ltr" className="w-8 text-[10px] text-stone-600 font-mono text-left">
-            {Math.round(values[key] * 100)}
-          </span>
+        <div key={key} className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5">
+            <Icon className="h-4 w-4 text-stone-500" strokeWidth={1.5} />
+            <span className="w-24 text-xs text-stone-400 font-ui text-start">{label}</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.05}
+              value={values[key]}
+              onChange={(e) => onChange(key, Number(e.target.value))}
+              className={sliderClass}
+              aria-label={label}
+            />
+            <span dir="ltr" className="w-8 text-[10px] text-stone-500 font-mono text-left">
+              {Math.round(values[key] * 100)}
+            </span>
+          </div>
         </div>
       ))}
+
+      {/* أزرار اختبار المشاهد السينمائية في الإعدادات */}
+      <div className="mt-2 border-t border-stone-800/80 pt-3">
+        <div className="mb-2 flex items-center gap-2 text-xs font-semibold text-amber-300/90 font-ui">
+          <Film className="h-4 w-4 text-amber-500" strokeWidth={1.6} />
+          <span>
+            {lang === "ar"
+              ? "اختبار المشاهد السينمائية (اضغط لعرض أي مشهد فوراً):"
+              : "Test Cinematic Cutscenes (Click to preview any scene):"}
+          </span>
+        </div>
+        <div className="grid max-h-48 grid-cols-1 gap-1.5 overflow-y-auto pr-1 sm:grid-cols-2">
+          {CUTSCENE_TEST_LIST.map((id) => {
+            const def = CUTSCENE_DEFS[id];
+            return (
+              <button
+                key={id}
+                type="button"
+                onClick={() => onTestCutscene(id)}
+                dir={lang === "ar" ? "rtl" : "ltr"}
+                className="flex items-center gap-2 rounded border border-stone-800/90 bg-stone-950/80 px-2.5 py-1.5 text-start font-ui text-[11px] text-stone-300 transition hover:border-amber-600/80 hover:bg-amber-950/35 hover:text-amber-200"
+              >
+                <Play className="h-3 w-3 shrink-0 text-amber-500" strokeWidth={2} />
+                <span className="truncate">{def.title[lang]}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
     </div>
   );
 }

@@ -1778,12 +1778,25 @@ export function buildWorld(scene: THREE.Scene): WorldData {
     counter(w2, cx + 5.8, cz + 2.5, -Math.PI / 2, 3.0);
     serverRack(w2, cx + 6.2, cz - 2.5, -Math.PI / 2);
 
-    // كونسول البث الرئيسي في الطابق الثاني
-    addBox(ctx, "metal", cx + 2.5, 4.2, cz - 1.2, 2.0, 1.15, 0.9);
-    const screen = new THREE.Mesh(new THREE.PlaneGeometry(1.3, 0.7), mats.greenLight);
-    screen.position.set(cx + 2.5, 4.2 + 1.55, cz - 0.73);
+    // محطة الكمبيوتر والكونسول الرئيسي لبث الإذاعة في الطابق الثاني (عند 71.5, 4.2, -70.2)
+    addBox(ctx, "metal", cx + 2.5, 4.2, cz - 1.2, 2.1, 0.84, 0.92);
+    // برج الحاسوب المكتبي (PC Tower) على يمين الطاولة
+    w2.push("dark", new THREE.BoxGeometry(0.24, 0.48, 0.44), mat4(cx + 3.25, 0.84 + 0.24, cz - 1.25));
+    w2.push("screenGlow", new THREE.BoxGeometry(0.08, 0.03, 0.02), mat4(cx + 3.25, 0.84 + 0.40, cz - 1.02));
+    // شاشة الكمبيوتر العريضة وقاعدتها في منتصف الطاولة (تواجه الجنوب +Z حيث يقف جون)
+    w2.push("dark", new THREE.BoxGeometry(0.26, 0.04, 0.22), mat4(cx + 2.5, 0.84 + 0.02, cz - 1.34));
+    w2.push("chrome", new THREE.BoxGeometry(0.07, 0.24, 0.06), mat4(cx + 2.5, 0.84 + 0.14, cz - 1.34));
+    w2.push("dark", new THREE.BoxGeometry(0.86, 0.54, 0.05), mat4(cx + 2.5, 0.84 + 0.44, cz - 1.32));
+    const screen = new THREE.Mesh(new THREE.PlaneGeometry(0.78, 0.46), mats.greenLight);
+    screen.position.set(cx + 2.5, 4.2 + 0.84 + 0.44, cz - 1.29);
     screen.userData.noHit = true;
     scene.add(screen);
+    // لوحة المفاتيح (Keyboard) والفأرة (Mouse) وميكروفون البث أمام الشاشة مباشرة
+    w2.push("dark", new THREE.BoxGeometry(0.48, 0.028, 0.18), mat4(cx + 2.45, 0.84 + 0.015, cz - 0.94));
+    w2.push("paper", new THREE.BoxGeometry(0.44, 0.012, 0.14), mat4(cx + 2.45, 0.84 + 0.03, cz - 0.94));
+    w2.push("dark", new THREE.BoxGeometry(0.08, 0.025, 0.12), mat4(cx + 2.86, 0.84 + 0.015, cz - 0.94));
+    w2.push("chrome", new THREE.CylinderGeometry(0.018, 0.025, 0.28, 8), mat4(cx + 1.98, 0.84 + 0.14, cz - 0.98));
+    w2.push("dark", new THREE.SphereGeometry(0.045, 8, 8), mat4(cx + 1.98, 0.84 + 0.30, cz - 0.94));
     ctx.interactables.push({
       id: "tower_console",
       kind: "console",
@@ -1791,7 +1804,7 @@ export function buildWorld(scene: THREE.Scene): WorldData {
       z: cz - 0.5,
       y: 5.2,
       radius: 2.2,
-      prompt: "البث — نداء استغاثة",
+      prompt: "حاسوب البث — إرسال نداء استغاثة",
       used: false,
     });
     fluoro(ctx, cx + 1, cz, 0xd0a860, 1.0, 12, 6, 0);
@@ -2559,10 +2572,12 @@ export function buildWorld(scene: THREE.Scene): WorldData {
     shelfStocked(w, cx - 14.6, cz - 6.6, Math.PI / 2, 3.0, true);
     cratesStack(w, cx - 11.5, cz - 11.2);
 
-    // قارئا بطاقات التصريح المزدوج على جانبي البوابة الفولاذية داخل المبنى
+    // قارئا بطاقات التصريح المزدوج على جانبي البوابة الفولاذية داخل المبنى (اليسار: زرقاء عند -73.65، اليمين: حمراء عند -68.35)
     for (const sx of [-2.65, 2.65]) {
       addBox(ctx, "labMetal", cx - 2.0 + sx, 0, cz - 8.2, 0.55, 1.45, 0.45);
-      w.push(sx < 0 ? "screenGlow" : "redEmissive", new THREE.BoxGeometry(0.32, 0.22, 0.02), mat4(cx - 2.0 + sx, 1.18, cz - 7.95));
+      w.push(sx < 0 ? "screenGlow" : "redEmissive", new THREE.BoxGeometry(0.32, 0.22, 0.02), mat4(cx - 2.0 + sx, 1.22, cz - 7.95));
+      // فتحة إدخال البطاقة البارزة في منتصف جهاز القارئ
+      w.push("dark", new THREE.BoxGeometry(0.22, 0.08, 0.08), mat4(cx - 2.0 + sx, 1.02, cz - 7.94));
     }
 
     // بوابة المختبر الفولاذية الضخمة داخل الطابق الأرضي للمجمع (عند cx - 2.0, cz - 8.8)
@@ -3290,17 +3305,20 @@ export function buildWorld(scene: THREE.Scene): WorldData {
     );
     core.position.set(cx, 1.85, cz - 31);
     core.userData.noHit = true;
+    core.userData.isAICore = "core";
     scene.add(core);
     addFlickerLight(ctx, cx, 2.4, cz - 31, 0xff3020, 3, 18, 3);
     corePos = new THREE.Vector3(cx, 1, cz - 31);
     const ring = new THREE.Mesh(new THREE.TorusGeometry(1.6, 0.08, 8, 32), mats.metal);
     ring.position.set(cx, 1.85, cz - 31);
     ring.userData.noHit = true;
+    ring.userData.isAICore = "ring1";
     scene.add(ring);
     const ring2 = new THREE.Mesh(new THREE.TorusGeometry(1.95, 0.05, 8, 32), mats.metal);
     ring2.position.set(cx, 1.85, cz - 31);
     ring2.rotation.x = Math.PI / 3;
     ring2.userData.noHit = true;
+    ring2.userData.isAICore = "ring2";
     scene.add(ring2);
 
     ctx.interactables.push({ id: "core", kind: "core", x: cx, z: cz - 31, radius: 2.8, prompt: "النواة — كيميرا", used: false });

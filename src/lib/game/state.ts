@@ -103,8 +103,26 @@ export interface GameStore {
   toast: { text: string; at: number } | null;
   noteId: ItemId | null;
   aiChoiceOpen: boolean;
+  cutscene: {
+    id: string;
+    subtitle: string;
+    index: number;
+    total: number;
+    progress: number;
+    whiteout?: number;
+  } | null;
 
   setLang: (l: Lang) => void;
+  setCutscene: (
+    c: {
+      id: string;
+      subtitle: string;
+      index: number;
+      total: number;
+      progress: number;
+      whiteout?: number;
+    } | null,
+  ) => void;
   setScreen: (s: Screen) => void;
   setHud: (p: Partial<HudState>) => void;
   setPrompt: (p: string) => void;
@@ -170,7 +188,9 @@ export const useGame = create<GameStore>((set, get) => ({
   toast: null,
   noteId: null,
   aiChoiceOpen: false,
+  cutscene: null,
 
+  setCutscene: (c) => set({ cutscene: c }),
   setLang: (l) => {
     setCurrentLang(l);
     const b = getContent(l);
@@ -399,6 +419,7 @@ export const useGame = create<GameStore>((set, get) => ({
       ambient: "menu",
       noteId: null,
       aiChoiceOpen: false,
+      cutscene: null,
     })),
 
   applySave: (s) =>

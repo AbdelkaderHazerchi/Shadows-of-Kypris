@@ -2087,25 +2087,68 @@ export interface SurvivorPose {
 }
 
 const SURVIVOR_POSES: Record<string, SurvivorPose> = {
+  john: { stance: "stand", shirt: 0x2b3c4d, pants: 0x1e2229, skin: 0xb88e6e, hair: 0x221812 },
   sara: { stance: "sit", shirt: 0x6a7a72, pants: 0x3a3f3a, skin: 0xb08a6a, hair: 0x201610 },
   adel: { stance: "stand", shirt: 0x4a4436, pants: 0x2c2c30, skin: 0xa87e5e, hair: 0x3a3028 },
   soldier: { stance: "crouch", shirt: 0x3c4034, pants: 0x35392e, skin: 0xa8805e, hair: 0x181410 },
 };
 
 export interface SurvivorRig {
+  pelvis: THREE.Group;
   torso: THREE.Group;
   headG: THREE.Group;
+  jaw: THREE.Group;
   armL: THREE.Group;
   armR: THREE.Group;
   foreL: THREE.Group;
   foreR: THREE.Group;
+  handL: THREE.Group;
+  handR: THREE.Group;
   legL: THREE.Group;
   legR: THREE.Group;
   shinL: THREE.Group;
   shinR: THREE.Group;
+  footL: THREE.Group;
+  footR: THREE.Group;
 }
 
-/** تحديث وضعية أو حركة مشي الناجي (إما جالس/مصاب أو يركض نحو الميناء أو يقف على متن القارب) */
+/** تصفير جميع زوايا المفاصل إلى وضع الوقوف الطبيعي قبل تطبيق حركة جديدة */
+export function resetSurvivorRig(rig: SurvivorRig) {
+  rig.pelvis.position.set(0, 0.92, 0);
+  rig.pelvis.rotation.set(0, 0, 0);
+  rig.torso.position.set(0, 0.08, 0);
+  rig.torso.rotation.set(0, 0, 0);
+  rig.headG.position.set(0, 0.52, 0);
+  rig.headG.rotation.set(0, 0, 0);
+  rig.jaw.position.set(0, 0.09, 0.02);
+  rig.jaw.rotation.set(0, 0, 0);
+  rig.armL.position.set(-0.27, 0.46, 0);
+  rig.armL.rotation.set(0, 0, 0);
+  rig.armR.position.set(0.27, 0.46, 0);
+  rig.armR.rotation.set(0, 0, 0);
+  rig.foreL.position.set(0, -0.30, 0);
+  rig.foreL.rotation.set(0, 0, 0);
+  rig.foreR.position.set(0, -0.30, 0);
+  rig.foreR.rotation.set(0, 0, 0);
+  rig.handL.position.set(0, -0.28, 0);
+  rig.handL.rotation.set(0, 0, 0);
+  rig.handR.position.set(0, -0.28, 0);
+  rig.handR.rotation.set(0, 0, 0);
+  rig.legL.position.set(-0.115, -0.04, 0);
+  rig.legL.rotation.set(0, 0, 0);
+  rig.legR.position.set(0.115, -0.04, 0);
+  rig.legR.rotation.set(0, 0, 0);
+  rig.shinL.position.set(0, -0.42, 0);
+  rig.shinL.rotation.set(0, 0, 0);
+  rig.shinR.position.set(0, -0.42, 0);
+  rig.shinR.rotation.set(0, 0, 0);
+  rig.footL.position.set(0, -0.40, 0);
+  rig.footL.rotation.set(0, 0, 0);
+  rig.footR.position.set(0, -0.40, 0);
+  rig.footR.rotation.set(0, 0, 0);
+}
+
+/** تحديث وضعية أو حركة مشي الشخصية (حيث يدور كل جزء حول مفصله الحقيقي) */
 export function setSurvivorPose(
   g: THREE.Group,
   mode: "initial" | "walk" | "boat",
@@ -2114,107 +2157,102 @@ export function setSurvivorPose(
 ) {
   const rig = g.userData.rig as SurvivorRig | undefined;
   if (!rig) return;
-  const { torso, headG, armL, armR, foreL, foreR, legL, legR, shinL, shinR } = rig;
+  resetSurvivorRig(rig);
+  const { pelvis, torso, headG, armL, armR, foreL, foreR, legL, legR, shinL, shinR, footL, footR } = rig;
   const pose = SURVIVOR_POSES[id] ?? SURVIVOR_POSES.adel;
 
   if (mode === "walk") {
     const s = Math.sin(walkTime);
     const c = Math.cos(walkTime);
-    torso.position.y = 1.06 + Math.abs(c) * 0.038;
-    torso.rotation.x = 0.14;
-    torso.rotation.z = s * 0.03;
+    pelvis.position.y = 0.92 + Math.abs(c) * 0.038;
+    pelvis.rotation.y = s * 0.06;
+    torso.rotation.x = 0.12;
+    torso.rotation.y = -s * 0.08;
+    torso.rotation.z = s * 0.025;
     headG.rotation.x = -0.06;
     headG.rotation.y = Math.sin(walkTime * 0.5) * 0.08;
 
-    legL.position.set(-0.11, 0.92, 0);
-    legR.position.set(0.11, 0.92, 0);
-    legL.rotation.x = s * 0.68;
-    legR.rotation.x = -s * 0.68;
-    shinL.rotation.x = Math.max(0.08, -s * 0.62);
-    shinR.rotation.x = Math.max(0.08, s * 0.62);
+    legL.rotation.x = s * 0.65;
+    legR.rotation.x = -s * 0.65;
+    shinL.rotation.x = Math.max(0.06, -s * 0.62);
+    shinR.rotation.x = Math.max(0.06, s * 0.62);
+    footL.rotation.x = -legL.rotation.x * 0.35;
+    footR.rotation.x = -legR.rotation.x * 0.35;
 
     armL.rotation.x = -s * 0.52;
     armR.rotation.x = s * 0.52;
-    foreL.rotation.x = -0.45 - Math.max(0, s) * 0.25;
-    foreR.rotation.x = -0.45 - Math.max(0, -s) * 0.25;
+    foreL.rotation.x = -0.42 - Math.max(0, s) * 0.28;
+    foreR.rotation.x = -0.42 - Math.max(0, -s) * 0.28;
     return;
   }
 
   if (mode === "boat") {
-    // واقف بأمان على سطح قارب الإخلاء في الميناء مع تنفس وحركة خفيفة
-    const breathe = Math.sin(walkTime * 1.8) * 0.015;
-    torso.position.y = 1.06 + breathe;
+    // واقف بأمان على سطح قارب الإخلاء في الميناء مع تنفس وحركة خفيفة حول المفاصل
+    const breathe = Math.sin(walkTime * 1.8) * 0.014;
+    pelvis.position.y = 0.92 + breathe;
     torso.rotation.set(0.03, 0, 0);
     headG.rotation.set(0, Math.sin(walkTime * 0.7) * 0.18, 0);
-    legL.position.set(-0.12, 0.92, 0);
-    legR.position.set(0.12, 0.92, 0);
     legL.rotation.x = -0.04;
     legR.rotation.x = 0.04;
-    shinL.rotation.x = 0.04;
-    shinR.rotation.x = 0.04;
-    armL.rotation.x = -0.18;
+    shinL.rotation.x = 0.05;
+    shinR.rotation.x = 0.05;
+    armL.rotation.x = -0.16;
     foreL.rotation.x = -0.35;
-    // تلويح خفيف باليد اليمنى للاعب القادم نحو القارب
-    armR.rotation.x = -0.45 + Math.sin(walkTime * 2.2) * 0.12;
-    foreR.rotation.x = -0.55;
+    armR.rotation.x = -0.42 + Math.sin(walkTime * 2.2) * 0.10;
+    foreR.rotation.x = -0.52;
     return;
   }
 
   // الوضعية الابتدائية قبل الإنقاذ
-  torso.rotation.set(0, 0, 0);
-  headG.rotation.set(0, 0, 0);
   if (pose.stance === "sit") {
-    torso.position.y = 0.78;
-    legL.position.set(-0.11, 0.5, 0);
-    legL.rotation.x = -1.4;
-    shinL.rotation.x = 1.5;
-    legR.position.set(0.11, 0.5, 0);
-    legR.rotation.x = -1.4;
-    shinR.rotation.x = 1.5;
-    armL.rotation.x = -1.9;
-    foreL.rotation.x = -1.2;
-    armR.rotation.x = -1.9;
-    foreR.rotation.x = -1.2;
-    headG.rotation.x = 0.3;
+    pelvis.position.y = 0.54;
+    torso.rotation.x = 0.12;
+    legL.rotation.x = -1.42;
+    shinL.rotation.x = 1.48;
+    footL.rotation.x = -0.06;
+    legR.rotation.x = -1.42;
+    shinR.rotation.x = 1.48;
+    footR.rotation.x = -0.06;
+    armL.rotation.x = -0.65;
+    foreL.rotation.x = -0.85;
+    armR.rotation.x = -0.65;
+    foreR.rotation.x = -0.85;
+    headG.rotation.x = 0.22;
   } else if (pose.stance === "crouch") {
-    torso.position.y = 0.62;
-    torso.rotation.x = 0.35;
-    legL.position.set(-0.11, 0.42, 0.05);
-    legL.rotation.x = -2.0;
-    shinL.rotation.x = 2.1;
-    legR.position.set(0.13, 0.42, -0.1);
-    legR.rotation.x = -1.1;
-    shinR.rotation.x = 1.9;
-    armL.rotation.x = -0.7;
-    foreL.rotation.x = -0.3;
-    armR.rotation.x = -0.4;
-    foreR.rotation.x = -0.2;
-    headG.rotation.x = 0.15;
+    pelvis.position.y = 0.52;
+    torso.rotation.x = 0.32;
+    legL.rotation.x = -1.65;
+    shinL.rotation.x = 1.85;
+    footL.rotation.x = -0.2;
+    legR.rotation.x = -1.05;
+    shinR.rotation.x = 1.65;
+    footR.rotation.x = -0.55;
+    armL.rotation.x = -0.65;
+    foreL.rotation.x = -0.45;
+    armR.rotation.x = -0.40;
+    foreR.rotation.x = -0.35;
+    headG.rotation.x = 0.14;
   } else {
-    torso.position.y = 1.06;
-    torso.rotation.x = pose.stance === "lean" ? 0.12 : 0.05;
-    legL.position.set(-0.11, 0.92, 0);
-    legR.position.set(0.11, 0.92, 0);
-    legL.rotation.x = 0;
-    legR.rotation.x = 0;
-    shinL.rotation.x = 0;
-    shinR.rotation.x = 0;
-    armL.rotation.x = 0.15;
-    foreL.rotation.x = -0.2;
-    armR.rotation.x = 0.1;
-    foreR.rotation.x = -0.2;
+    pelvis.position.y = 0.92;
+    torso.rotation.x = pose.stance === "lean" ? 0.12 : 0.04;
+    armL.rotation.x = 0.08;
+    foreL.rotation.x = -0.18;
+    armR.rotation.x = 0.06;
+    foreR.rotation.x = -0.18;
   }
 }
 
-/** نموذج ناجٍ مفصلي واقعي مع ملابس وتفاصيل مميزة لكل شخصية */
+/** نموذج بشري مفصلي كامل (جون / سارة / عادل / الرقيب) حيث يدور كل طرف حول محور مفصله الحقيقي */
 export function survivorModel(id: string): THREE.Group {
   const pose = SURVIVOR_POSES[id] ?? SURVIVOR_POSES.adel;
   const g = new THREE.Group();
-  const skin = new THREE.MeshStandardMaterial({ color: pose.skin, roughness: 0.85 });
-  const shirt = new THREE.MeshStandardMaterial({ color: pose.shirt, roughness: 0.9 });
+  const skin = new THREE.MeshStandardMaterial({ color: pose.skin, roughness: 0.82 });
+  const shirt = new THREE.MeshStandardMaterial({ color: pose.shirt, roughness: 0.88 });
   const pants = new THREE.MeshStandardMaterial({ color: pose.pants, roughness: 0.9 });
-  const hair = new THREE.MeshStandardMaterial({ color: pose.hair, roughness: 0.95 });
+  const hair = new THREE.MeshStandardMaterial({ color: pose.hair, roughness: 0.92 });
   const bootMat = new THREE.MeshStandardMaterial({ color: 0x1a1816, roughness: 0.8 });
+  const eyeWhite = new THREE.MeshStandardMaterial({ color: 0xe8ecee, roughness: 0.4 });
+  const eyePupil = new THREE.MeshStandardMaterial({ color: 0x182028, roughness: 0.3 });
 
   const mkMesh = (geo: THREE.BufferGeometry, mat: THREE.Material, x: number, y: number, z: number) => {
     const m = new THREE.Mesh(geo, mat);
@@ -2223,77 +2261,148 @@ export function survivorModel(id: string): THREE.Group {
     return m;
   };
 
-  // جذع + تفاصيل الزي (معطف طبي لسارة، سترة عمل وحقيبة لعادل، درع تكتيكي للرقيب)
+  // 1) الحوض (Pelvis Joint — مركز الارتكاز السفلي عند y = 0.92)
+  const pelvis = new THREE.Group();
+  pelvis.position.set(0, 0.92, 0);
+  pelvis.add(mkMesh(new THREE.BoxGeometry(0.38, 0.18, 0.24), pants, 0, 0, 0));
+  g.add(pelvis);
+
+  // 2) الجذع (Torso Joint — محوره عند مفصل الخصر y = 0.08 فوق الحوض، وكتلة الصدر تمتد للأعلى)
   const torso = new THREE.Group();
-  torso.add(mkMesh(new THREE.BoxGeometry(0.42, 0.56, 0.24), shirt, 0, 0, 0));
-  torso.add(mkMesh(new THREE.BoxGeometry(0.43, 0.18, 0.26), pants, 0, -0.30, 0));
-  if (id === "sara") {
+  torso.position.set(0, 0.08, 0);
+  torso.add(mkMesh(new THREE.BoxGeometry(0.42, 0.52, 0.24), shirt, 0, 0.26, 0));
+
+  if (id === "john") {
+    // معطف أبحاث مختبرات كيبريس الداكن مع ياقة وشارة د. جون على الصدر
+    const coatMat = new THREE.MeshStandardMaterial({ color: 0x363d44, roughness: 0.78 });
+    torso.add(mkMesh(new THREE.BoxGeometry(0.45, 0.54, 0.26), coatMat, 0, 0.25, -0.005));
+    torso.add(mkMesh(new THREE.BoxGeometry(0.14, 0.48, 0.02), shirt, 0, 0.26, 0.128));
+    const badgeMat = new THREE.MeshStandardMaterial({ color: 0xdce6f2, emissive: 0x1a4870, emissiveIntensity: 0.45 });
+    torso.add(mkMesh(new THREE.BoxGeometry(0.075, 0.095, 0.02), badgeMat, -0.12, 0.38, 0.135));
+  } else if (id === "sara") {
     const coatMat = new THREE.MeshStandardMaterial({ color: 0xd8dedc, roughness: 0.75 });
-    torso.add(mkMesh(new THREE.BoxGeometry(0.45, 0.58, 0.26), coatMat, 0, -0.04, -0.01));
+    torso.add(mkMesh(new THREE.BoxGeometry(0.45, 0.54, 0.26), coatMat, 0, 0.25, -0.01));
     const badgeMat = new THREE.MeshStandardMaterial({ color: 0x22789a, emissive: 0x0a2836, emissiveIntensity: 0.5 });
-    torso.add(mkMesh(new THREE.BoxGeometry(0.07, 0.09, 0.02), badgeMat, -0.12, 0.12, 0.135));
+    torso.add(mkMesh(new THREE.BoxGeometry(0.07, 0.09, 0.02), badgeMat, -0.12, 0.38, 0.135));
   } else if (id === "adel") {
     const packMat = new THREE.MeshStandardMaterial({ color: 0x382e22, roughness: 0.9 });
-    torso.add(mkMesh(new THREE.BoxGeometry(0.32, 0.42, 0.16), packMat, 0, 0.02, -0.18));
+    torso.add(mkMesh(new THREE.BoxGeometry(0.32, 0.42, 0.16), packMat, 0, 0.28, -0.18));
   } else if (id === "soldier") {
     const vestMat = new THREE.MeshStandardMaterial({ color: 0x283022, roughness: 0.85 });
-    torso.add(mkMesh(new THREE.BoxGeometry(0.46, 0.44, 0.28), vestMat, 0, 0.02, 0));
+    torso.add(mkMesh(new THREE.BoxGeometry(0.46, 0.44, 0.28), vestMat, 0, 0.28, 0));
   }
+  pelvis.add(torso);
 
-  // رأس وملامح وجه
+  // 3) الرأس والرقبة (Neck/Head Joint — محوره عند قاعدة الرقبة y = 0.52 فوق الخصر، والجمجمة تمتد للأعلى)
   const headG = new THREE.Group();
-  headG.position.y = 0.43;
-  headG.add(mkMesh(new THREE.BoxGeometry(0.22, 0.26, 0.24), skin, 0, 0, 0));
-  headG.add(mkMesh(new THREE.BoxGeometry(0.24, 0.11, 0.26), hair, 0, 0.12, -0.01));
+  headG.position.set(0, 0.52, 0);
+  // الرقبة
+  headG.add(mkMesh(new THREE.CylinderGeometry(0.065, 0.072, 0.09, 10), skin, 0, 0.04, 0));
+  // الجمجمة والوجه (المركز فوق المفصل عند y = 0.18)
+  headG.add(mkMesh(new THREE.BoxGeometry(0.22, 0.24, 0.24), skin, 0, 0.18, 0));
+  // الشعر
+  headG.add(mkMesh(new THREE.BoxGeometry(0.235, 0.095, 0.255), hair, 0, 0.285, -0.01));
+  headG.add(mkMesh(new THREE.BoxGeometry(0.235, 0.18, 0.06), hair, 0, 0.20, -0.105));
+  // العينان والحاجبان والأنف
+  for (const sx of [-0.052, 0.052]) {
+    headG.add(mkMesh(new THREE.BoxGeometry(0.042, 0.026, 0.015), eyeWhite, sx, 0.20, 0.12));
+    headG.add(mkMesh(new THREE.BoxGeometry(0.022, 0.022, 0.018), eyePupil, sx, 0.20, 0.123));
+    headG.add(mkMesh(new THREE.BoxGeometry(0.052, 0.014, 0.018), hair, sx, 0.225, 0.122));
+  }
+  headG.add(mkMesh(new THREE.BoxGeometry(0.032, 0.048, 0.035), skin, 0, 0.175, 0.13));
+
+  // مفصل الفك السفلي (Jaw Joint — محوره عند مفصل الفك الخلفي ليتحرك أثناء الكلام)
+  const jaw = new THREE.Group();
+  jaw.position.set(0, 0.09, 0.02);
+  jaw.add(mkMesh(new THREE.BoxGeometry(0.19, 0.065, 0.19), skin, 0, -0.01, 0.01));
+  headG.add(jaw);
+
   if (id === "soldier") {
     const helmetMat = new THREE.MeshStandardMaterial({ color: 0x2c3426, roughness: 0.7, metalness: 0.2 });
-    headG.add(mkMesh(new THREE.BoxGeometry(0.26, 0.12, 0.28), helmetMat, 0, 0.13, 0));
+    headG.add(mkMesh(new THREE.BoxGeometry(0.26, 0.12, 0.28), helmetMat, 0, 0.29, 0));
   }
   torso.add(headG);
 
-  // ذراعان
+  // 4) الذراعان (Shoulder -> Upper Arm -> Elbow -> Forearm -> Wrist -> Hand)
+  const sleeveMat = id === "john" ? new THREE.MeshStandardMaterial({ color: 0x363d44, roughness: 0.78 }) : id === "sara" ? new THREE.MeshStandardMaterial({ color: 0xd8dedc, roughness: 0.75 }) : shirt;
   const mkArm = (side: number) => {
-    const a = new THREE.Group();
-    a.position.set(side * 0.27, 0.18, 0);
-    a.add(mkMesh(new THREE.BoxGeometry(0.11, 0.30, 0.11), shirt, 0, -0.15, 0));
+    // مفصل الكتف عند أعلى الجذع (y = 0.46)
+    const shoulder = new THREE.Group();
+    shoulder.position.set(side * 0.27, 0.46, 0);
+    shoulder.add(mkMesh(new THREE.SphereGeometry(0.062, 8, 6), sleeveMat, 0, 0, 0));
+    // العضد يمتد للأسفل من الكتف (من 0 إلى -0.30)
+    shoulder.add(mkMesh(new THREE.BoxGeometry(0.11, 0.30, 0.11), sleeveMat, 0, -0.15, 0));
+
+    // مفصل المرفق (الكوع) عند نهاية العضد (y = -0.30)
     const fore = new THREE.Group();
-    fore.position.y = -0.30;
-    fore.add(mkMesh(new THREE.BoxGeometry(0.095, 0.30, 0.10), skin, 0, -0.15, 0));
-    a.add(fore);
-    a.userData.fore = fore;
-    return a;
+    fore.position.set(0, -0.30, 0);
+    fore.add(mkMesh(new THREE.SphereGeometry(0.048, 8, 6), skin, 0, 0, 0));
+    // الساعد يمتد للأسفل من الكوع (من 0 إلى -0.28)
+    fore.add(mkMesh(new THREE.BoxGeometry(0.092, 0.28, 0.095), skin, 0, -0.14, 0));
+
+    // مفصل المعصم والكف عند نهاية الساعد (y = -0.28)
+    const hand = new THREE.Group();
+    hand.position.set(0, -0.28, 0);
+    hand.add(mkMesh(new THREE.BoxGeometry(0.082, 0.10, 0.048), skin, 0, -0.05, 0));
+    fore.add(hand);
+
+    shoulder.add(fore);
+    shoulder.userData.fore = fore;
+    shoulder.userData.hand = hand;
+    return shoulder;
   };
   const armL = mkArm(-1);
   const armR = mkArm(1);
   torso.add(armL, armR);
 
-  // ساقان وحذاء
-  const mkLeg = () => {
-    const l = new THREE.Group();
-    l.add(mkMesh(new THREE.BoxGeometry(0.15, 0.42, 0.16), pants, 0, -0.21, 0));
+  // 5) الساقان (Hip -> Thigh -> Knee -> Shin -> Ankle -> Foot)
+  const mkLeg = (side: number) => {
+    // مفصل الورك عند أسفل الحوض (y = -0.04)
+    const hip = new THREE.Group();
+    hip.position.set(side * 0.115, -0.04, 0);
+    hip.add(mkMesh(new THREE.SphereGeometry(0.068, 8, 6), pants, 0, 0, 0));
+    // الفخذ يمتد للأسفل من الورك (من 0 إلى -0.42)
+    hip.add(mkMesh(new THREE.BoxGeometry(0.15, 0.42, 0.16), pants, 0, -0.21, 0));
+
+    // مفصل الركبة عند نهاية الفخذ (y = -0.42)
     const shin = new THREE.Group();
-    shin.position.y = -0.42;
-    shin.add(mkMesh(new THREE.BoxGeometry(0.135, 0.40, 0.145), pants, 0, -0.20, 0));
-    shin.add(mkMesh(new THREE.BoxGeometry(0.145, 0.10, 0.22), bootMat, 0, -0.43, 0.03));
-    l.add(shin);
-    l.userData.shin = shin;
-    return l;
+    shin.position.set(0, -0.42, 0);
+    shin.add(mkMesh(new THREE.SphereGeometry(0.058, 8, 6), pants, 0, 0, 0));
+    // الساق تمتد للأسفل من الركبة (من 0 إلى -0.40)
+    shin.add(mkMesh(new THREE.BoxGeometry(0.132, 0.40, 0.142), pants, 0, -0.20, 0));
+
+    // مفصل الكاحل والقدم عند نهاية الساق (y = -0.40)
+    const foot = new THREE.Group();
+    foot.position.set(0, -0.40, 0);
+    foot.add(mkMesh(new THREE.BoxGeometry(0.142, 0.09, 0.23), bootMat, 0, -0.015, 0.035));
+    shin.add(foot);
+
+    hip.add(shin);
+    hip.userData.shin = shin;
+    hip.userData.foot = foot;
+    return hip;
   };
-  const legL = mkLeg();
-  const legR = mkLeg();
-  g.add(torso, legL, legR);
+  const legL = mkLeg(-1);
+  const legR = mkLeg(1);
+  pelvis.add(legL, legR);
 
   g.userData.rig = {
+    pelvis,
     torso,
     headG,
+    jaw,
     armL,
     armR,
     foreL: armL.userData.fore as THREE.Group,
     foreR: armR.userData.fore as THREE.Group,
+    handL: armL.userData.hand as THREE.Group,
+    handR: armR.userData.hand as THREE.Group,
     legL,
     legR,
     shinL: legL.userData.shin as THREE.Group,
     shinR: legR.userData.shin as THREE.Group,
+    footL: legL.userData.foot as THREE.Group,
+    footR: legR.userData.foot as THREE.Group,
   } satisfies SurvivorRig;
 
   setSurvivorPose(g, "initial", 0, id);

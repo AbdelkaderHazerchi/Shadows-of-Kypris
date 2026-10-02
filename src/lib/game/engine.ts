@@ -28,6 +28,13 @@ import {
   translateInteractPrompt,
 } from "./content";
 import { setSurvivorPose, type DoorDef } from "./props";
+import {
+  CUTSCENE_DEFS,
+  CutsceneDirector,
+  SUBTITLE_DURATION,
+  getCutsceneDuration,
+  type CutsceneId,
+} from "./cutscenes";
 import type { EndingId, Lang, MapSnapshot, WeaponId } from "./types";
 
 // ── grain/vignette shader ──
@@ -187,6 +194,19 @@ export class GameEngine {
   private bossGateClosed = false;
   private bossGateCollider = { minX: 596.8, maxX: 603.2, minZ: -8.4, maxZ: -7.6 };
   private labDoorColliderIdx = -1;
+  private cutsceneDirector: CutsceneDirector | null = null;
+  private activeCutscene: {
+    id: CutsceneId;
+    elapsed: number;
+    duration: number;
+    onDone?: () => void;
+    isTest?: boolean;
+    returnScreen?: string;
+    savedPos?: THREE.Vector3;
+    savedFloorY?: number;
+    savedYaw?: number;
+    savedPitch?: number;
+  } | null = null;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -539,6 +559,13 @@ export class GameEngine {
     if (e.code === "Tab") e.preventDefault();
     this.keys.add(e.code);
     const st = useGame.getState();
+    if (this.activeCutscene) {
+      if (e.code === "Escape" || e.code === "Space" || e.code === "Enter") {
+        e.preventDefault();
+        this.stopCutscene(false);
+      }
+      return;
+    }
     if (st.screen === "playing") {
       if (e.code === "KeyF") this.toggleFlashlight();
       else if (e.code === "KeyR") this.startReload();
@@ -593,6 +620,7 @@ export class GameEngine {
   };
   private onMouseDown = (e: MouseEvent) => {
     if (e.button !== 0) return;
+    if (this.activeCutscene) return;
     const st = useGame.getState();
     if (st.screen !== "playing") return;
     if (document.pointerLockElement !== this.canvas) {
@@ -607,7 +635,12 @@ export class GameEngine {
   };
   private onPointerLockChange = () => {
     const st = useGame.getState();
-    if (document.pointerLockElement !== this.canvas && st.screen === "playing" && !st.aiChoiceOpen) {
+    if (
+      document.pointerLockElement !== this.canvas &&
+      st.screen === "playing" &&
+      !st.aiChoiceOpen &&
+      !this.activeCutscene
+    ) {
       st.setScreen("paused");
     }
   };
@@ -658,7 +691,7 @@ export class GameEngine {
       this.extractionReady = false;
       this.bossGateClosed = false;
       this.waveN = 0;
-      useGame.getState().setScreen("intro");
+      this.beginRun();
     },
     continueGame: () => {
       const save = loadCheckpoint();
@@ -690,6 +723,7 @@ export class GameEngine {
       }
     },
     quitToMenu: () => {
+      this.stopCutscene(true);
       useGame.getState().setScreen("menu");
       document.exitPointerLock();
       audio.stopHeartbeat();
@@ -725,16 +759,15 @@ export class GameEngine {
     chooseAI: (choice: "destroy" | "deal" | "leave") => {
       this.resolveAI(choice);
     },
+    playCutscene: (id: CutsceneId, isTest = false) => {
+      this.playCutscene(id, undefined, isTest);
+    },
+    skipCutscene: () => {
+      this.stopCutscene(false);
+    },
   };
 
-  // ══════════ run lifecycle ══════════
-  private beginRun() {
-    const st = useGame.getState();
-    st.resetRun();
-    if (this.pendingSave) {
-      st.applySave(this.pendingSave);
-      this.pendingSave = null;
-    }
+  private ensureWorld() {
     if (!this.world) {
       this.world = buildWorld(this.scene);
       this.enemies = new EnemyManager(this.scene, {
@@ -748,20 +781,244 @@ export class GameEngine {
         },
       });
       this.prewarmGpu();
+      this.resetWorldState();
     }
+    if (!this.cutsceneDirector) {
+      this.cutsceneDirector = new CutsceneDirector(this.scene);
+    }
+  }
+
+  private playCutscene(id: CutsceneId, onDone?: () => void, isTest = false) {
+    this.ensureWorld();
+    if (!this.world || !this.cutsceneDirector) return;
+
+    const st = useGame.getState();
+    const prev = this.activeCutscene;
+    if (prev) {
+      this.cutsceneDirector.stop(this.world);
+    }
+
+    const returnScreen = prev?.returnScreen ?? (isTest ? st.screen : undefined);
+    const savedPos = prev?.savedPos ?? this.pos.clone();
+    const savedFloorY = prev?.savedFloorY ?? this.floorY;
+    const savedYaw = prev?.savedYaw ?? this.yaw;
+    const savedPitch = prev?.savedPitch ?? this.pitch;
+
+    const duration = getCutsceneDuration(id, st.lang);
+    this.activeCutscene = {
+      id,
+      elapsed: 0,
+      duration,
+      onDone,
+      isTest,
+      returnScreen,
+      savedPos,
+      savedFloorY,
+      savedYaw,
+      savedPitch,
+    };
+
+    this.cutsceneDirector.start(id, this.world);
+    // إخفاء جميع الزومبي والحارس المجمد الأصلي أثناء عرض المشاهد السينمائية
+    if (this.enemies) {
+      for (const e of this.enemies.enemies) {
+        e.group.visible = false;
+      }
+    }
+    this.vmGroup.visible = false;
+    this.flashlight.intensity = 0;
+    if (this.laser) this.laser.visible = false;
+    this.lastCullX = -99999;
+    this.lastCullZ = -99999;
+
+    this.camera.fov = 68;
+    this.camera.far = id === "boat_nuke" ? 380 : 95;
+    this.camera.updateProjectionMatrix();
+
+    const fog = this.scene.fog as THREE.Fog;
+    if (fog) {
+      if (id === "boat_nuke") {
+        fog.color.setHex(0x161214);
+        fog.near = 60;
+        fog.far = 360;
+        (this.scene.background as THREE.Color).setHex(0x161214);
+      } else {
+        fog.color.setHex(0x090c10);
+        fog.near = 16;
+        fog.far = 75;
+        (this.scene.background as THREE.Color).setHex(0x090c10);
+      }
+    }
+
+    st.setPrompt("");
+    if (st.screen !== "playing") {
+      st.setScreen("playing");
+    }
+    const subs = CUTSCENE_DEFS[id].subtitles[st.lang];
+    st.setCutscene({
+      id,
+      subtitle: subs[0] ?? "",
+      index: 0,
+      total: subs.length,
+      progress: 0,
+      whiteout: 0,
+    });
+  }
+
+  private stopCutscene(aborted = false) {
+    const cur = this.activeCutscene;
+    if (!cur) return;
+
+    const def = CUTSCENE_DEFS[cur.id];
+    if (!aborted && def.nextCutscene) {
+      this.playCutscene(def.nextCutscene, cur.onDone, cur.isTest);
+      return;
+    }
+
+    this.activeCutscene = null;
+    if (this.cutsceneDirector) {
+      this.cutsceneDirector.stop(this.world);
+    }
+    // استعادة ظهور الأعداء في العالم بعد انتهاء المشهد السينمائي
+    if (this.enemies) {
+      for (const e of this.enemies.enemies) {
+        e.group.visible = true;
+      }
+    }
+
+    this.vmGroup.visible = true;
+    this.camera.fov = 72;
+    this.camera.far = 54;
+    this.camera.updateProjectionMatrix();
+    const fog = this.scene.fog as THREE.Fog;
+    if (fog) {
+      fog.color.setHex(0x090c10);
+      fog.near = 10;
+      fog.far = 48;
+    }
+    (this.scene.background as THREE.Color).setHex(0x090c10);
+    this.lastCullX = -99999;
+    this.lastCullZ = -99999;
+
+    const st = useGame.getState();
+    st.setCutscene(null);
+
+    if (cur.isTest) {
+      if (cur.savedPos) this.pos.copy(cur.savedPos);
+      if (typeof cur.savedFloorY === "number") this.floorY = cur.savedFloorY;
+      if (typeof cur.savedYaw === "number") this.yaw = cur.savedYaw;
+      if (typeof cur.savedPitch === "number") this.pitch = cur.savedPitch;
+      if (this.world) {
+        for (const sv of this.world.survivors) {
+          if (sv.state === "idle") {
+            sv.obj.position.set(sv.startX, sv.startY, sv.startZ);
+            sv.obj.rotation.y = sv.startRy;
+            setSurvivorPose(sv.obj, "initial", 0, sv.id);
+          }
+        }
+      }
+      if (cur.returnScreen && cur.returnScreen !== "playing") {
+        st.setScreen(cur.returnScreen as never);
+        document.exitPointerLock();
+      }
+      return;
+    }
+
+    this.camera.rotation.order = "YXZ";
+    this.camera.position.copy(this.pos);
+    this.camera.rotation.set(this.pitch, this.yaw, 0);
+
+    if (cur.onDone) {
+      cur.onDone();
+    }
+    const stAfter = useGame.getState();
+    if (stAfter.screen === "playing" && !stAfter.aiChoiceOpen) {
+      this.lockPointer();
+    }
+  }
+
+  private updateActiveCutscene(dt: number, st: ReturnType<typeof useGame.getState>) {
+    const cur = this.activeCutscene;
+    if (!cur || !this.world || !this.cutsceneDirector) return;
+
+    cur.elapsed += dt;
+    cur.duration = getCutsceneDuration(cur.id, st.lang);
+
+    if (cur.elapsed >= cur.duration) {
+      this.stopCutscene(false);
+      return;
+    }
+
+    // ضمان إخفاء جميع الزومبي والحارس المجمد الأصلي طيلة فترة المشهد
+    if (this.enemies) {
+      for (const e of this.enemies.enemies) {
+        if (e.group.visible) e.group.visible = false;
+      }
+    }
+
+    this.cutsceneDirector.update(cur.id, cur.elapsed, cur.duration, this.camera, this.world);
+    const whiteout = this.cutsceneDirector.getWhiteout();
+
+    // تكثيف الضباب الرمادي/البرتقالي مع غبار الانفجار النووي في مشهد القارب
+    if (cur.id === "boat_nuke" && cur.elapsed >= 10.5) {
+      const fog = this.scene.fog as THREE.Fog;
+      if (fog) {
+        const dustF = Math.min(1, (cur.elapsed - 10.5) / 8.0);
+        fog.color.setHex(cur.elapsed < 13.5 ? 0xffddaa : 0x5c4a3e);
+        fog.near = 60 - dustF * 38;
+        fog.far = 360 - dustF * 175;
+        (this.scene.background as THREE.Color).setHex(cur.elapsed < 13.5 ? 0xffddaa : 0x5c4a3e);
+      }
+    }
+
+    const subs = CUTSCENE_DEFS[cur.id].subtitles[st.lang];
+    const subIdx = Math.min(subs.length - 1, Math.floor(cur.elapsed / SUBTITLE_DURATION));
+    const subtitle = subs[subIdx] ?? "";
+    const progress = Math.min(1, cur.elapsed / cur.duration);
+
+    if (
+      !st.cutscene ||
+      st.cutscene.id !== cur.id ||
+      st.cutscene.index !== subIdx ||
+      st.cutscene.subtitle !== subtitle ||
+      Math.abs(st.cutscene.progress - progress) > 0.015 ||
+      Math.abs((st.cutscene.whiteout ?? 0) - whiteout) > 0.02
+    ) {
+      st.setCutscene({
+        id: cur.id,
+        subtitle,
+        index: subIdx,
+        total: subs.length,
+        progress,
+        whiteout,
+      });
+    }
+  }
+
+  // ══════════ run lifecycle ══════════
+  private beginRun() {
+    const st = useGame.getState();
+    st.resetRun();
+    if (this.pendingSave) {
+      st.applySave(this.pendingSave);
+      this.pendingSave = null;
+    }
+    this.ensureWorld();
 
     // إعادة ضبط العالم والأعداء والوثائق والأبواب بالكامل عند بدء رحلة جديدة أو استئناف حفظ بعد الموت
     this.resetWorldState();
 
-    // موضع البداية أو نقطة الحفظ
+    // موضع البداية (في غرفة نوم جون بالطابق الثاني) أو نقطة الحفظ
+    const isFreshStart = !this.lastLoadedPos;
     if (this.lastLoadedPos) {
       this.pos.set(this.lastLoadedPos[0], EYE_H, this.lastLoadedPos[1]);
       this.yaw = this.lastLoadedYaw;
+      this.floorY = 0;
     } else {
-      this.pos.set(-23, EYE_H, -70);
-      this.yaw = Math.PI; // نحو الباب الجنوبي
+      this.pos.set(-26.4, 4.2 + EYE_H, -73.2);
+      this.yaw = -2.4; // باتجاه مكتب غرفة النوم
+      this.floorY = 4.2;
     }
-    this.floorY = 0;
     this.crouching = false;
     this.crouchToggle = false;
     this.isHidden = false;
@@ -786,8 +1043,8 @@ export class GameEngine {
       useGame.getState().setHud({ escapeTimer: 240 });
     }
     if (s.flags.labEntered) {
-      this.world.labDoor.open = true;
-      this.world.labDoor.group.position.y = -3.5;
+      this.world!.labDoor.open = true;
+      this.world!.labDoor.group.position.y = -3.5;
       this.removeLabDoorCollider();
     }
     if (s.flags.bossKilled) this.openBossGate();
@@ -806,8 +1063,16 @@ export class GameEngine {
     audio.init();
     audio.startAmbient(s.flags.labEntered ? "lab" : "city");
     if (this.extractionReady) audio.setHeli(true);
-    this.lockPointer();
-    st.showHint(MESSAGES.pointerLockHint);
+
+    if (isFreshStart) {
+      // تشغيل مشهد البداية السينمائي (استيقاظ جون فاقداً للذاكرة في غرفته لمدة 12 ثانية)
+      this.playCutscene("intro_wake", () => {
+        useGame.getState().showHint(MESSAGES.pointerLockHint);
+      });
+    } else {
+      this.lockPointer();
+      st.showHint(MESSAGES.pointerLockHint);
+    }
   }
 
   /** إعادة تهيئة العالم والأعداء والتفاعلات بالكامل لبدء جولة جديدة أو استعادة حفظ بعد الموت */
@@ -1697,9 +1962,16 @@ export class GameEngine {
       return;
     }
     it.used = true;
-    st.toastMsg(MESSAGES.radioBroadcasting);
     audio.play("radio_static", { volume: 0.8 });
-    this.playRadioChain();
+    this.playCutscene("radio_broadcast", () => {
+      const s2 = useGame.getState();
+      s2.setFlag("radioDone", true);
+      const bothCards = s2.hasItem("keycard_blue") && s2.hasItem("keycard_red");
+      s2.setObjective(bothCards ? "obj_lab" : "obj_survive");
+      s2.toastMsg(MESSAGES.radioRestoredPower);
+      audio.play("stinger_discover", { volume: 0.7 });
+      this.doCheckpoint(MESSAGES.cpAfterRadio);
+    });
   }
 
   private playRadioChain() {
@@ -1773,21 +2045,14 @@ export class GameEngine {
       st.setFlag(deliveredFlag, true);
       it.used = true; // توقّف الطلب بعد التسليم
 
-      // تحريك الناجي فعلياً للخروج من المبنى والتوجه نحو قارب الإخلاء في الميناء
+      // فتح أبواب المبنى تلقائياً ليخرج الناجي بسلاسة نحو الميناء بعد المشهد السينمائي
       if (this.world) {
-        const sv = this.world.survivors.find((x) => x.id === sid);
-        if (sv) {
-          sv.state = "walking";
-          sv.wpIndex = 0;
-          sv.walkTime = 0;
-        }
-        // فتح أبواب المبنى تلقائياً ليخرج الناجي بسلاسة أمام اللاعب
         const doorsToOpen =
           sid === "sara"
             ? ["door_hospital_laundry", "door_hospital"]
             : sid === "adel"
-              ? ["door_warehouse_office", "door_warehouse"]
-              : ["door_factory"];
+              ? ["door_factory"]
+              : ["door_warehouse_office", "door_warehouse"];
         for (const did of doorsToOpen) {
           const d = this.doorList().find((x) => x.id === did);
           if (d && !d.open) {
@@ -1798,14 +2063,27 @@ export class GameEngine {
         }
       }
 
-      st.toastMsg(MESSAGES.survivorThankYou(s.name));
-      st.showHint(MESSAGES.savedSurvivor(s.name));
       const f2 = useGame.getState().flags;
       const n = (f2.saraSaved ? 1 : 0) + (f2.adelSaved ? 1 : 0) + (f2.soldierSaved ? 1 : 0);
       st.setHud({ optionalObjective: MESSAGES.survivorsSavedHud(n) });
       audio.play("pickup");
       audio.play("radio_beep", { volume: 0.5 });
-      this.doCheckpoint(MESSAGES.cpQuest(sid));
+
+      const cutsceneId: CutsceneId =
+        sid === "sara" ? "survivor_sara" : sid === "adel" ? "survivor_adel" : "survivor_soldier";
+      this.playCutscene(cutsceneId, () => {
+        if (this.world) {
+          const sv = this.world.survivors.find((x) => x.id === sid);
+          if (sv) {
+            sv.state = "walking";
+            sv.wpIndex = Math.min(1, sv.waypoints.length - 1);
+            sv.walkTime = 0;
+          }
+        }
+        useGame.getState().toastMsg(MESSAGES.survivorThankYou(s.name));
+        useGame.getState().showHint(MESSAGES.savedSurvivor(s.name));
+        this.doCheckpoint(MESSAGES.cpQuest(sid));
+      });
       return;
     }
     st.toastMsg(MESSAGES.questItemMissing(s.name, quest.qty));
@@ -1881,13 +2159,17 @@ export class GameEngine {
     }
     it.used = true;
     st.setFlag("labEntered", true);
-    this.world!.labDoor.open = true;
-    this.world!.labDoor.group.position.y = -3.5;
-    this.removeLabDoorCollider();
-    audio.play("door_open", { volume: 1 });
-    st.toastMsg(MESSAGES.labGateOpening);
     st.setObjective("obj_core");
-    this.enterLab();
+    audio.play("door_open", { volume: 1 });
+    // تشغيل مشهد فتح المختبر السري (10ث) ويتبعه مباشرة مشهد وصول جون ونهوض الوحش (7.5ث)
+    this.playCutscene("lab_open", () => {
+      if (this.world) {
+        this.world.labDoor.open = true;
+        this.world.labDoor.group.position.y = -3.5;
+      }
+      this.removeLabDoorCollider();
+      this.enterLab();
+    });
   }
 
   private removeLabDoorCollider() {
@@ -1954,20 +2236,22 @@ export class GameEngine {
     }
     it.used = true;
     st.setFlag("metAI", true);
-    st.setAiChoiceOpen(true);
-    document.exitPointerLock();
     audio.play("radio_static", { volume: 0.5 });
-    audio.play("stinger_discover", { volume: 0.8 });
+    // تشغيل مشهد وصول جون إلى النواة والتحدث معها (30 ثانية) ثم فتح نافذة القرار المصيري
+    this.playCutscene("core_dialogue", () => {
+      const s2 = useGame.getState();
+      s2.setAiChoiceOpen(true);
+      document.exitPointerLock();
+      audio.play("stinger_discover", { volume: 0.8 });
+    });
   }
 
   private resolveAI(choice: "destroy" | "deal" | "leave") {
     const st = useGame.getState();
     st.setAiChoiceOpen(false);
     const reaction = AI_REACTIONS[choice];
-    if (reaction) {
-      st.toastMsg(reaction.text);
-      if (reaction.voice) audio.playVoice(reaction.voice);
-    }
+    if (reaction?.voice) audio.playVoice(reaction.voice);
+
     if (choice === "destroy") {
       st.setFlag("coreDestroyed", true);
       st.setObjective("obj_escape");
@@ -1975,27 +2259,33 @@ export class GameEngine {
       audio.play("explosion", { volume: 0.35 });
       audio.play("alarm", { volume: 0.8 });
       this.addShake(1);
-      // فتح كل الأبواب: البوابة والمختبر
       this.openGateBarrier();
       this.extractionReady = true;
       audio.setHeli(true);
-      st.toastMsg(MESSAGES.coreSignal);
-      audio.startAmbient("city");
-      this.doCheckpoint(MESSAGES.cpAfterCore);
+      this.playCutscene("ending_destroy_scene", () => {
+        this.exitLab();
+        useGame.getState().toastMsg(MESSAGES.coreSignal);
+        this.doCheckpoint(MESSAGES.cpAfterCore);
+      });
     } else if (choice === "deal") {
       st.setFlag("dealAccepted", true);
       st.setObjective("obj_escape");
       this.openGateBarrier();
       this.extractionReady = true;
       audio.setHeli(true);
-      st.toastMsg(MESSAGES.dealGateOpened);
-      audio.startAmbient("harbor");
-      this.doCheckpoint(MESSAGES.cpDeal);
+      this.playCutscene("ending_deal_scene", () => {
+        this.exitLab();
+        audio.startAmbient("harbor");
+        useGame.getState().toastMsg(MESSAGES.dealGateOpened);
+        this.doCheckpoint(MESSAGES.cpDeal);
+      });
     } else {
       st.setObjective("obj_gate");
-      st.showHint(MESSAGES.leaveCoreHint);
+      this.playCutscene("ending_escape_scene", () => {
+        this.exitLab();
+        useGame.getState().showHint(MESSAGES.leaveCoreHint);
+      });
     }
-    this.lockPointer();
   }
 
   private tryExtract() {
@@ -2016,8 +2306,10 @@ export class GameEngine {
       ending = saved >= 3 ? "ending_rescue" : "ending_escape";
     }
     audio.play("radio_beep");
-    audio.playVoice("radio_3");
-    this.finish(ending);
+    // تشغيل مشهد صعود جون إلى المركب والانفجار النووي الذي يدمر البلدة (20ث) يتبعه مشهد البحر وشروق الشمس (10ث)
+    this.playCutscene("boat_nuke", () => {
+      this.finish(ending);
+    });
   }
 
   // ══════════ flashlight ══════════
@@ -2037,10 +2329,15 @@ export class GameEngine {
     this.rafId = requestAnimationFrame(this.loop);
     const dt = Math.min(this.clock.getDelta(), 0.05);
     const st = useGame.getState();
-    const playing = st.screen === "playing" && !st.aiChoiceOpen;
-    const active = this.runStarted;
+    const playing = st.screen === "playing" && !st.aiChoiceOpen && !this.activeCutscene;
+    const active = this.runStarted || this.activeCutscene !== null;
 
-    if (active) {
+    if (this.activeCutscene) {
+      this.updateActiveCutscene(dt, st);
+      if (this.activeCutscene) {
+        this.updateWorldFx(dt);
+      }
+    } else if (active) {
       this.updateWorldFx(dt);
       if (playing) {
         this.updatePlayer(dt, true, st);
@@ -2059,32 +2356,34 @@ export class GameEngine {
       }
     }
 
-    // الكاميرا
-    this.camera.position.copy(this.pos);
-    this.camera.rotation.order = "YXZ";
-    this.camera.rotation.y = this.yaw;
-    this.camera.rotation.x = this.pitch;
-    // تمايل رأس خفيف + اهتزاز
-    this.camera.rotation.z = Math.sin(this.walkPhase) * 0.006 * this.bobAmp;
-    if (this.shake > 0) {
-      const s = this.shake;
-      this.camera.position.x += (Math.random() - 0.5) * 2 * s * 0.05;
-      this.camera.position.y += (Math.random() - 0.5) * 2 * s * 0.05;
-      this.camera.position.z += (Math.random() - 0.5) * 2 * s * 0.05;
-      this.camera.rotation.z += (Math.random() - 0.5) * 2 * s * 0.02;
-      this.shake = Math.max(0, this.shake - dt * 2.2);
-    }
-    // مجال رؤية أوسع عند الجري
-    const targetFov = this.running ? 80 : 72;
-    if (Math.abs(this.camera.fov - targetFov) > 0.1) {
-      this.camera.fov += (targetFov - this.camera.fov) * Math.min(1, dt * 6);
-      this.camera.updateProjectionMatrix();
-    }
+    if (!this.activeCutscene) {
+      // الكاميرا
+      this.camera.position.copy(this.pos);
+      this.camera.rotation.order = "YXZ";
+      this.camera.rotation.y = this.yaw;
+      this.camera.rotation.x = this.pitch;
+      // تمايل رأس خفيف + اهتزاز
+      this.camera.rotation.z = Math.sin(this.walkPhase) * 0.006 * this.bobAmp;
+      if (this.shake > 0) {
+        const s = this.shake;
+        this.camera.position.x += (Math.random() - 0.5) * 2 * s * 0.05;
+        this.camera.position.y += (Math.random() - 0.5) * 2 * s * 0.05;
+        this.camera.position.z += (Math.random() - 0.5) * 2 * s * 0.05;
+        this.camera.rotation.z += (Math.random() - 0.5) * 2 * s * 0.02;
+        this.shake = Math.max(0, this.shake - dt * 2.2);
+      }
+      // مجال رؤية أوسع عند الجري
+      const targetFov = this.running ? 80 : 72;
+      if (Math.abs(this.camera.fov - targetFov) > 0.1) {
+        this.camera.fov += (targetFov - this.camera.fov) * Math.min(1, dt * 6);
+        this.camera.updateProjectionMatrix();
+      }
 
-    // نموذج السلاح
-    this.updateViewmodel(dt, st);
-    // ليزر المسدس
-    this.updateLaser();
+      // نموذج السلاح
+      this.updateViewmodel(dt, st);
+      // ليزر المسدس
+      this.updateLaser();
+    }
 
     // مؤثرات الدم
     for (let i = this.blood.length - 1; i >= 0; i--) {
@@ -2435,10 +2734,12 @@ export class GameEngine {
       });
     }
     const t = performance.now() / 1000;
-    const px = this.pos.x;
-    const py = this.pos.y;
-    const pz = this.pos.z;
-    const CHUNK_CULL_DIST = 54;
+    const isCutscene = this.activeCutscene !== null;
+    const isWideCutscene = this.activeCutscene?.id === "boat_nuke";
+    const px = isCutscene ? this.camera.position.x : this.pos.x;
+    const py = isCutscene ? this.camera.position.y : this.pos.y;
+    const pz = isCutscene ? this.camera.position.z : this.pos.z;
+    const CHUNK_CULL_DIST = isWideCutscene ? 320 : isCutscene ? 88 : 54;
     const CHUNK_CULL_SQ = CHUNK_CULL_DIST * CHUNK_CULL_DIST;
 
     // 1) تحديث ظهور القطاعات فقط عند تحرك اللاعب مسافة 2م لتجنب التكرار كل إطار
@@ -2546,6 +2847,7 @@ export class GameEngine {
     }
 
     // 5) تمايل قارب الإخلاء فوق مياه النهر + حركة الناجين الفعليّة نحو الميناء وعلى متن القارب
+    if (isCutscene) return;
     const boatBob = Math.sin(t * 1.4) * 0.035;
     if (this.world.boat) {
       this.world.boat.position.y = -0.50 + boatBob;
@@ -2589,7 +2891,7 @@ export class GameEngine {
           sv.obj.position.x += (dx / dist) * speed * dt;
           sv.obj.position.z += (dz / dist) * speed * dt;
           sv.obj.position.y += dy * Math.min(1, dt * 8);
-          const targetYaw = Math.atan2(dx, dz);
+          const targetYaw = Math.atan2(dx, -dz);
           let diff = targetYaw - sv.obj.rotation.y;
           while (diff > Math.PI) diff -= Math.PI * 2;
           while (diff < -Math.PI) diff += Math.PI * 2;
@@ -2601,7 +2903,7 @@ export class GameEngine {
         sv.obj.position.set(sv.boatPos[0], sv.boatPos[1] + boatBob, sv.boatPos[2]);
         const dPlayer = Math.hypot(px - sv.boatPos[0], pz - sv.boatPos[2]);
         if (dPlayer < 14) {
-          const lookYaw = Math.atan2(px - sv.boatPos[0], pz - sv.boatPos[2]);
+          const lookYaw = Math.atan2(px - sv.boatPos[0], -(pz - sv.boatPos[2]));
           let diff = lookYaw - sv.obj.rotation.y;
           while (diff > Math.PI) diff -= Math.PI * 2;
           while (diff < -Math.PI) diff += Math.PI * 2;

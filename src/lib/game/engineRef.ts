@@ -6,6 +6,7 @@
 // UI components must ONLY use getEngine() public API below.
 // ─────────────────────────────────────────────────────────────
 import type { MapSnapshot, WeaponId } from "./types";
+import type { CutsceneId } from "./cutscenes";
 
 export type AIChoice = "destroy" | "deal" | "leave";
 
@@ -20,6 +21,8 @@ export interface GameEngineApi {
   reload(): void;
   getMapSnapshot(): MapSnapshot | null;
   chooseAI(choice: AIChoice): void;
+  playCutscene(id: CutsceneId, isTest?: boolean): void;
+  skipCutscene(): void;
 }
 
 let engine: (GameEngineApi & { dispose(): void }) | null = null;

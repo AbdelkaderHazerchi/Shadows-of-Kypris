@@ -51,8 +51,14 @@ export default function MainMenu() {
   const startNew = () => {
     audio.init();
     audio.play("ui_click");
-    useGame.getState().resetRun();
-    setScreen("intro");
+    const e = getEngine();
+    if (!e) {
+      setEngineError(true);
+      useGame.getState().showHint(ui.engineNotReady);
+      return;
+    }
+    setEngineError(false);
+    e.startNewGame();
   };
 
   const continueGame = () => {
@@ -121,25 +127,25 @@ export default function MainMenu() {
       </div>
 
       {/* Main Content */}
-      <div className="relative z-10 flex h-full w-full flex-col items-center justify-center px-6">
+      <div className="relative z-10 flex h-full w-full flex-col items-center justify-center overflow-y-auto px-6 py-8">
         <div className="flex flex-col items-center text-center">
           {/* Title */}
           <h1
-            className="kypris-bloodtext font-title text-6xl font-bold leading-tight text-red-800 md:text-8xl"
+            className="kypris-bloodtext font-title text-5xl font-bold leading-tight text-red-800 md:text-7xl"
             dir={lang === "ar" ? "rtl" : "ltr"}
           >
             {ui.titlePrefix}
             <span className="kypris-flicker">{ui.titleFlicker}</span>
             {ui.titleSuffix}
           </h1>
-          <p className="mt-3 font-title text-xl text-[#d6c9a8]/75">{c.tagline}</p>
-          <p className="mt-1 text-sm text-stone-500">{ui.subtitle}</p>
+          <p className="mt-2 font-title text-lg text-[#d6c9a8]/75">{c.tagline}</p>
+          <p className="mt-1 text-xs text-stone-500">{ui.subtitle}</p>
 
           {/* Menu Buttons */}
-          <div className="mt-10 flex flex-col items-center gap-3">
+          <div className="mt-6 flex flex-wrap items-center justify-center gap-2.5 max-w-xl">
             <button
               onClick={startNew}
-              className="kypris-btn flex w-72 items-center justify-center gap-3 py-3 font-ui text-lg text-stone-100"
+              className="kypris-btn flex w-60 items-center justify-center gap-3 py-2.5 font-ui text-base text-stone-100"
             >
               <Play className="h-5 w-5 text-red-700" strokeWidth={1.75} />
               {ui.newGame}
@@ -148,7 +154,7 @@ export default function MainMenu() {
             {hasSave && (
               <button
                 onClick={continueGame}
-                className="kypris-btn flex w-72 items-center justify-center gap-3 py-3 font-ui text-lg text-stone-100"
+                className="kypris-btn flex w-60 items-center justify-center gap-3 py-2.5 font-ui text-base text-stone-100"
               >
                 <RotateCcw className="h-5 w-5 text-amber-700" strokeWidth={1.75} />
                 {ui.continueGame}
@@ -157,7 +163,7 @@ export default function MainMenu() {
 
             <button
               onClick={toGallery}
-              className="kypris-btn flex w-72 items-center justify-center gap-3 py-3 font-ui text-lg text-stone-300"
+              className="kypris-btn flex w-60 items-center justify-center gap-3 py-2.5 font-ui text-base text-stone-300"
             >
               <Trophy className="h-5 w-5 text-amber-700" strokeWidth={1.75} />
               {ui.endingsGallery}
@@ -165,7 +171,7 @@ export default function MainMenu() {
 
             <button
               onClick={toHelp}
-              className="kypris-btn flex w-72 items-center justify-center gap-3 py-3 font-ui text-lg text-stone-300"
+              className="kypris-btn flex w-60 items-center justify-center gap-3 py-2.5 font-ui text-base text-stone-300"
             >
               <BookOpen className="h-5 w-5 text-stone-500" strokeWidth={1.75} />
               {ui.howToPlay}
@@ -178,8 +184,8 @@ export default function MainMenu() {
             </p>
           )}
 
-          {/* Volume & Language Controls */}
-          <div className="mt-8">
+          {/* Volume, Language & Cutscene Tester Controls */}
+          <div className="mt-6 w-[min(560px,92vw)] rounded-md border border-stone-800/80 bg-black/65 p-4 backdrop-blur-xs">
             <VolumeSliders />
           </div>
         </div>

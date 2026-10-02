@@ -1,12 +1,14 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Flashlight, Heart } from "lucide-react";
+import { FastForward, Film, Flashlight, Heart } from "lucide-react";
 import { getContent } from "@/lib/game/content";
+import { CUTSCENE_DEFS, type CutsceneId } from "@/lib/game/cutscenes";
+import { getEngine } from "@/lib/game/engineRef";
 import { useGame } from "@/lib/game/state";
 import { formatClock } from "./utils";
 
-/** واجهة لعب نظيفة وشفافة بدون أي إطارات — تعرض فقط الصحة، بطارية المصباح، ونوع السلاح المحمول */
+/** واجهة لعب نظيفة وشفافة بدون أي إطارات — تعرض فقط الصحة، بطارية المصباح، ونوع السلاح المحمول، أو شاشة الترجمة أثناء المشاهد السينمائية */
 export default function HUD() {
   const hp = useGame((g) => g.hud.hp);
   const maxHp = useGame((g) => g.hud.maxHp);
@@ -35,6 +37,7 @@ export default function HUD() {
   const toast = useGame((g) => g.toast);
   const weapons = useGame((g) => g.weapons);
   const lang = useGame((g) => g.lang);
+  const cutscene = useGame((g) => g.cutscene);
 
   // نبضة زمنية لإخفاء التنبيهات النصية المؤقتة
   const [now, setNow] = useState(() => Date.now());
@@ -84,6 +87,69 @@ export default function HUD() {
   const mag = equipped === "shotgun" ? shotgunMag : equipped === "pistol" ? pistolMag : 0;
   const reserve = equipped === "shotgun" ? shotgunAmmo : equipped === "pistol" ? pistolAmmo : 0;
   const stickPct = stickMaxHits > 0 ? Math.max(0, Math.min(100, (stickHits / stickMaxHits) * 100)) : 0;
+
+  if (cutscene) {
+    const def = CUTSCENE_DEFS[cutscene.id as CutsceneId];
+    const sceneTitle = def?.title[lang] ?? "";
+    const skipLabel = lang === "ar" ? "تخطي المشهد [Space / Esc]" : "Skip Cutscene [Space / Esc]";
+    const whiteout = Math.max(0, Math.min(1, cutscene.whiteout ?? 0));
+
+    return (
+      <div className="pointer-events-none fixed inset-0 z-30 select-none font-ui">
+        {/* وميض الشاشة البيضاء السينمائي القوي لحظة الانفجار النووي */}
+        {whiteout > 0.01 && (
+          <div
+            className="pointer-events-none absolute inset-0 bg-white transition-opacity duration-75"
+            style={{
+              opacity: whiteout,
+              boxShadow: "inset 0 0 120px rgba(255,245,220,1)",
+            }}
+          />
+        )}
+
+        {/* شريط سينمائي علوي مع عنوان المشهد وزر التخطي */}
+        <div className="pointer-events-auto relative z-10 flex items-center justify-between bg-gradient-to-b from-black/90 via-black/55 to-transparent px-6 py-4">
+          <div className="flex items-center gap-2 text-xs text-stone-400">
+            <Film className="h-4 w-4 text-amber-500/80" strokeWidth={1.6} />
+            <span dir={lang === "ar" ? "rtl" : "ltr"}>{sceneTitle}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => getEngine()?.skipCutscene()}
+            className="flex items-center gap-1.5 rounded border border-stone-700/80 bg-black/70 px-3 py-1.5 text-xs text-stone-300 transition hover:border-amber-600/80 hover:text-amber-200"
+          >
+            <FastForward className="h-3.5 w-3.5 text-amber-500" strokeWidth={1.7} />
+            <span>{skipLabel}</span>
+          </button>
+        </div>
+
+        {/* شريط سينمائي سفلي يعرض الترجمة حسب اللغة (3.5 ثانية لكل جملة) */}
+        <div className="absolute inset-x-0 bottom-0 z-10 flex flex-col items-center justify-end bg-gradient-to-t from-black/95 via-black/70 to-transparent px-6 pb-8 pt-14">
+          {cutscene.subtitle && (
+            <div
+              dir={lang === "ar" ? "rtl" : "ltr"}
+              className="w-[min(820px,92vw)] rounded-md border border-stone-800/80 bg-black/80 px-6 py-4 text-center shadow-[0_6px_30px_rgba(0,0,0,0.95)] backdrop-blur-xs"
+            >
+              <p className="font-title text-lg leading-8 text-amber-50 drop-shadow-[0_2px_8px_rgba(0,0,0,0.98)] md:text-xl">
+                {cutscene.subtitle}
+              </p>
+              <div className="mt-3 flex items-center justify-between gap-3">
+                <div className="h-1 flex-1 overflow-hidden rounded-full bg-stone-800" dir="ltr">
+                  <div
+                    className="h-full rounded-full bg-amber-500/85 transition-[width] duration-150"
+                    style={{ width: `${Math.round(cutscene.progress * 100)}%` }}
+                  />
+                </div>
+                <span dir="ltr" className="font-mono text-[11px] text-stone-400">
+                  {cutscene.index + 1} / {cutscene.total}
+                </span>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="pointer-events-none fixed inset-0 z-30 select-none font-ui">

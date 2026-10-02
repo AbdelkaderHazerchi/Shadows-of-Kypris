@@ -132,6 +132,9 @@ const texCache = new Map<string, THREE.CanvasTexture>();
 function cachedTex(key: string, draw: (ctx: CanvasRenderingContext2D, px: number) => void) {
   let t = texCache.get(key);
   if (!t) {
+    if (typeof document === "undefined") {
+      return null as unknown as THREE.CanvasTexture;
+    }
     const px = 128;
     const cv = document.createElement("canvas");
     cv.width = px;
@@ -151,6 +154,9 @@ const matCache = new Map<string, THREE.MeshStandardMaterial>();
 function cachedMat(key: string, make: () => THREE.MeshStandardMaterial) {
   let m = matCache.get(key);
   if (!m) {
+    if (typeof document === "undefined") {
+      return new THREE.MeshStandardMaterial();
+    }
     m = make();
     matCache.set(key, m);
   }
@@ -549,7 +555,7 @@ function clearAcidFx() {
 // بنية الهيكل المفصلي
 // ═════════════════════════════════════════════════════════════
 
-interface EnemyRig {
+export interface EnemyRig {
   pelvis: THREE.Group;
   torso: THREE.Group;
   headG: THREE.Group;
@@ -626,6 +632,10 @@ export class Enemy {
 
   // حالة داخلية للرسم
   private rig: EnemyRig | null = null;
+
+  public getRig(): EnemyRig | null {
+    return this.rig;
+  }
   private skinMat: THREE.MeshStandardMaterial | null = null;
   private skinFlash = 0;
   private animT = Math.random() * 10;
